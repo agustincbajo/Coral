@@ -21,6 +21,7 @@ include_dir = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml_ng = { workspace = true }
 chrono = { workspace = true }
+walkdir = { workspace = true }
 coral-core = { path = "../coral-core" }
 coral-lint = { path = "../coral-lint" }
 coral-runner = { path = "../coral-runner" }

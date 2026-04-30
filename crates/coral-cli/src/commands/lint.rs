@@ -1,7 +1,8 @@
 use anyhow::{Context, Result};
 use clap::Args;
 use coral_core::walk;
-use coral_lint::{LintReport, run_structural};
+use coral_lint::{LintReport, run_structural, semantic::check_semantic};
+use coral_runner::Runner;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -22,6 +23,15 @@ pub struct LintArgs {
 }
 
 pub fn run(args: LintArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
+    let runner = super::runner_helper::default_runner();
+    run_with_runner(args, wiki_root, runner.as_ref())
+}
+
+pub fn run_with_runner(
+    args: LintArgs,
+    wiki_root: Option<&Path>,
+    runner: &dyn Runner,
+) -> Result<ExitCode> {
     let root: PathBuf = wiki_root
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from(".wiki"));
@@ -45,7 +55,8 @@ pub fn run(args: LintArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
         issues.extend(r.issues);
     }
     if do_semantic {
-        tracing::warn!("semantic lint requires runner (Phase E2 wiring); skipping in this build.");
+        let semantic_issues = check_semantic(&pages, runner);
+        issues.extend(semantic_issues);
     }
     let report = LintReport::from_issues(issues);
 

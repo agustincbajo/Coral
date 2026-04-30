@@ -142,25 +142,63 @@ fn search_returns_not_implemented_exit_2() {
 }
 
 #[test]
-fn bootstrap_stub_returns_exit_2() {
+fn bootstrap_without_wiki_fails() {
     let tmp = TempDir::new().unwrap();
     Command::cargo_bin("coral")
         .unwrap()
         .current_dir(tmp.path())
         .arg("bootstrap")
         .assert()
-        .code(2);
+        .failure()
+        .stderr(contains("wiki root not found"));
 }
 
 #[test]
-fn ingest_stub_returns_exit_2() {
+fn ingest_without_wiki_fails() {
     let tmp = TempDir::new().unwrap();
     Command::cargo_bin("coral")
         .unwrap()
         .current_dir(tmp.path())
         .arg("ingest")
         .assert()
-        .code(2);
+        .failure()
+        .stderr(contains("wiki root not found"));
+}
+
+#[test]
+fn query_without_wiki_fails() {
+    let tmp = TempDir::new().unwrap();
+    Command::cargo_bin("coral")
+        .unwrap()
+        .current_dir(tmp.path())
+        .args(["query", "anything"])
+        .assert()
+        .failure()
+        .stderr(contains("wiki root not found"));
+}
+
+#[test]
+fn consolidate_without_wiki_fails() {
+    let tmp = TempDir::new().unwrap();
+    Command::cargo_bin("coral")
+        .unwrap()
+        .current_dir(tmp.path())
+        .arg("consolidate")
+        .assert()
+        .failure()
+        .stderr(contains("wiki root not found"));
+}
+
+#[test]
+fn onboard_without_wiki_fails() {
+    let tmp = TempDir::new().unwrap();
+    Command::cargo_bin("coral")
+        .unwrap()
+        .current_dir(tmp.path())
+        .arg("onboard")
+        .assert()
+        .failure()
+        .stderr(contains("wiki root not found"));
 }
 
 #[test]
