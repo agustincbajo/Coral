@@ -1,0 +1,73 @@
+name: Wiki maintenance
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '0 6 * * *'    # 06:00 UTC = 03:00 ART nightly
+    - cron: '0 6 * * 1'    # Monday weekly
+
+jobs:
+  ingest:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install Coral
+        run: cargo install --locked --git https://github.com/agustincbajo/Coral coral-cli
+      - name: Run ingest
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            Run `/wiki-ingest` from the last_commit anchor in .wiki/index.md to HEAD.
+            Stage all changes under .wiki/. Do not commit; the next step opens a PR.
+      - name: Open PR with wiki updates
+        uses: peter-evans/create-pull-request@v6
+        with:
+          commit-message: "chore(wiki): incremental ingest"
+          branch: wiki/auto-ingest
+          title: "Wiki: incremental ingest"
+          body: "Automated incremental ingest from `.wiki/index.md` to HEAD."
+
+  lint-semantic:
+    if: github.event.schedule == '0 6 * * *'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Coral
+        run: cargo install --locked --git https://github.com/agustincbajo/Coral coral-cli
+      - name: Run semantic lint
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: "Run `coral lint --semantic --format json` and dump the output."
+        continue-on-error: true
+
+  consolidate:
+    if: github.event.schedule == '0 6 * * 1'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Coral
+        run: cargo install --locked --git https://github.com/agustincbajo/Coral coral-cli
+      - name: Run consolidate
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: "Run `/wiki-consolidate` and propose merges/retirements as a PR."
+      - uses: peter-evans/create-pull-request@v6
+        if: always()
+        with:
+          commit-message: "chore(wiki): consolidation proposals"
+          branch: wiki/consolidate
+          title: "Wiki: consolidation proposals"
+          body: "Weekly consolidation suggestions from coral-consolidator."
