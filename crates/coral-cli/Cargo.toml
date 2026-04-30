@@ -17,7 +17,16 @@ clap = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+include_dir = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml_ng = { workspace = true }
+chrono = { workspace = true }
 coral-core = { path = "../coral-core" }
 coral-lint = { path = "../coral-lint" }
 coral-runner = { path = "../coral-runner" }
 coral-stats = { path = "../coral-stats" }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+assert_cmd = { workspace = true }
+predicates = { workspace = true }
