@@ -2,6 +2,9 @@
 
 pub mod error;
 pub mod frontmatter;
+pub mod index;
+pub mod log;
+pub mod page;
 pub mod wikilinks;
 
 /// Returns the crate version (CARGO_PKG_VERSION).

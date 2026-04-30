@@ -1,0 +1,206 @@
+//! `WikiLog` — append-only operation log for the Coral wiki.
+
+use crate::error::{CoralError, Result};
+use chrono::{DateTime, Utc};
+use regex::Regex;
+use std::fs;
+use std::path::Path;
+use std::sync::OnceLock;
+
+/// Single log entry.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LogEntry {
+    pub timestamp: DateTime<Utc>,
+    pub op: String,
+    pub summary: String,
+}
+
+/// Append-only log of operations on the wiki.
+#[derive(Debug, Clone, Default)]
+pub struct WikiLog {
+    pub entries: Vec<LogEntry>,
+}
+
+fn log_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        // Accept both `Z` and `+HH:MM` / `-HH:MM` offsets so we round-trip our own output
+        // (chrono's `to_rfc3339()` emits `+00:00`, not `Z`).
+        Regex::new(
+            r"^- (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})) (\w[\w-]*): (.+)$",
+        )
+        .expect("valid log regex")
+    })
+}
+
+impl WikiLog {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Parses a log file content. Lines that don't match the format are skipped silently.
+    /// Header `# Wiki operation log` and frontmatter are skipped.
+    pub fn parse(content: &str) -> Result<Self> {
+        let re = log_re();
+        let mut entries = Vec::new();
+        for raw_line in content.lines() {
+            let line = raw_line.trim_end();
+            if let Some(cap) = re.captures(line) {
+                let ts_str = cap.get(1).expect("group 1").as_str();
+                let op = cap.get(2).expect("group 2").as_str().to_string();
+                let summary = cap.get(3).expect("group 3").as_str().to_string();
+                let timestamp = match DateTime::parse_from_rfc3339(ts_str) {
+                    Ok(dt) => dt.with_timezone(&Utc),
+                    Err(_) => continue,
+                };
+                entries.push(LogEntry {
+                    timestamp,
+                    op,
+                    summary,
+                });
+            }
+        }
+        Ok(Self { entries })
+    }
+
+    /// Loads a log from disk. If the file doesn't exist, returns an empty `WikiLog`.
+    pub fn load(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
+        match fs::read_to_string(path) {
+            Ok(content) => Self::parse(&content),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::new()),
+            Err(source) => Err(CoralError::Io {
+                path: path.to_path_buf(),
+                source,
+            }),
+        }
+    }
+
+    /// Appends a new entry with `timestamp = Utc::now()`. Returns the appended entry.
+    pub fn append(&mut self, op: impl Into<String>, summary: impl Into<String>) -> &LogEntry {
+        let entry = LogEntry {
+            timestamp: Utc::now(),
+            op: op.into(),
+            summary: summary.into(),
+        };
+        self.entries.push(entry);
+        self.entries.last().expect("just pushed")
+    }
+
+    /// Serializes to a Markdown document.
+    #[allow(clippy::inherent_to_string)]
+    pub fn to_string(&self) -> String {
+        let mut out = String::new();
+        out.push_str("---\n");
+        out.push_str("type: log\n");
+        out.push_str("---\n\n");
+        out.push_str("# Wiki operation log\n\n");
+        for entry in &self.entries {
+            out.push_str(&format!(
+                "- {} {}: {}\n",
+                entry.timestamp.to_rfc3339(),
+                entry.op,
+                entry.summary
+            ));
+        }
+        out
+    }
+
+    /// Persists to disk (overwrite). Creates parent dirs.
+    pub fn save(&self, path: impl AsRef<Path>) -> Result<()> {
+        let path = path.as_ref();
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                fs::create_dir_all(parent).map_err(|source| CoralError::Io {
+                    path: parent.to_path_buf(),
+                    source,
+                })?;
+            }
+        }
+        let content = self.to_string();
+        fs::write(path, content).map_err(|source| CoralError::Io {
+            path: path.to_path_buf(),
+            source,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn log_new_is_empty() {
+        let log = WikiLog::new();
+        assert!(log.entries.is_empty());
+    }
+
+    #[test]
+    fn log_append_increments_entries() {
+        let mut log = WikiLog::new();
+        log.append("bootstrap", "12 pages created");
+        log.append("ingest", "3 pages updated");
+        log.append("lint", "no warnings");
+        assert_eq!(log.entries.len(), 3);
+        let last = log.entries.last().unwrap();
+        assert_eq!(last.op, "lint");
+        assert_eq!(last.summary, "no warnings");
+    }
+
+    #[test]
+    fn log_serialize_roundtrip() {
+        let mut log = WikiLog::new();
+        log.append("bootstrap", "12 pages created");
+        log.append("ingest", "3 pages updated");
+
+        let serialized = log.to_string();
+        let reparsed = WikiLog::parse(&serialized).expect("parse");
+        assert_eq!(reparsed.entries.len(), log.entries.len());
+        for (a, b) in log.entries.iter().zip(reparsed.entries.iter()) {
+            assert_eq!(a.op, b.op);
+            assert_eq!(a.summary, b.summary);
+            // Timestamps compared as rfc3339 strings — the serialize path truncates / re-encodes.
+            assert_eq!(a.timestamp.to_rfc3339(), b.timestamp.to_rfc3339());
+        }
+    }
+
+    #[test]
+    fn log_parse_skips_malformed_lines() {
+        let content = "\
+---
+type: log
+---
+
+# Wiki operation log
+
+- 2026-04-30T18:00:00Z bootstrap: 12 pages created
+- not a timestamp at all
+random nonsense
+";
+        let log = WikiLog::parse(content).expect("parse");
+        assert_eq!(log.entries.len(), 1);
+        assert_eq!(log.entries[0].op, "bootstrap");
+        assert_eq!(log.entries[0].summary, "12 pages created");
+    }
+
+    #[test]
+    fn log_load_returns_empty_when_file_missing() {
+        let bogus = std::path::PathBuf::from("/definitely/does/not/exist/log-xyz-9999.md");
+        let log = WikiLog::load(&bogus).expect("missing file should be Ok empty");
+        assert!(log.entries.is_empty());
+    }
+
+    #[test]
+    fn log_save_creates_parent_dirs() {
+        let dir = TempDir::new().expect("tempdir");
+        let target = dir.path().join("a/b/log.md");
+        let mut log = WikiLog::new();
+        log.append("bootstrap", "12 pages created");
+        log.save(&target).expect("save");
+        assert!(target.exists());
+        let reloaded = WikiLog::load(&target).expect("reload");
+        assert_eq!(reloaded.entries.len(), 1);
+        assert_eq!(reloaded.entries[0].op, "bootstrap");
+    }
+}
