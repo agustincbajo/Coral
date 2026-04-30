@@ -1,5 +1,9 @@
 //! Core types and utilities for Coral.
 
+pub mod error;
+pub mod frontmatter;
+pub mod wikilinks;
+
 /// Returns the crate version (CARGO_PKG_VERSION).
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
