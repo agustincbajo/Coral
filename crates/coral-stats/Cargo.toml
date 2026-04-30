@@ -1,0 +1,15 @@
+[package]
+name = "coral-stats"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Coral stats: wiki health dashboard."
+
+[dependencies]
+coral-core = { path = "../coral-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }

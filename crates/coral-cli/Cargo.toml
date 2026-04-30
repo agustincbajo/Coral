@@ -1,0 +1,23 @@
+[package]
+name = "coral-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Coral CLI — LLM Wiki maintainer."
+
+[[bin]]
+name = "coral"
+path = "src/main.rs"
+
+[dependencies]
+clap = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+coral-core = { path = "../coral-core" }
+coral-lint = { path = "../coral-lint" }
+coral-runner = { path = "../coral-runner" }
+coral-stats = { path = "../coral-stats" }
