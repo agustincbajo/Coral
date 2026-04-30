@@ -1,1 +1,14 @@
 //! Coral runner: wraps `claude` CLI invocations.
+//!
+//! Provides a [`Runner`] trait abstraction so that tests can swap a [`MockRunner`]
+//! for the real [`ClaudeRunner`]. The runner handles invocation of the `claude`
+//! binary in headless `--print` mode with versioned prompts and subagent system
+//! prompts.
+
+pub mod mock;
+pub mod prompt;
+pub mod runner;
+
+pub use mock::MockRunner;
+pub use prompt::PromptBuilder;
+pub use runner::{ClaudeRunner, Prompt, RunOutput, Runner, RunnerError, RunnerResult};
