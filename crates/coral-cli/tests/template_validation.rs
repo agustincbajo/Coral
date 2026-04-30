@@ -73,6 +73,39 @@ fn schema_base_has_required_sections() {
 }
 
 #[test]
+fn composite_actions_present_with_required_keys() {
+    let actions_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.github/actions");
+    for action in ["ingest", "lint", "consolidate"] {
+        let path = actions_root.join(action).join("action.yml");
+        let content = std::fs::read_to_string(&path)
+            .unwrap_or_else(|_| panic!("missing composite action {}", path.display()));
+        let parsed: serde_yaml_ng::Value = serde_yaml_ng::from_str(&content)
+            .unwrap_or_else(|e| panic!("action {action} YAML invalid: {e}"));
+        let map = parsed
+            .as_mapping()
+            .unwrap_or_else(|| panic!("action {action} root must be mapping"));
+        for key in ["name", "description", "inputs", "runs"] {
+            assert!(
+                map.contains_key(serde_yaml_ng::Value::from(key)),
+                "action {action} missing key: {key}"
+            );
+        }
+        // Composite uses
+        let runs = map
+            .get(serde_yaml_ng::Value::from("runs"))
+            .unwrap()
+            .as_mapping()
+            .unwrap();
+        assert_eq!(
+            runs.get(serde_yaml_ng::Value::from("using"))
+                .and_then(|v| v.as_str()),
+            Some("composite"),
+            "action {action} must use composite"
+        );
+    }
+}
+
+#[test]
 fn workflow_yaml_parses() {
     let content = read_md("workflows/wiki-maintenance.yml");
     // YAML 1.1 quirk: GitHub Actions `on:` key can deserialize as boolean `true`

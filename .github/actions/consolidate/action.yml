@@ -1,0 +1,33 @@
+name: 'Coral wiki consolidate'
+description: 'Suggest page merges, retirements, and splits. Outputs a YAML proposal — caller decides whether to apply.'
+inputs:
+  claude_code_oauth_token:
+    description: 'Claude Code OAuth token.'
+    required: true
+  coral_version:
+    description: 'Coral CLI version (git tag or "main"). Default: "main".'
+    required: false
+    default: 'main'
+  wiki_root:
+    description: 'Override the wiki root directory (default: .wiki).'
+    required: false
+    default: '.wiki'
+runs:
+  using: 'composite'
+  steps:
+    - name: Set up Rust
+      uses: dtolnay/rust-toolchain@stable
+    - name: Cache cargo
+      uses: Swatinem/rust-cache@v2
+    - name: Install Coral CLI
+      shell: bash
+      run: |
+        cargo install --locked --git https://github.com/agustincbajo/Coral --branch ${{ inputs.coral_version }} coral-cli
+    - name: Run consolidate via Claude Code
+      uses: anthropics/claude-code-action@v1
+      with:
+        claude_code_oauth_token: ${{ inputs.claude_code_oauth_token }}
+        prompt: |
+          Run `coral --wiki-root "${{ inputs.wiki_root }}" consolidate` and surface the YAML
+          proposal. Use the `wiki-consolidator` subagent. Do not apply changes — the caller
+          handles PR creation.

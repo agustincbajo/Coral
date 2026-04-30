@@ -1,0 +1,34 @@
+name: 'Coral wiki ingest'
+description: 'Run an incremental wiki ingest from .wiki/index.md last_commit to HEAD using Claude Code.'
+inputs:
+  claude_code_oauth_token:
+    description: 'Claude Code OAuth token (typically from secrets.CLAUDE_CODE_OAUTH_TOKEN at repo or org level).'
+    required: true
+  coral_version:
+    description: 'Coral CLI version to install (git tag or "main"). Defaults to "main".'
+    required: false
+    default: 'main'
+  wiki_root:
+    description: 'Override the wiki root directory (default: .wiki).'
+    required: false
+    default: '.wiki'
+runs:
+  using: 'composite'
+  steps:
+    - name: Set up Rust
+      uses: dtolnay/rust-toolchain@stable
+    - name: Cache cargo
+      uses: Swatinem/rust-cache@v2
+    - name: Install Coral CLI
+      shell: bash
+      run: |
+        cargo install --locked --git https://github.com/agustincbajo/Coral --branch ${{ inputs.coral_version }} coral-cli
+    - name: Run wiki ingest via Claude Code
+      uses: anthropics/claude-code-action@v1
+      with:
+        claude_code_oauth_token: ${{ inputs.claude_code_oauth_token }}
+        prompt: |
+          Run `/wiki-ingest` against `${{ inputs.wiki_root }}`. Use the `wiki-bibliotecario` subagent
+          (its definition lives in `.claude/agents/wiki-bibliotecario.md` if present, else load it from
+          `template/agents/wiki-bibliotecario.md`). Stage all changes under `${{ inputs.wiki_root }}/`
+          but do NOT commit — the caller workflow opens a PR.

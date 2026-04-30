@@ -1,0 +1,47 @@
+name: 'Coral wiki lint'
+description: 'Run structural and/or semantic lint on a Coral wiki. Exits 1 if any critical issue.'
+inputs:
+  claude_code_oauth_token:
+    description: 'Required only when mode includes semantic. OAuth token for Claude Code.'
+    required: false
+    default: ''
+  mode:
+    description: 'One of: structural | semantic | all. Default: all.'
+    required: false
+    default: 'all'
+  coral_version:
+    description: 'Coral CLI version (git tag or "main"). Default: "main".'
+    required: false
+    default: 'main'
+  wiki_root:
+    description: 'Override the wiki root directory (default: .wiki).'
+    required: false
+    default: '.wiki'
+  format:
+    description: 'Output format: markdown | json. Default: markdown.'
+    required: false
+    default: 'markdown'
+runs:
+  using: 'composite'
+  steps:
+    - name: Set up Rust
+      uses: dtolnay/rust-toolchain@stable
+    - name: Cache cargo
+      uses: Swatinem/rust-cache@v2
+    - name: Install Coral CLI
+      shell: bash
+      run: |
+        cargo install --locked --git https://github.com/agustincbajo/Coral --branch ${{ inputs.coral_version }} coral-cli
+    - name: Run structural lint
+      if: inputs.mode == 'structural' || inputs.mode == 'all'
+      shell: bash
+      run: |
+        coral --wiki-root "${{ inputs.wiki_root }}" lint --structural --format "${{ inputs.format }}"
+    - name: Run semantic lint via Claude Code
+      if: inputs.mode == 'semantic' || inputs.mode == 'all'
+      uses: anthropics/claude-code-action@v1
+      with:
+        claude_code_oauth_token: ${{ inputs.claude_code_oauth_token }}
+        prompt: |
+          Run `coral --wiki-root "${{ inputs.wiki_root }}" lint --semantic --format ${{ inputs.format }}`
+          and surface the output. Use the `wiki-linter` subagent.
