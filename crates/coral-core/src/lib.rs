@@ -2,9 +2,11 @@
 
 pub mod error;
 pub mod frontmatter;
+pub mod gitdiff;
 pub mod index;
 pub mod log;
 pub mod page;
+pub mod walk;
 pub mod wikilinks;
 
 /// Returns the crate version (CARGO_PKG_VERSION).
