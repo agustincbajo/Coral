@@ -8,6 +8,10 @@ authors.workspace = true
 repository.workspace = true
 description = "Coral CLI — LLM Wiki maintainer."
 
+[lib]
+name = "coral_cli"
+path = "src/lib.rs"
+
 [[bin]]
 name = "coral"
 path = "src/main.rs"

@@ -1,9 +1,8 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use coral_cli::commands;
 use std::path::PathBuf;
 use std::process::ExitCode;
-
-mod commands;
 
 #[derive(Parser, Debug)]
 #[command(
