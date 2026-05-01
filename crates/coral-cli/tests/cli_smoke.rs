@@ -390,6 +390,50 @@ fn export_writes_to_file_when_out_set() {
 }
 
 #[test]
+fn notion_push_without_token_fails() {
+    let tmp = TempDir::new().unwrap();
+    Command::cargo_bin("coral")
+        .unwrap()
+        .current_dir(tmp.path())
+        .arg("init")
+        .assert()
+        .success();
+    Command::cargo_bin("coral")
+        .unwrap()
+        .current_dir(tmp.path())
+        .args(["notion-push", "--database", "db-fake"])
+        .env_remove("NOTION_TOKEN")
+        .assert()
+        .failure()
+        .stderr(contains("NOTION_TOKEN"));
+}
+
+#[test]
+fn notion_push_dry_run_does_not_call_curl() {
+    let tmp = TempDir::new().unwrap();
+    Command::cargo_bin("coral")
+        .unwrap()
+        .current_dir(tmp.path())
+        .arg("init")
+        .assert()
+        .success();
+    Command::cargo_bin("coral")
+        .unwrap()
+        .current_dir(tmp.path())
+        .args([
+            "notion-push",
+            "--token",
+            "fake",
+            "--database",
+            "db-fake",
+            "--dry-run",
+        ])
+        .assert()
+        .success()
+        .stdout(contains("Would POST"));
+}
+
+#[test]
 fn lint_critical_issue_exits_1() {
     let tmp = TempDir::new().unwrap();
     Command::cargo_bin("coral")

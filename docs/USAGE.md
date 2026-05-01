@@ -213,6 +213,33 @@ coral export --format jsonl --out wiki-dataset.jsonl
 
 ---
 
+## `coral notion-push`
+
+Push wiki pages directly to a Notion database. Thin wrapper over `coral export --format notion-json` + curl.
+
+```bash
+coral notion-push [--token <TOKEN>] [--database <DB_ID>] [--type <TYPE>] [--dry-run]
+```
+
+Env vars (alternative to flags):
+- `NOTION_TOKEN` — Notion integration token (required).
+- `CORAL_NOTION_DB` — target database id (required).
+
+Filter by page type with `--type concept --type module` (repeatable).
+
+`--dry-run` prints what would be pushed without calling Notion.
+
+Exit code: `0` if all pages POST cleanly (HTTP 2xx), `1` otherwise.
+
+### Setup
+
+1. Create an internal integration at https://www.notion.so/my-integrations — copy the secret as `NOTION_TOKEN`.
+2. Create a database with these properties: `Name` (title), `Type` (select), `Status` (select), `Confidence` (number).
+3. Share the database with your integration. Copy the database id (32-char hex from the URL).
+4. `export NOTION_TOKEN=secret_…` and `export CORAL_NOTION_DB=…`. Run `coral notion-push --dry-run` to verify.
+
+---
+
 ## CI: Hermes quality gate
 
 Coral ships an **opt-in** composite action that runs an independent LLM validator (Hermes) against wiki/auto-ingest PRs before merge. The validator (a separate subagent from the bibliotecario, on a different model) reads each changed page in the PR, verifies its `sources:` list resolves and the body doesn't contradict the cited files, and posts a PR review (APPROVE or REQUEST CHANGES).

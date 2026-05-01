@@ -73,6 +73,19 @@ fn schema_base_has_required_sections() {
 }
 
 #[test]
+fn schema_base_documents_wikilink_slug_convention() {
+    let content = read_md("schema/SCHEMA.base.md");
+    assert!(
+        content.contains("## Wikilinks"),
+        "SCHEMA.base.md missing `## Wikilinks` section"
+    );
+    assert!(
+        content.contains("slug literally"),
+        "SCHEMA.base.md `## Wikilinks` section must spell out the convention with the phrase \"slug literally\""
+    );
+}
+
+#[test]
 fn composite_actions_present_with_required_keys() {
     let actions_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.github/actions");
     for action in ["ingest", "lint", "consolidate"] {

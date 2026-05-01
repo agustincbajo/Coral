@@ -61,6 +61,20 @@ status: draft         # draft | reviewed | verified | stale | archived | referen
 - Frontmatter inconsistencies between pages of the same type.
 - Wikilinks to nonexistent pages.
 
+## Wikilinks
+
+`[[X]]` resolves to a page where `frontmatter.slug == X`. **Use the slug literally**, NOT the type-prefixed form:
+
+| Correct | Wrong |
+|---|---|
+| `[[order]]` | `[[entities/order]]` |
+| `[[create-order]]` | `[[modules/create-order]]` |
+| `[[idempotency]]` | `[[concepts/idempotency]]` |
+
+The `coral lint --structural` `BrokenWikilink` check matches by slug only — slashes inside `[[...]]` are treated as part of the target name and won't resolve.
+
+You can use `[[slug#anchor]]` for anchors and `[[slug|alias]]` for aliases; both still resolve by the part before `#`/`|`.
+
 ## When in doubt
 
 Ask before inventing. If the rule for a situation isn't here, the SCHEMA is missing that rule — flag it and propose an update.

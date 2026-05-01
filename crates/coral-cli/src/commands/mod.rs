@@ -1,6 +1,7 @@
 pub mod export;
 pub mod init;
 pub mod lint;
+pub mod notion_push;
 pub mod pins;
 pub mod search;
 pub mod stats;

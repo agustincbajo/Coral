@@ -53,6 +53,8 @@ enum Cmd {
     Search(commands::search::SearchArgs),
     /// Export the wiki to Markdown bundle, JSON, Notion API bodies, or JSONL.
     Export(commands::export::ExportArgs),
+    /// Push wiki pages to a Notion database (thin wrapper over `export --format notion-json` + curl).
+    NotionPush(commands::notion_push::NotionPushArgs),
 }
 
 fn main() -> ExitCode {
@@ -72,6 +74,7 @@ fn main() -> ExitCode {
         Cmd::Prompts(args) => commands::prompts::run(args, cli.wiki_root.as_deref()),
         Cmd::Search(args) => commands::search::run(args, cli.wiki_root.as_deref()),
         Cmd::Export(args) => commands::export::run(args, cli.wiki_root.as_deref()),
+        Cmd::NotionPush(args) => commands::notion_push::run(args, cli.wiki_root.as_deref()),
     };
 
     match result {

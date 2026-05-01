@@ -148,6 +148,7 @@ The full reference is in [docs/USAGE.md](docs/USAGE.md).
 | `coral search <q> [--limit N]` | TF-IDF ranking. Top-N pages with score + snippet. | No |
 | `coral sync [--version V] [--remote] [--pin K=V] [--unpin K]` | Lay subagents/prompts/workflow into `<cwd>/template/`. Per-file pinning via `.coral-pins.toml`. | No |
 | `coral export --format <fmt> [--out FILE]` | Export to `markdown-bundle`, `json`, `notion-json`, or `jsonl`. | No |
+| `coral notion-push [--type T]` | Push pages to a Notion database via curl (reads `NOTION_TOKEN` + `CORAL_NOTION_DB`). | No |
 | `coral onboard --profile <P>` | Tailored 5–10 page reading path for a reader profile. | Yes |
 | `coral prompts list` | Show which prompts are local-overridden, embedded, or fallback. | No |
 

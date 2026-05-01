@@ -168,15 +168,19 @@ impl Runner for ClaudeRunner {
     /// `on_chunk` for each line (including its trailing `\n`), and accumulates
     /// the full stdout for the returned `RunOutput`.
     ///
-    /// Note: the `prompt.timeout` field is NOT respected here — once the
-    /// process is spawned we drain stdout until EOF. Adding deadline polling
-    /// requires a separate reader thread; deferred to v0.3.
+    /// Honors `prompt.timeout`: a separate thread reads stdout into an
+    /// `mpsc::channel`, and the main loop waits on `recv_timeout` against the
+    /// remaining deadline. If the deadline elapses, the child is killed and
+    /// `RunnerError::Timeout` is returned.
     fn run_streaming(
         &self,
         prompt: &Prompt,
         on_chunk: &mut dyn FnMut(&str),
     ) -> RunnerResult<RunOutput> {
         use std::io::{BufRead, BufReader, Read};
+        use std::sync::mpsc;
+        use std::thread;
+
         let start = Instant::now();
         let mut cmd = Command::new(&self.binary);
         cmd.arg("--print");
@@ -208,22 +212,58 @@ impl Runner for ClaudeRunner {
             .stdout
             .take()
             .ok_or_else(|| RunnerError::Io(std::io::Error::other("failed to capture stdout")))?;
-        let mut reader = BufReader::new(stdout_handle);
+        let (tx, rx) = mpsc::channel::<String>();
+        let reader_thread = thread::spawn(move || {
+            let mut reader = BufReader::new(stdout_handle);
+            let mut line = String::new();
+            loop {
+                line.clear();
+                match reader.read_line(&mut line) {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        if tx.send(line.clone()).is_err() {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+
         let mut accumulated = String::new();
-        let mut line = String::new();
         loop {
-            line.clear();
-            match reader.read_line(&mut line) {
-                Ok(0) => break,
-                Ok(_) => {
+            let remaining = match prompt.timeout {
+                Some(t) => match t.checked_sub(start.elapsed()) {
+                    Some(r) => r,
+                    None => {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        let _ = reader_thread.join();
+                        return Err(RunnerError::Timeout(t));
+                    }
+                },
+                None => Duration::from_secs(86_400),
+            };
+            match rx.recv_timeout(remaining) {
+                Ok(line) => {
                     on_chunk(&line);
                     accumulated.push_str(&line);
                 }
-                Err(e) => return Err(RunnerError::Io(e)),
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let _ = reader_thread.join();
+                    let t = prompt
+                        .timeout
+                        .expect("must be Some to hit RecvTimeoutError::Timeout");
+                    return Err(RunnerError::Timeout(t));
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
         }
 
         let status = child.wait()?;
+        let _ = reader_thread.join();
         let mut stderr = String::new();
         if let Some(mut h) = child.stderr.take() {
             let _ = h.read_to_string(&mut stderr);
@@ -286,6 +326,35 @@ mod tests {
             })
             .unwrap_err();
         assert!(matches!(err, RunnerError::NonZeroExit { .. }));
+    }
+
+    /// Verifies that a streaming run honors `prompt.timeout` and kills the
+    /// child if the deadline elapses. Uses `/usr/bin/yes` which writes "y\n"
+    /// indefinitely to stdout and ignores its CLI args — perfect substitute
+    /// for a long-running streaming process. Available on macOS + Linux.
+    #[test]
+    fn claude_runner_streaming_timeout_kills_child() {
+        use std::time::Instant;
+        let r = ClaudeRunner::with_binary("/usr/bin/yes");
+        let mut chunks: Vec<String> = Vec::new();
+        let prompt = Prompt {
+            user: "ignored".into(),
+            timeout: Some(Duration::from_millis(200)),
+            ..Default::default()
+        };
+        let start = Instant::now();
+        let err = r
+            .run_streaming(&prompt, &mut |c| chunks.push(c.to_string()))
+            .unwrap_err();
+        let elapsed = start.elapsed();
+        assert!(
+            matches!(err, RunnerError::Timeout(_)),
+            "expected Timeout, got {err:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "should kill within 2s, took {elapsed:?}"
+        );
     }
 
     #[test]
