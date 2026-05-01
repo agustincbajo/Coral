@@ -178,6 +178,41 @@ coral search "<query>" [--limit <N>] [--format markdown|json]
 
 ---
 
+## `coral export`
+
+Export the wiki to various target formats.
+
+```bash
+coral export [--format markdown-bundle|json|notion-json|jsonl] [--out FILE] [--type TYPE]...
+```
+
+- `markdown-bundle` (default): single Markdown file with all pages concatenated. Useful for printing or feeding to another LLM as context.
+- `json`: raw JSON array, one object per page (`slug`, `type`, `confidence`, `sources`, `backlinks`, `body`, ...).
+- `notion-json`: array of Notion API `POST /v1/pages` request bodies, ready to be `curl`-posted to a Notion database. Set `parent.database_id` from your config.
+- `jsonl`: one JSON object per line — `{slug, body, prompt}` — a stub starting point for fine-tuning datasets. v0.3 will add LLM-generated Q/A pairs.
+
+### Notion sync example
+
+```bash
+coral export --format notion-json --out notion-bodies.json
+# Then for each entry:
+jq -c '.[]' notion-bodies.json | while read body; do
+  curl -X POST https://api.notion.com/v1/pages \
+    -H "Authorization: Bearer $NOTION_TOKEN" \
+    -H "Notion-Version: 2022-06-28" \
+    -H "Content-Type: application/json" \
+    -d "$body"
+done
+```
+
+### Fine-tuning dataset
+
+```bash
+coral export --format jsonl --out wiki-dataset.jsonl
+```
+
+---
+
 ## CI: Hermes quality gate
 
 Coral ships an **opt-in** composite action that runs an independent LLM validator (Hermes) against wiki/auto-ingest PRs before merge. The validator (a separate subagent from the bibliotecario, on a different model) reads each changed page in the PR, verifies its `sources:` list resolves and the body doesn't contradict the cited files, and posts a PR review (APPROVE or REQUEST CHANGES).

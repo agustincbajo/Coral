@@ -51,6 +51,8 @@ enum Cmd {
     Prompts(commands::prompts::PromptsArgs),
     /// TF-IDF search over the wiki (v0.2; v0.3 will switch to embeddings).
     Search(commands::search::SearchArgs),
+    /// Export the wiki to Markdown bundle, JSON, Notion API bodies, or JSONL.
+    Export(commands::export::ExportArgs),
 }
 
 fn main() -> ExitCode {
@@ -69,6 +71,7 @@ fn main() -> ExitCode {
         Cmd::Onboard(args) => commands::onboard::run(args, cli.wiki_root.as_deref()),
         Cmd::Prompts(args) => commands::prompts::run(args, cli.wiki_root.as_deref()),
         Cmd::Search(args) => commands::search::run(args, cli.wiki_root.as_deref()),
+        Cmd::Export(args) => commands::export::run(args, cli.wiki_root.as_deref()),
     };
 
     match result {

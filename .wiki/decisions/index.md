@@ -26,6 +26,7 @@ This is a **link-only** page. Every architectural decision lives in `docs/adr/` 
 - [ADR 0004 — Multi-agent development flow](../../docs/adr/0004-multi-agent-development-flow.md) — orchestrator/coder/tester loop.
 - [ADR 0005 — Versioning and sync semantics](../../docs/adr/0005-versioning-and-sync.md) — single SemVer line, SCHEMA stays local.
 - [ADR 0006 — Local semantic search storage](../../docs/adr/0006-local-semantic-search-storage.md) — TF-IDF stub in v0.2, embeddings in v0.3.
+- [ADR 0007 — Unified `coral export` vs per-target commands](../../docs/adr/0007-unified-export-vs-per-target-commands.md) — single `coral export --format X` instead of one subcommand per target.
 
 ## Why link-only
 

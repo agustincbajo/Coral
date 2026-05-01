@@ -329,6 +329,67 @@ fn query_with_unknown_provider_fails() {
 }
 
 #[test]
+fn export_markdown_bundle_runs() {
+    let tmp = TempDir::new().unwrap();
+    Command::cargo_bin("coral")
+        .unwrap()
+        .current_dir(tmp.path())
+        .arg("init")
+        .assert()
+        .success();
+    Command::cargo_bin("coral")
+        .unwrap()
+        .current_dir(tmp.path())
+        .args(["export", "--format", "markdown-bundle"])
+        .assert()
+        .success()
+        .stdout(contains("# Wiki bundle"));
+}
+
+#[test]
+fn export_unknown_format_fails() {
+    let tmp = TempDir::new().unwrap();
+    Command::cargo_bin("coral")
+        .unwrap()
+        .current_dir(tmp.path())
+        .arg("init")
+        .assert()
+        .success();
+    Command::cargo_bin("coral")
+        .unwrap()
+        .current_dir(tmp.path())
+        .args(["export", "--format", "yaml-but-fake"])
+        .assert()
+        .failure()
+        .stderr(contains("unknown format"));
+}
+
+#[test]
+fn export_writes_to_file_when_out_set() {
+    let tmp = TempDir::new().unwrap();
+    Command::cargo_bin("coral")
+        .unwrap()
+        .current_dir(tmp.path())
+        .arg("init")
+        .assert()
+        .success();
+    let out = tmp.path().join("dump.md");
+    Command::cargo_bin("coral")
+        .unwrap()
+        .current_dir(tmp.path())
+        .args([
+            "export",
+            "--format",
+            "markdown-bundle",
+            "--out",
+            out.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    assert!(out.exists());
+}
+
+#[test]
 fn lint_critical_issue_exits_1() {
     let tmp = TempDir::new().unwrap();
     Command::cargo_bin("coral")

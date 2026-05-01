@@ -62,6 +62,9 @@ coral stats
 
 # 5. Pull subagent + workflow updates from a tagged Coral release:
 coral sync --version v0.1.0
+
+# 6. Export the wiki for Notion sync, fine-tune datasets, or cross-LLM context:
+coral export --format markdown-bundle --out wiki.md
 ```
 
 For the full subcommand reference see [docs/USAGE.md](docs/USAGE.md).
