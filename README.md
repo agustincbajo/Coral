@@ -2,17 +2,42 @@
 
 > Karpathy-style LLM Wiki maintainer for Git repos.
 
+[![CI](https://github.com/agustincbajo/Coral/actions/workflows/ci.yml/badge.svg)](https://github.com/agustincbajo/Coral/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/agustincbajo/Coral?display_name=tag)](https://github.com/agustincbajo/Coral/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Tests](https://img.shields.io/badge/tests-214%20passing-brightgreen)](#testing--ci)
+[![Rust](https://img.shields.io/badge/rust-1.85%2B-orange?logo=rust)](rust-toolchain.toml)
+
 Coral compiles your codebase into an interconnected Markdown wiki that an LLM (Claude) maintains as you push code. Each merge updates the wiki incrementally; nightly lint catches contradictions; weekly consolidation prunes redundant pages.
 
 > *"The IDE is Claude Code. The programmer is you + the LLM. The wiki is the living memory of your codebase."*
 
-**Status:** v0.1.0 (alpha).
+---
+
+## Table of contents
+
+- [Why Coral](#why-coral)
+- [Install](#install)
+- [Quickstart (5 minutes)](#quickstart-5-minutes)
+- [Subcommands at a glance](#subcommands-at-a-glance)
+- [The wiki schema](#the-wiki-schema)
+- [CI integration](#ci-integration)
+- [Multi-provider LLM support](#multi-provider-llm-support)
+- [Configuration](#configuration)
+- [Architecture](#architecture)
+- [Performance](#performance)
+- [Testing & CI](#testing--ci)
+- [How Coral itself was built](#how-coral-itself-was-built)
+- [Roadmap](#roadmap)
+- [Contributing](#contributing)
+- [References & related work](#references--related-work)
+- [License](#license)
 
 ---
 
-## Why Coral?
+## Why Coral
 
-The naive approach to giving an LLM context about your repo is a giant `AGENTS.md` file. It grows out of control, eats your context window, drifts out of sync with the code, and provides no auditability.
+The naive approach to giving an LLM context about your repo is a giant `AGENTS.md` file. It grows out of control, eats your context window, drifts out of sync with the code, and provides zero auditability.
 
 Coral implements [Andrej Karpathy's LLM Wiki pattern](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) instead: a constellation of small (<300 line) Markdown pages, each tagged with frontmatter (`slug`, `type`, `confidence`, `sources`, `backlinks`), curated by an LLM bibliotecario subagent under a strict SCHEMA.
 
@@ -23,16 +48,42 @@ Coral implements [Andrej Karpathy's LLM Wiki pattern](https://gist.github.com/ka
 | Lock-in | None | None — plain Markdown in Git |
 | Auditability | Opaque | Each page cites verifiable `sources` |
 | Maintenance | Manual | Incremental ingest on every push |
+| Search | grep | TF-IDF (v0.2) → semantic embeddings (v0.3) |
+
+**What you get out of the box:**
+
+- A `coral` CLI binary (~2.8 MB, statically linked) with 12 subcommands.
+- 4 Claude Code subagents pre-configured (bibliotecario, linter, consolidator, onboarder).
+- 4 versioned prompt templates with `{{var}}` substitution.
+- 5 deterministic structural lint checks + 1 LLM-driven semantic check.
+- 3 composite GitHub Actions for CI: `ingest`, `lint`, `consolidate`.
+- Optional Hermes quality gate: a second LLM independently validates wiki PRs.
+- Multi-provider runner (Claude default, Gemini optional, MockRunner for tests).
+- TF-IDF search and 4 export formats (Markdown bundle, JSON, Notion API bodies, JSONL for fine-tunes).
 
 ---
 
 ## Install
 
+### Prerequisites
+
+- **Rust** 1.85+ (stable). Install via [rustup](https://rustup.rs/).
+- **Git** 2.30+.
+- **Claude Code CLI** (`claude` in `PATH`). Required only for LLM-backed subcommands. See [claude.com/code](https://claude.com/code).
+
+### From a tagged release (recommended)
+
+```bash
+cargo install --locked --git https://github.com/agustincbajo/Coral --tag v0.1.0 coral-cli
+```
+
+### From `main` (latest unreleased)
+
 ```bash
 cargo install --locked --git https://github.com/agustincbajo/Coral coral-cli
 ```
 
-Or build from source:
+### From source
 
 ```bash
 git clone https://github.com/agustincbajo/Coral && cd Coral
@@ -40,74 +91,468 @@ cargo install --locked --path crates/coral-cli
 coral --version    # → coral 0.1.0
 ```
 
-See [docs/INSTALL.md](docs/INSTALL.md) for prerequisites.
+See [docs/INSTALL.md](docs/INSTALL.md) for the full setup including CI tokens and Hermes wiring.
 
 ---
 
-## Quickstart
+## Quickstart (5 minutes)
 
 ```bash
-# 1. In a Git repo:
+# 0. Inside any Git repo:
+cd ~/your-project
+
+# 1. Initialize the wiki (creates .wiki/{SCHEMA, index, log, type subdirs}).
 coral init
-# Creates .wiki/{SCHEMA.md, index.md, log.md, modules/, concepts/, ...}
 
-# 2. Ask the wiki a question (uses your local Claude Code session):
+# 2. Ask the wiki a question — uses your local Claude Code session.
 coral query "How is an order created?"
+# → Streams the answer, citing pages as [[wikilinks]].
 
-# 3. Lint the wiki (structural + optional semantic):
-coral lint --all
+# 3. Lint structural issues (broken links, orphans, low confidence, ...).
+coral lint --structural
+# → Markdown report, exit 1 if any critical issue.
 
-# 4. See wiki health:
+# 4. Look at wiki health stats.
 coral stats
+# → Total pages, by type, by status, confidence avg/min/max, orphan candidates.
 
-# 5. Pull subagent + workflow updates from a tagged Coral release:
-coral sync --version v0.1.0
+# 5. Search the wiki (TF-IDF in v0.2; embeddings coming in v0.3).
+coral search "outbox dispatcher"
+# → Top-N pages with scores + snippets.
 
-# 6. Export the wiki for Notion sync, fine-tune datasets, or cross-LLM context:
+# 6. Export the wiki — Markdown bundle, raw JSON, Notion API bodies, or JSONL.
 coral export --format markdown-bundle --out wiki.md
+coral export --format notion-json --out notion-bodies.json
+
+# 7. Pull subagent / prompt updates from a tagged Coral release.
+coral sync --version v0.1.0
+# Or remote (any tag):
+coral sync --remote --version v0.2.0
 ```
 
-For the full subcommand reference see [docs/USAGE.md](docs/USAGE.md).
+The full reference is in [docs/USAGE.md](docs/USAGE.md).
+
+---
+
+## Subcommands at a glance
+
+| Command | What it does | Needs LLM? |
+|---|---|---|
+| `coral init` | Scaffold `.wiki/` with SCHEMA, index, log, and 9 type subdirs. Idempotent. | No |
+| `coral bootstrap [--apply]` | First-time wiki compilation from `HEAD`. `--dry-run` (default) prints plan; `--apply` writes pages. | Yes |
+| `coral ingest [--from SHA] [--apply]` | Incremental update from `last_commit`. Same dry-run / apply semantics. | Yes |
+| `coral query <q>` | Streamed answer using the wiki as context. Cites slugs as `[[wikilinks]]`. | Yes |
+| `coral lint [--structural\|--semantic\|--all]` | Structural (deterministic) + semantic (LLM) lint. Exit 1 on critical. | Optional |
+| `coral consolidate` | Suggest merges, retirements, splits. Output YAML — caller decides. | Yes |
+| `coral stats [--format markdown\|json]` | Health dashboard. JSON validates against `docs/schemas/stats.schema.json`. | No |
+| `coral search <q> [--limit N]` | TF-IDF ranking. Top-N pages with score + snippet. | No |
+| `coral sync [--version V] [--remote] [--pin K=V] [--unpin K]` | Lay subagents/prompts/workflow into `<cwd>/template/`. Per-file pinning via `.coral-pins.toml`. | No |
+| `coral export --format <fmt> [--out FILE]` | Export to `markdown-bundle`, `json`, `notion-json`, or `jsonl`. | No |
+| `coral onboard --profile <P>` | Tailored 5–10 page reading path for a reader profile. | Yes |
+| `coral prompts list` | Show which prompts are local-overridden, embedded, or fallback. | No |
+
+---
+
+## The wiki schema
+
+Every page in `.wiki/` has YAML frontmatter:
+
+```yaml
+---
+slug: order-creation
+type: module                 # module | concept | entity | flow | decision | synthesis | operation | source | gap | reference
+last_updated_commit: abc123  # 40-char git sha
+confidence: 0.85             # 0.0..1.0, honest self-assessment vs HEAD
+sources:                     # list of paths or URLs that back the claims
+  - src/features/create_order/
+  - docs/adr/0007-saga-orchestration.md
+backlinks:                   # explicit inbound references (the lint also walks bodies)
+  - idempotency
+  - outbox-pattern
+status: draft                # draft | reviewed | verified | stale | archived | reference
+---
+
+# Order creation
+
+The body is plain Markdown with [[wikilinks]] to other pages…
+```
+
+### Page types and when to create them
+
+| Type | Create when |
+|---|---|
+| `modules/` | New vertical slice in `src/features/` (Rust) or equivalent. |
+| `concepts/` | A reusable abstraction appears in ≥ 2 modules. |
+| `entities/` | New domain type with non-trivial invariants. |
+| `flows/` | Multi-step request flow that crosses modules. |
+| `decisions/` | New ADR — link-only entry in `decisions/index.md`. |
+| `synthesis/` | Decision with explicit tradeoffs worth narrating. |
+| `operations/` | Runbook for on-call (deploy, restore, incident triage). |
+| `sources/` | RFC, paper, or external doc referenced by code or ADRs. |
+| `gaps/` | Detected by lint — pages that *should* exist but don't. |
+
+### Rules of gold
+
+1. **HEAD wins.** If the wiki contradicts the code, mark the page `status: stale`.
+2. **A new page links to ≥ 2 existing pages and is linked by ≥ 1.** Otherwise it's an orphan; the lint warns.
+3. **Never delete pages**; archive by moving to `.wiki/_archive/`.
+4. **Decisions are link-only.** `decisions/index.md` references `docs/adr/*` paths; never duplicates content.
+5. **Confidence ≥ 0.7 requires sources.** Lint enforces this.
+6. **`log.md` is append-only.** Never edit; never reorder.
+
+The full SCHEMA is at [`template/schema/SCHEMA.base.md`](template/schema/SCHEMA.base.md). Consumer repos extend it locally — `coral sync` copies it once and never overwrites it.
+
+---
+
+## CI integration
+
+Coral ships 3 reusable composite GitHub Actions consumable by any repo with this single line:
+
+```yaml
+- uses: agustincbajo/Coral/.github/actions/ingest@v0.1.0
+  with:
+    claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+```
+
+### The three actions
+
+| Action | Trigger | What it does |
+|---|---|---|
+| `ingest` | `push` to `main` | Runs `/wiki-ingest` from `last_commit` to `HEAD`. Opens PR `wiki/auto-ingest`. |
+| `lint` | nightly schedule | `coral lint --all` (structural + semantic). Posts findings as a PR comment / issue. |
+| `consolidate` | weekly schedule | Suggests merges/retirements/splits. Opens PR `wiki/consolidate`. |
+
+### Hermes quality gate (opt-in)
+
+```yaml
+- uses: agustincbajo/Coral/.github/actions/validate@v0.1.0
+  with:
+    claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+    pr_number: ${{ github.event.pull_request.number }}
+```
+
+A separate LLM (default `opus`) independently validates that every claim in changed `.wiki/**/*.md` files is backed by the cited `sources:`. Posts `REQUEST CHANGES` if any rejection. Skip threshold via `min_pages_to_validate` (default 5).
+
+### OAuth token setup (once)
+
+```bash
+claude setup-token             # generates an OAuth token tied to your subscription
+# Paste the token at:
+# GitHub → Org → Settings → Secrets → CLAUDE_CODE_OAUTH_TOKEN
+```
+
+All consumer repos in the org inherit the token. No `ANTHROPIC_API_KEY` required.
+
+---
+
+## Multi-provider LLM support
+
+```bash
+coral query "..." --provider claude        # default
+coral query "..." --provider gemini        # uses GeminiRunner
+CORAL_PROVIDER=gemini coral lint --semantic
+```
+
+`coral-runner` exposes a `Runner` trait with three implementations:
+
+- **`ClaudeRunner`** — shells out to `claude --print` (production default).
+- **`GeminiRunner`** — wraps `ClaudeRunner::with_binary("gemini")` with the same flag conventions; useful for cheap nightly lint over high-volume operations.
+- **`MockRunner`** — FIFO scripted responses for tests; captures prompts for assertions.
+
+Future runners (OpenAI, local llama.cpp, etc.) are one new file in `crates/coral-runner/src/`.
+
+---
+
+## Configuration
+
+| File / env var | Purpose |
+|---|---|
+| `.wiki/SCHEMA.md` | Local SCHEMA — extends the base shipped with Coral. Never overwritten by `coral sync`. |
+| `.wiki/index.md` | Catalog + `last_commit` anchor. Maintained automatically. |
+| `.wiki/log.md` | Append-only operation log. |
+| `.coral-pins.toml` | Per-file template version pinning. |
+| `.coral-template-version` | Legacy single-line marker (still written for bcompat). |
+| `prompts/<name>.md` | Local override of an embedded prompt template. |
+| `CORAL_PROVIDER` | LLM provider override (`claude` \| `gemini`). |
+| `CLAUDE_CODE_OAUTH_TOKEN` | OAuth token for Claude Code (required in CI). |
+| `RUST_LOG=coral=debug` | Verbose logging. |
+
+### Per-file pinning example
+
+```toml
+# .coral-pins.toml
+default = "v0.1.0"
+
+[pins]
+"agents/wiki-bibliotecario" = "v0.2.0"
+"prompts/ingest" = "v0.2.0"
+```
+
+`coral sync` reads this file and resolves the version per file. Update via:
+
+```bash
+coral sync --pin "agents/wiki-bibliotecario=v0.2.0"
+coral sync --unpin "agents/wiki-bibliotecario"
+```
+
+### Prompt override priority
+
+```
+<cwd>/prompts/<name>.md   ← highest (local override, survives upgrades)
+template/prompts/<name>.md ← embedded in the binary
+hardcoded fallback const   ← in code; only if both above missing
+```
+
+`coral prompts list` shows which one is in effect for each known prompt name.
 
 ---
 
 ## Architecture
 
-5 Rust crates in a Cargo workspace:
+### Workspace layout
 
-- **`coral-cli`** — the `coral` binary; clap-derived CLI dispatcher.
-- **`coral-core`** — frontmatter, wikilinks, page model, index, log, gitdiff, parallel walk.
-- **`coral-lint`** — structural checks (broken links, orphans, low confidence) + semantic lint via runner.
-- **`coral-runner`** — `Runner` trait + `ClaudeRunner` (shells `claude --print`) + `MockRunner`.
-- **`coral-stats`** — wiki health dashboard (markdown + JSON).
-
-Plus:
-- **`template/`** — embedded skill bundle (4 subagents, 4 slash commands, 4 prompts, base SCHEMA, GitHub workflow). Distributed via `include_dir!` and laid out by `coral sync`.
-- **`.github/actions/`** — composite actions (`ingest`, `lint`, `consolidate`) consumable by external repos via `uses: agustincbajo/Coral/.github/actions/X@v0.1.0`.
-
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and the ADRs in [docs/adr/](docs/adr/) for design decisions.
-
----
-
-## Tests
-
-```bash
-cargo test --workspace                  # 150 unit + integration tests
-cargo test --workspace -- --ignored     # 3 ignored tests requiring real `claude` CLI / git
-cargo clippy --workspace --all-targets -- -D warnings
-cargo fmt --all --check
+```
+coral/
+├── crates/
+│   ├── coral-cli/      ← bin: `coral`. Clap dispatcher.
+│   ├── coral-core/     ← types + parsing (frontmatter, wikilinks, page,
+│   │                     index, log, gitdiff, walk, search). Pure Rust,
+│   │                     zero LLM coupling.
+│   ├── coral-lint/     ← LintReport + 5 structural checks + semantic via runner.
+│   ├── coral-runner/   ← Runner trait + ClaudeRunner + GeminiRunner +
+│   │                     MockRunner + PromptBuilder.
+│   └── coral-stats/    ← StatsReport + JsonSchema + Markdown / JSON renderers.
+│
+├── template/           ← embedded via include_dir!; surfaced by `coral sync`.
+│   ├── agents/         ← 4 Claude Code subagents.
+│   ├── commands/       ← 4 slash commands.
+│   ├── prompts/        ← 4 versioned prompt templates with {{var}} placeholders.
+│   ├── schema/SCHEMA.base.md ← base contract for the bibliotecario.
+│   └── workflows/wiki-maintenance.yml ← 3-job CI template.
+│
+├── .github/
+│   ├── actions/{ingest,lint,consolidate,validate}/action.yml
+│   └── workflows/{ci.yml,release.yml}
+│
+├── docs/
+│   ├── INSTALL.md, USAGE.md, ARCHITECTURE.md, PERF.md
+│   ├── adr/0001..0007*.md          ← architecture decisions
+│   └── schemas/stats.schema.json   ← JSON schema for `coral stats --format json`
+│
+└── .wiki/                          ← Coral uses Coral; self-hosted dogfooding
 ```
 
-CI runs all of the above on every push to `main` and every PR.
+### Data flow
+
+```
+        ┌─────────────────────────────────────────────────┐
+        │                  Your Git repo                   │
+        │   src/  docs/  Cargo.toml  …                     │
+        │   .wiki/  ←─── SCHEMA.md, index.md, log.md       │
+        │           ←─── modules/, concepts/, entities/,   │
+        │                flows/, decisions/, synthesis/,   │
+        │                operations/, sources/, gaps/      │
+        └────────────────────┬─────────────────────────────┘
+                             │  coral CLI
+                             ▼
+        ┌─────────────────────────────────────────────────┐
+        │  coral-cli                                       │
+        │                                                  │
+        │  init/sync/lint --structural/stats/search/export │ ← no LLM
+        │                                                  │
+        │  bootstrap/ingest/query/consolidate/onboard +    │ ← LLM via Runner
+        │  lint --semantic                                 │
+        │                       │                          │
+        │                       ▼                          │
+        │              ┌──────────────┐                    │
+        │              │  Runner      │◄──── MockRunner    │
+        │              │  trait       │      (tests)       │
+        │              └──────┬───────┘                    │
+        │                     │                            │
+        │            ┌────────┴───────┐                    │
+        │            ▼                ▼                    │
+        │     ClaudeRunner     GeminiRunner                │
+        │     (prod default)   (--provider gemini)         │
+        └─────────────────────────────────────────────────┘
+```
+
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the deep dive and the 7 ADRs in [docs/adr/](docs/adr/) for design rationale.
 
 ---
 
 ## Performance
 
-Coral aims for sub-100 ms cold-start on the structural commands (`init`, `lint --structural`, `stats`, `sync`). Methodology, baseline numbers, profiling tips, and the release-profile config live in [docs/PERF.md](docs/PERF.md).
+Coral aims for sub-100 ms cold-start on the structural commands.
+
+| Operation | Wiki size | Time (debug) | Time (release) |
+|---|---|---|---|
+| `coral init` | empty | ~30 ms | ~10 ms |
+| `coral lint --structural` | 14 pages | ~80 ms | ~25 ms |
+| `coral stats` | 14 pages | ~70 ms | ~20 ms |
+| `coral sync` | embedded template | ~40 ms | ~15 ms |
+| `coral search` | 14 pages | <10 ms | <5 ms |
+
+Release profile: `lto = "thin"`, `codegen-units = 1`, `strip = true`, `panic = "abort"`. Binary 2.8 MB stripped.
+
+Methodology, hot paths, and profiling tips in [docs/PERF.md](docs/PERF.md).
+
+---
+
+## Testing & CI
+
+```bash
+cargo test --workspace                        # 214 tests passing
+cargo test --workspace -- --ignored           # 4 ignored (real claude/git/gemini smoke)
+cargo clippy --workspace --all-targets -- -D warnings
+cargo fmt --all --check
+```
+
+### Test breakdown
+
+| Crate / target | Tests |
+|---|---|
+| `coral-core` | 76 + 2 ignored (real-git smoke) |
+| `coral-lint` | 25 |
+| `coral-runner` | 18 + 1 ignored (real-claude smoke) |
+| `coral-stats` | 14 |
+| `coral-cli` (unit) | 41 |
+| `coral-cli` (integration: cli_smoke) | 24 |
+| `coral-cli` (e2e: full_lifecycle, multi_repo, query_cycle) | 8 |
+| `coral-cli` (template_validation) | 8 |
+| **Total** | **214 + 4 ignored** |
+
+### CI pipeline
+
+- **`ci.yml`** runs on every push to `main` and PR: fmt + clippy + test.
+- **`release.yml`** runs on tag push (`v*.*.*`): builds Linux x86_64 + macOS x86_64+aarch64, strips binaries, uploads `.tar.gz` + `.sha256` to a GitHub Release.
+
+---
+
+## How Coral itself was built
+
+Coral was built using a **3-role multi-agent loop** — and it's documented in [ADR 0004](docs/adr/0004-multi-agent-development-flow.md).
+
+```
+Orchestrator: define spec → Coder: implement → Tester: verify
+                                                    │
+                                ┌── pass ──► Orchestrator commits + advances
+                                │
+                                └── fail ──► Orchestrator forwards log to Coder → loop
+```
+
+- **Orchestrator** (Claude in the foreground) defines per-phase specs, manages the coder ↔ tester loop, handles commits and pushes. **Writes zero production code.**
+- **Coder agent** (`general-purpose` subagent) receives a spec, implements code, runs `cargo build` to confirm it compiles. **Does not approve.**
+- **Tester agent** runs `cargo test/clippy/fmt --check`. **Does not edit.** Reports pass/fail + log of failures.
+
+Coral v0.1.0 shipped through 9 sequential phases (A–I), each landing as one atomic, green commit. Coral v0.2.0 closed 14 of 15 issues across 6 batches the same way: every commit was green from the first attempt for 5/6 batches, with one batch needing a single mechanical fmt + clippy fix.
+
+---
+
+## Roadmap
+
+### v0.1.0 — initial release (April 2026) ✅
+
+- Cargo workspace with 5 crates.
+- 10 subcommands declared (5 LLM-using, 5 deterministic).
+- Embedded skill bundle: subagents, prompts, SCHEMA, workflow.
+- 3 composite GH actions.
+- 150 tests + 3 ignored.
+
+### v0.2.0 — current (closed 14/15 issues) ✅
+
+| # | Title | Status |
+|---|---|---|
+| #1 | bootstrap/ingest write pages | ✅ — `--apply` flag |
+| #2 | walk skips top-level system files | ✅ |
+| #3 | CHANGELOG + cargo-release | ✅ |
+| #4 | Streaming `coral query` | ✅ |
+| #5 | `coral search` (TF-IDF) | ✅ |
+| #6 | Hermes quality gate | ✅ |
+| #7 | Local prompt overrides | ✅ |
+| #8 | GeminiRunner (multi-provider) | ✅ |
+| #9 | Notion sync (via `coral export --format notion-json`) | ✅ |
+| #10 | `coral sync --remote` | ✅ |
+| #11 | Per-file version pinning (`.coral-pins.toml`) | ✅ |
+| #12 | `orchestra-ingest` consumer repo | 🚫 deferred (separate-repo follow-up) |
+| #13 | Fine-tune dataset (`coral export --format jsonl`) | ✅ |
+| #14 | Perf docs + release-profile tweaks | ✅ |
+| #15 | Stats coverage + JSON schema | ✅ |
+
+### v0.3.0 — planned
+
+- **Real Q/A pairs** in `coral export --format jsonl` (LLM-driven).
+- **Embeddings-backed search** via `sqlite-vec` (replace TF-IDF). See [ADR 0006](docs/adr/0006-local-semantic-search-storage.md).
+- **`coral notion-push`** thin wrapper over `export --format notion-json` + curl.
+- **mtime-cached frontmatter parsing** for faster `lint`/`stats` on large wikis.
+- **Streaming timeout** in `ClaudeRunner::run_streaming`.
+- **`orchestra-ingest`** reference consumer repo (deferred from v0.2 #12).
+
+---
+
+## Contributing
+
+### Development workflow
+
+```bash
+git clone https://github.com/agustincbajo/Coral && cd Coral
+cargo build --workspace
+cargo test --workspace
+```
+
+Before pushing:
+
+```bash
+cargo fmt --all
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+```
+
+### Conventions
+
+- **Edition 2024**, `rust-version = 1.85`. Pinned in `rust-toolchain.toml`.
+- **Workspace deps** in the root `Cargo.toml` `[workspace.dependencies]`. Crates use `workspace = true`.
+- **No `unwrap()` / `panic!` in production code.** OK in tests.
+- **No `unsafe`.** If you think you need it, file an issue first.
+- **Errors via `thiserror` (libraries) or `anyhow` (binary).**
+- **Tests inline** with `#[cfg(test)] mod tests`. Integration tests in `tests/` directories.
+- **Commit messages** follow [Conventional Commits](https://www.conventionalcommits.org/). Footer: `Closes #N` to auto-close issues.
+
+### Releasing
+
+See [`.wiki/operations/release-checklist.md`](.wiki/operations/release-checklist.md). Short version:
+
+```bash
+cargo release X.Y.Z   # uses release.toml; rotates CHANGELOG, bumps versions, tags, pushes
+```
+
+GitHub Actions handle the binary builds + Release creation.
+
+### Reporting bugs
+
+Open an issue with:
+
+- Coral version (`coral --version`).
+- Rust version (`rustc --version`).
+- OS + arch.
+- Minimal reproduction (a tempdir + a sequence of commands).
+
+---
+
+## References & related work
+
+- **Karpathy's LLM Wiki gist** (3 Apr 2026) — [karpathy/442a6bf555914893e9891c11519de94f](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f). The canonical reference.
+- **Yysun, *Bringing the LLM Wiki Idea to a Codebase*** (DEV.to, 12 Apr 2026) — translation to a software repo, with a `git-wiki` skill.
+- **Rohit Gangupantulu, *LLM Wiki v2*** ([gist](https://gist.github.com/rohitg00/2067ab416f7bbe447c1977edaaa681e2)) — extension with hooks, lifecycle, retention decay.
+- **`cablate/llm-atomic-wiki`** — atom layer + two-layer lint + topic branches.
+- **`NicholasSpisak/second-brain`** — wizard + 4 skills + 3 slash commands (the base Pau Berenguer's video uses).
+- **`Astro-Han/karpathy-llm-wiki`** — packaged Agent Skill compatible with Claude Code, Codex, Cursor.
+- **`Pratiyush/llm-wiki`** — full implementation with 16 lint rules + 5-state lifecycle + Auto-Dream consolidation.
+- **DAIR.AI Academy** — pedagogical analysis with the 4-phase interactive diagram.
+- **VentureBeat (Apr 2026)** — *Karpathy shares 'LLM Knowledge Base' architecture that bypasses RAG with an evolving markdown library*.
+- **Pau Berenguer (10 Apr 2026)** — *Claude Code Will Never Forget Anything Again* — the consumer-side Obsidian video that spawned the broader pattern.
 
 ---
 
 ## License
 
-MIT © 2026 Agustín Bajo
+MIT © 2026 Agustín Bajo. See [LICENSE](LICENSE).
