@@ -123,6 +123,8 @@ coral search "outbox dispatcher"
 # 6. Export the wiki — Markdown bundle, raw JSON, Notion API bodies, or JSONL.
 coral export --format markdown-bundle --out wiki.md
 coral export --format notion-json --out notion-bodies.json
+# JSONL with LLM-generated Q/A pairs (3-5 per page) for fine-tuning:
+coral export --format jsonl --qa --out wiki-qa.jsonl
 
 # 7. Pull subagent / prompt updates from a tagged Coral release.
 coral sync --version v0.1.0
@@ -147,7 +149,7 @@ The full reference is in [docs/USAGE.md](docs/USAGE.md).
 | `coral stats [--format markdown\|json]` | Health dashboard. JSON validates against `docs/schemas/stats.schema.json`. | No |
 | `coral search <q> [--limit N]` | TF-IDF ranking. Top-N pages with score + snippet. | No |
 | `coral sync [--version V] [--remote] [--pin K=V] [--unpin K]` | Lay subagents/prompts/workflow into `<cwd>/template/`. Per-file pinning via `.coral-pins.toml`. | No |
-| `coral export --format <fmt> [--out FILE]` | Export to `markdown-bundle`, `json`, `notion-json`, or `jsonl`. | No |
+| `coral export --format <fmt> [--out FILE] [--qa]` | Export to `markdown-bundle`, `json`, `notion-json`, or `jsonl`. With `--qa`, jsonl emits LLM-generated Q/A pairs. | Optional |
 | `coral notion-push [--type T]` | Push pages to a Notion database via curl (reads `NOTION_TOKEN` + `CORAL_NOTION_DB`). | No |
 | `coral onboard --profile <P>` | Tailored 5–10 page reading path for a reader profile. | Yes |
 | `coral prompts list` | Show which prompts are local-overridden, embedded, or fallback. | No |

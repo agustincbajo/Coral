@@ -183,13 +183,13 @@ coral search "<query>" [--limit <N>] [--format markdown|json]
 Export the wiki to various target formats.
 
 ```bash
-coral export [--format markdown-bundle|json|notion-json|jsonl] [--out FILE] [--type TYPE]...
+coral export [--format markdown-bundle|json|notion-json|jsonl] [--out FILE] [--type TYPE]... [--qa] [--model M] [--provider claude|gemini]
 ```
 
 - `markdown-bundle` (default): single Markdown file with all pages concatenated. Useful for printing or feeding to another LLM as context.
 - `json`: raw JSON array, one object per page (`slug`, `type`, `confidence`, `sources`, `backlinks`, `body`, ...).
 - `notion-json`: array of Notion API `POST /v1/pages` request bodies, ready to be `curl`-posted to a Notion database. Set `parent.database_id` from your config.
-- `jsonl`: one JSON object per line — `{slug, body, prompt}` — a stub starting point for fine-tuning datasets. v0.3 will add LLM-generated Q/A pairs.
+- `jsonl`: one JSON object per line — `{slug, body, prompt}` (stub) or `{slug, prompt, completion}` (with `--qa`) — a starting point for fine-tuning datasets.
 
 ### Notion sync example
 
@@ -208,8 +208,17 @@ done
 ### Fine-tuning dataset
 
 ```bash
+# Stub prompts (one per page, no LLM call):
 coral export --format jsonl --out wiki-dataset.jsonl
+
+# LLM-driven Q/A pairs (3-5 per page):
+coral export --format jsonl --qa --out wiki-qa.jsonl
+
+# Cheap batch via Gemini:
+coral export --format jsonl --qa --provider gemini --model gemini-2.5-flash --out wiki-qa.jsonl
 ```
+
+With `--qa`, each page is sent to the runner with the `qa-pairs` system prompt (override at `<cwd>/prompts/qa-pairs.md`). The model emits one JSON line per pair (`{"prompt":"...","completion":"..."}`); Coral tags each with the page slug and concatenates the result. Malformed lines are skipped with a warning.
 
 ---
 

@@ -4,9 +4,13 @@
 //! `SCHEMA.md` / `README.md` / `index.md` / `log.md` operator files.
 //! Symlinks are NOT followed.
 
+use crate::cache::WalkCache;
 use crate::error::Result;
+use crate::frontmatter::body_after_frontmatter;
 use crate::page::Page;
 use rayon::prelude::*;
+use std::collections::HashSet;
+use std::fs;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
@@ -83,21 +87,82 @@ pub fn list_page_paths(root: impl AsRef<Path>) -> Result<Vec<PathBuf>> {
 /// On any per-file error, the file is logged via `tracing::warn!` and skipped;
 /// the function returns the successful pages. The order is deterministic
 /// (sorted by path).
+///
+/// Reads the on-disk `WalkCache` (`<root>/.coral-cache.json`) and skips YAML
+/// parsing for files whose mtime matches a cached entry. After the walk,
+/// the cache is rebuilt with live entries and saved (best-effort — a write
+/// failure here is logged but doesn't fail the walk).
 pub fn read_pages(root: impl AsRef<Path>) -> Result<Vec<Page>> {
+    let root = root.as_ref();
     let paths = list_page_paths(root)?;
 
-    let mut pages: Vec<Page> = paths
+    let cache_in = WalkCache::load(root).unwrap_or_default();
+
+    // Build (page, mtime, rel_path) tuples in parallel. The cache fast-path
+    // skips YAML deserialization when the mtime matches; otherwise we fall
+    // back to a full Page::from_content parse.
+    let parsed: Vec<Option<(Page, i64, String)>> = paths
         .par_iter()
-        .filter_map(|p| match Page::from_file(p) {
-            Ok(page) => Some(page),
-            Err(e) => {
-                tracing::warn!(path = %p.display(), error = %e, "skipping page");
-                None
+        .map(|p| {
+            let rel = match p.strip_prefix(root) {
+                Ok(r) => r.to_string_lossy().into_owned(),
+                Err(_) => p.to_string_lossy().into_owned(),
+            };
+            let mtime = WalkCache::mtime_of(p);
+            let content = match fs::read_to_string(p) {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!(path = %p.display(), error = %e, "skipping page");
+                    return None;
+                }
+            };
+            // Cache fast-path: same mtime → reuse parsed frontmatter, only re-extract body.
+            if let Some(mt) = mtime
+                && let Some(fm) = cache_in.get(&rel, mt)
+            {
+                let body = body_after_frontmatter(&content);
+                let page = Page {
+                    path: p.clone(),
+                    frontmatter: fm.clone(),
+                    body,
+                };
+                return Some((page, mt, rel));
+            }
+            // Slow path: full parse.
+            match Page::from_content(&content, p.clone()) {
+                Ok(page) => Some((page, mtime.unwrap_or(0), rel)),
+                Err(e) => {
+                    tracing::warn!(path = %p.display(), error = %e, "skipping page");
+                    None
+                }
             }
         })
         .collect();
 
-    pages.sort_by(|a, b| a.path.cmp(&b.path));
+    // Drop the failed entries (None), keep (page, mtime, rel) for cache rebuild.
+    let mut live: Vec<(Page, i64, String)> = parsed.into_iter().flatten().collect();
+    live.sort_by(|a, b| a.0.path.cmp(&b.0.path));
+
+    // Rebuild a fresh cache from live entries; this naturally prunes anything
+    // that disappeared since the last walk, and refreshes mtimes.
+    let mut cache_out = WalkCache {
+        version: WalkCache::SCHEMA_VERSION,
+        ..WalkCache::default()
+    };
+    let mut live_paths: HashSet<String> = HashSet::with_capacity(live.len());
+    for (page, mtime, rel) in &live {
+        if *mtime > 0 {
+            cache_out.insert(rel.clone(), *mtime, page.frontmatter.clone());
+            live_paths.insert(rel.clone());
+        }
+    }
+    let _ = cache_out.prune(&live_paths);
+    if let Err(e) = cache_out.save(root) {
+        // Best-effort: warn but don't fail the walk.
+        tracing::warn!(error = %e, "failed to persist .coral-cache.json");
+    }
+
+    let pages: Vec<Page> = live.into_iter().map(|(p, _, _)| p).collect();
     Ok(pages)
 }
 

@@ -434,6 +434,43 @@ fn notion_push_dry_run_does_not_call_curl() {
 }
 
 #[test]
+fn lint_writes_cache_file() {
+    let tmp = TempDir::new().unwrap();
+    Command::cargo_bin("coral")
+        .unwrap()
+        .current_dir(tmp.path())
+        .arg("init")
+        .assert()
+        .success();
+    Command::cargo_bin("coral")
+        .unwrap()
+        .current_dir(tmp.path())
+        .arg("lint")
+        .assert()
+        .success();
+    let cache = tmp.path().join(".wiki/.coral-cache.json");
+    assert!(cache.exists(), "expected walk cache at {}", cache.display());
+}
+
+#[test]
+fn init_writes_wiki_gitignore() {
+    let tmp = TempDir::new().unwrap();
+    Command::cargo_bin("coral")
+        .unwrap()
+        .current_dir(tmp.path())
+        .arg("init")
+        .assert()
+        .success();
+    let gi = tmp.path().join(".wiki/.gitignore");
+    assert!(gi.exists(), "expected .wiki/.gitignore at {}", gi.display());
+    let content = std::fs::read_to_string(&gi).unwrap();
+    assert!(
+        content.contains(".coral-cache.json"),
+        "expected .coral-cache.json in .gitignore: {content}"
+    );
+}
+
+#[test]
 fn lint_critical_issue_exits_1() {
     let tmp = TempDir::new().unwrap();
     Command::cargo_bin("coral")

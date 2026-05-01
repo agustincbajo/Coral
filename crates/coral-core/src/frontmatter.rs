@@ -143,6 +143,27 @@ pub fn parse(content: &str, path: impl Into<PathBuf>) -> Result<(Frontmatter, St
     Ok((fm, body))
 }
 
+/// Like `parse()`, but skips YAML deserialization and just returns the body.
+/// Used by the walk cache fast-path when the frontmatter was already parsed
+/// in a previous invocation. Returns the empty string if the frontmatter
+/// block is unterminated; returns the original content if there's no
+/// frontmatter at all.
+pub fn body_after_frontmatter(content: &str) -> String {
+    if !content.starts_with("---\n") {
+        return content.to_string();
+    }
+    let after_open = &content[4..];
+    if let Some(close_pos) = after_open.find("\n---\n") {
+        let body_start = 4 + close_pos + 5;
+        let mut body = &content[body_start..];
+        if body.starts_with('\n') {
+            body = &body[1..];
+        }
+        return body.to_string();
+    }
+    String::new()
+}
+
 /// Serializes a Frontmatter + body back into a complete Markdown document.
 /// Output format: `---\n{yaml}---\n\n{body}` (single blank line between FM and body).
 /// The body is appended verbatim — caller controls trailing newline.
@@ -389,6 +410,35 @@ content here
     fn confidence_try_new_accepts_zero_and_one() {
         assert_eq!(Confidence::try_new(0.0).expect("zero ok").as_f64(), 0.0);
         assert_eq!(Confidence::try_new(1.0).expect("one ok").as_f64(), 1.0);
+    }
+
+    #[test]
+    fn body_after_frontmatter_strips_canonical_separator() {
+        let content = "\
+---
+slug: x
+type: module
+---
+
+body line 1
+body line 2
+";
+        let body = body_after_frontmatter(content);
+        assert_eq!(body, "body line 1\nbody line 2\n");
+    }
+
+    #[test]
+    fn body_after_frontmatter_returns_full_content_when_no_frontmatter() {
+        let content = "# Just a doc\n\nNo YAML at top.\n";
+        let body = body_after_frontmatter(content);
+        assert_eq!(body, content);
+    }
+
+    #[test]
+    fn body_after_frontmatter_returns_empty_when_unterminated() {
+        let content = "---\nslug: x\nbody started\nno closing fence ever\n";
+        let body = body_after_frontmatter(content);
+        assert_eq!(body, "");
     }
 
     #[test]

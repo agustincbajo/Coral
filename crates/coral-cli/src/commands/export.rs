@@ -5,6 +5,7 @@ use anyhow::{Context, Result};
 use clap::Args;
 use coral_core::page::Page;
 use coral_core::walk;
+use coral_runner::{Prompt, RunOutput, Runner, RunnerError, RunnerResult};
 use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -21,9 +22,42 @@ pub struct ExportArgs {
     /// If empty, exports all types.
     #[arg(long = "type", value_name = "TYPE")]
     pub types: Vec<String>,
+    /// Generate LLM-driven Q/A pairs per page (jsonl format only). v0.3.
+    #[arg(long)]
+    pub qa: bool,
+    /// Override model name passed to the runner (e.g. "haiku", "gemini-2.5-flash").
+    #[arg(long)]
+    pub model: Option<String>,
+    /// LLM provider used by --qa: claude (default) | gemini. Or set CORAL_PROVIDER env.
+    #[arg(long)]
+    pub provider: Option<String>,
 }
 
 pub fn run(args: ExportArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
+    if args.qa {
+        let provider = super::runner_helper::resolve_provider(args.provider.as_deref())
+            .map_err(|e| anyhow::anyhow!(e))?;
+        let runner = super::runner_helper::make_runner(provider);
+        return run_with_runner(args, wiki_root, runner.as_ref());
+    }
+    run_with_runner(args, wiki_root, &NoopRunner)
+}
+
+/// Runner used as a placeholder when `--qa` isn't set. Calling it indicates
+/// a misuse — every code path that needs a runner must set `args.qa = true`.
+#[derive(Debug, Default)]
+struct NoopRunner;
+impl Runner for NoopRunner {
+    fn run(&self, _prompt: &Prompt) -> RunnerResult<RunOutput> {
+        Err(RunnerError::NotFound)
+    }
+}
+
+pub fn run_with_runner(
+    args: ExportArgs,
+    wiki_root: Option<&Path>,
+    runner: &dyn Runner,
+) -> Result<ExitCode> {
     let root = wiki_root
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from(".wiki"));
@@ -51,7 +85,13 @@ pub fn run(args: ExportArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
         "markdown-bundle" => render_markdown_bundle(&pages),
         "json" => render_json(&pages)?,
         "notion-json" => render_notion_json(&pages)?,
-        "jsonl" => render_jsonl(&pages)?,
+        "jsonl" => {
+            if args.qa {
+                render_jsonl_with_qa(&pages, runner, args.model.as_deref())?
+            } else {
+                render_jsonl(&pages)?
+            }
+        }
         other => anyhow::bail!(
             "unknown format: {other}. Choose: markdown-bundle | json | notion-json | jsonl"
         ),
@@ -184,7 +224,7 @@ fn render_notion_json(pages: &[Page]) -> Result<String> {
 
 fn render_jsonl(pages: &[Page]) -> Result<String> {
     // One JSON object per line. v0.2 ships raw page data with a stub prompt.
-    // v0.3 will use the runner to generate Q/A pairs for fine-tuning.
+    // Pass --qa for LLM-driven Q/A pairs (v0.3+).
     let mut out = String::new();
     for p in pages {
         let line = json!({
@@ -194,6 +234,81 @@ fn render_jsonl(pages: &[Page]) -> Result<String> {
         });
         out.push_str(&serde_json::to_string(&line)?);
         out.push('\n');
+    }
+    Ok(out)
+}
+
+/// Hardcoded fallback used when neither a local override nor an embedded
+/// `template/prompts/qa-pairs.md` is available.
+pub const QA_FALLBACK: &str = "\
+You are a fine-tuning dataset generator. For the wiki page below, emit \
+3 to 5 question/answer pairs that an engineer might ask about its content.
+
+Output rules — IMPORTANT:
+- One JSON object per line, no fences, no prose, no commentary.
+- Each line must be valid JSON with EXACTLY two keys: \"prompt\" and \"completion\".
+- The \"prompt\" is the question; the \"completion\" is the answer (terse but complete).
+- Do NOT include any other keys. Do NOT wrap the lines in an array.
+- Do NOT prefix or suffix with markdown, headings, or explanations.
+";
+
+fn render_jsonl_with_qa(
+    pages: &[Page],
+    runner: &dyn Runner,
+    model: Option<&str>,
+) -> Result<String> {
+    let template = super::prompt_loader::load_or_fallback("qa-pairs", QA_FALLBACK);
+    let mut out = String::new();
+    for p in pages {
+        let user_prompt = format!(
+            "<page slug=\"{}\" type=\"{}\">\n{}\n</page>",
+            p.frontmatter.slug,
+            page_type_name(&p.frontmatter),
+            p.body.trim()
+        );
+        let prompt = Prompt {
+            system: Some(template.content.clone()),
+            user: user_prompt,
+            model: model.map(String::from),
+            ..Default::default()
+        };
+        let result = match runner.run(&prompt) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(slug = %p.frontmatter.slug, error = %e, "qa runner failed; skipping page");
+                continue;
+            }
+        };
+
+        for raw_line in result.stdout.lines() {
+            let line = raw_line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let value: serde_json::Value = match serde_json::from_str(line) {
+                Ok(v) => v,
+                Err(_) => {
+                    tracing::warn!(slug = %p.frontmatter.slug, line, "skipping malformed qa line");
+                    continue;
+                }
+            };
+            let prompt_field = value.get("prompt").and_then(|v| v.as_str());
+            let completion_field = value.get("completion").and_then(|v| v.as_str());
+            let (q, a) = match (prompt_field, completion_field) {
+                (Some(q), Some(a)) => (q, a),
+                _ => {
+                    tracing::warn!(slug = %p.frontmatter.slug, line, "qa line missing prompt/completion");
+                    continue;
+                }
+            };
+            let tagged = json!({
+                "slug": p.frontmatter.slug,
+                "prompt": q,
+                "completion": a,
+            });
+            out.push_str(&serde_json::to_string(&tagged)?);
+            out.push('\n');
+        }
     }
     Ok(out)
 }
@@ -276,5 +391,60 @@ mod tests {
         let pages = vec![page("x", PageType::Module, "body")];
         let out = render_jsonl(&pages).unwrap();
         assert!(out.contains("Tell me about [[x]]"));
+    }
+
+    #[test]
+    fn qa_jsonl_uses_runner_per_page_and_tags_slug() {
+        use coral_runner::MockRunner;
+        let pages = vec![
+            page("a", PageType::Module, "body a"),
+            page("b", PageType::Concept, "body b"),
+        ];
+        let runner = MockRunner::new();
+        runner.push_ok(
+            "{\"prompt\":\"q1\",\"completion\":\"a1\"}\n{\"prompt\":\"q2\",\"completion\":\"a2\"}\n",
+        );
+        runner.push_ok("{\"prompt\":\"q3\",\"completion\":\"a3\"}\n");
+
+        let out = render_jsonl_with_qa(&pages, &runner, Some("haiku")).unwrap();
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 3, "expected 2+1 pairs, got: {out}");
+        let first: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(first["slug"], "a");
+        assert_eq!(first["prompt"], "q1");
+        assert_eq!(first["completion"], "a1");
+        let second: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
+        assert_eq!(second["slug"], "a");
+        let third: serde_json::Value = serde_json::from_str(lines[2]).unwrap();
+        assert_eq!(third["slug"], "b");
+        assert_eq!(third["prompt"], "q3");
+
+        let calls = runner.calls();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].model.as_deref(), Some("haiku"));
+        assert!(calls[0].user.contains("slug=\"a\""));
+        assert!(calls[1].user.contains("slug=\"b\""));
+    }
+
+    #[test]
+    fn qa_jsonl_skips_malformed_runner_output() {
+        use coral_runner::MockRunner;
+        let pages = vec![page("x", PageType::Module, "body")];
+        let runner = MockRunner::new();
+        runner.push_ok(
+            "not json\n{\"prompt\":\"q\",\"completion\":\"a\"}\n{\"prompt\":\"missing-completion\"}\n{not really json}\n",
+        );
+
+        let out = render_jsonl_with_qa(&pages, &runner, None).unwrap();
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(
+            lines.len(),
+            1,
+            "only the well-formed line should pass: {out}"
+        );
+        let v: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(v["slug"], "x");
+        assert_eq!(v["prompt"], "q");
+        assert_eq!(v["completion"], "a");
     }
 }

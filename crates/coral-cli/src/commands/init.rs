@@ -62,6 +62,15 @@ pub fn run(args: InitArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
         tracing::info!(path = %log_path.display(), "wrote log.md");
     }
 
+    // .gitignore — keep `.coral-cache.json` out of git. Idempotent: only writes
+    // if the file doesn't exist; we do NOT overwrite a user-managed .gitignore.
+    let gitignore_path = root.join(".gitignore");
+    if !gitignore_path.exists() {
+        std::fs::write(&gitignore_path, ".coral-cache.json\n")
+            .with_context(|| format!("writing {}", gitignore_path.display()))?;
+        tracing::info!(path = %gitignore_path.display(), "wrote .gitignore");
+    }
+
     // Subdirectories so the structure exists from day 1.
     for sub in &[
         "modules",
