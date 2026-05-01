@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use clap::Args;
 use coral_core::{search, walk};
+use coral_runner::{DEFAULT_VOYAGE_DIM, DEFAULT_VOYAGE_MODEL, EmbeddingsProvider, VoyageProvider};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -41,7 +42,19 @@ pub fn run(args: SearchArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
 
     match args.engine.as_str() {
         "tfidf" => run_tfidf(&pages, &args),
-        "embeddings" => run_embeddings(&pages, &args, &root),
+        "embeddings" => {
+            let api_key = std::env::var("VOYAGE_API_KEY").context(
+                "VOYAGE_API_KEY required for --engine embeddings (or use --engine tfidf)",
+            )?;
+            let model = args
+                .embeddings_model
+                .as_deref()
+                .unwrap_or(DEFAULT_VOYAGE_MODEL)
+                .to_string();
+            let provider: Box<dyn EmbeddingsProvider> =
+                Box::new(VoyageProvider::new(api_key, model, DEFAULT_VOYAGE_DIM));
+            run_embeddings(&pages, &args, &root, provider.as_ref())
+        }
         other => anyhow::bail!("unknown engine: {other}. Choose: tfidf | embeddings"),
     }
 }
@@ -83,24 +96,20 @@ fn run_tfidf(pages: &[coral_core::page::Page], args: &SearchArgs) -> Result<Exit
     Ok(ExitCode::SUCCESS)
 }
 
-fn run_embeddings(
+pub(crate) fn run_embeddings(
     pages: &[coral_core::page::Page],
     args: &SearchArgs,
     wiki_root: &Path,
+    provider: &dyn EmbeddingsProvider,
 ) -> Result<ExitCode> {
     use coral_core::cache::WalkCache;
     use coral_core::embeddings::EmbeddingsIndex;
 
-    let api_key = std::env::var("VOYAGE_API_KEY")
-        .context("VOYAGE_API_KEY required for --engine embeddings (or use --engine tfidf)")?;
-    let model = args
-        .embeddings_model
-        .as_deref()
-        .unwrap_or(super::voyage::DEFAULT_MODEL);
+    let model = provider.name();
 
     let mut index = EmbeddingsIndex::load(wiki_root)?;
     if index.dim == 0 || index.provider != model {
-        index = EmbeddingsIndex::empty(model, super::voyage::DEFAULT_DIM);
+        index = EmbeddingsIndex::empty(model, provider.dim());
     }
 
     // Determine which pages need (re-)embedding.
@@ -120,8 +129,9 @@ fn run_embeddings(
     if !to_embed.is_empty() {
         eprintln!("Embedding {} page(s) via {model}…", to_embed.len());
         let texts: Vec<String> = to_embed.iter().map(|(_, t, _)| t.clone()).collect();
-        let vectors = super::voyage::embed_batch(&texts, model, &api_key, Some("document"))
-            .context("embedding pages")?;
+        let vectors = provider
+            .embed_batch(&texts, Some("document"))
+            .map_err(|e| anyhow::anyhow!("embedding pages: {e}"))?;
         for ((slug, _, mtime), vec) in to_embed.into_iter().zip(vectors.into_iter()) {
             index.upsert(slug, mtime, vec);
         }
@@ -134,13 +144,9 @@ fn run_embeddings(
     index.save(wiki_root).context("saving embeddings index")?;
 
     // Embed query.
-    let query_vecs = super::voyage::embed_batch(
-        std::slice::from_ref(&args.query),
-        model,
-        &api_key,
-        Some("query"),
-    )
-    .context("embedding query")?;
+    let query_vecs = provider
+        .embed_batch(std::slice::from_ref(&args.query), Some("query"))
+        .map_err(|e| anyhow::anyhow!("embedding query: {e}"))?;
     let query_vec = query_vecs
         .into_iter()
         .next()
@@ -189,4 +195,68 @@ fn run_embeddings(
     }
 
     Ok(ExitCode::SUCCESS)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use coral_core::frontmatter::{Confidence, Frontmatter, PageType, Status};
+    use coral_core::page::Page;
+    use coral_runner::MockEmbeddingsProvider;
+    use tempfile::TempDir;
+
+    fn page(slug: &str, body: &str) -> Page {
+        Page {
+            path: PathBuf::from(format!(".wiki/modules/{slug}.md")),
+            frontmatter: Frontmatter {
+                slug: slug.to_string(),
+                page_type: PageType::Module,
+                last_updated_commit: "abc".to_string(),
+                confidence: Confidence::try_new(0.7).unwrap(),
+                sources: vec![],
+                backlinks: vec![],
+                status: Status::Reviewed,
+                generated_at: None,
+                extra: Default::default(),
+            },
+            body: body.to_string(),
+        }
+    }
+
+    #[test]
+    fn run_embeddings_uses_swappable_provider_via_trait() {
+        // The whole point of the v0.4 trait: search runs against any
+        // EmbeddingsProvider, not just Voyage. This test runs the embeddings
+        // path end-to-end against a deterministic Mock so it works offline
+        // and never touches the network.
+        let tmp = TempDir::new().unwrap();
+        let wiki = tmp.path();
+        let pages = vec![
+            page("outbox", "the outbox dispatcher polls every second"),
+            page("query", "answers go through the search pipeline"),
+        ];
+        let provider = MockEmbeddingsProvider::new(64);
+        let args = SearchArgs {
+            query: "outbox".into(),
+            limit: 5,
+            format: "json".into(),
+            engine: "embeddings".into(),
+            reindex: false,
+            embeddings_model: None,
+        };
+        let exit = run_embeddings(&pages, &args, wiki, &provider).unwrap();
+        assert_eq!(exit, ExitCode::SUCCESS);
+        // The cache file should have been written with the mock's name.
+        let cache_path = wiki.join(".coral-embeddings.json");
+        assert!(cache_path.exists(), "cache file was not written");
+        let cache = std::fs::read_to_string(&cache_path).unwrap();
+        assert!(
+            cache.contains("\"provider\""),
+            "cache missing provider field: {cache}"
+        );
+        assert!(
+            cache.contains("\"mock-64\""),
+            "cache should record the mock provider name: {cache}"
+        );
+    }
 }

@@ -5,11 +5,16 @@
 //! binary in headless `--print` mode with versioned prompts and subagent system
 //! prompts.
 
+pub mod embeddings;
 pub mod gemini;
 pub mod mock;
 pub mod prompt;
 pub mod runner;
 
+pub use embeddings::{
+    DEFAULT_VOYAGE_DIM, DEFAULT_VOYAGE_MODEL, EmbedResult, EmbeddingsError, EmbeddingsProvider,
+    MockEmbeddingsProvider, VoyageProvider,
+};
 pub use gemini::GeminiRunner;
 pub use mock::MockRunner;
 pub use prompt::PromptBuilder;
