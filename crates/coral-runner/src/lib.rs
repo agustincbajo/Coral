@@ -5,10 +5,12 @@
 //! binary in headless `--print` mode with versioned prompts and subagent system
 //! prompts.
 
+pub mod gemini;
 pub mod mock;
 pub mod prompt;
 pub mod runner;
 
+pub use gemini::GeminiRunner;
 pub use mock::MockRunner;
 pub use prompt::PromptBuilder;
 pub use runner::{ClaudeRunner, Prompt, RunOutput, Runner, RunnerError, RunnerResult};

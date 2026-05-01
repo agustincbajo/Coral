@@ -47,6 +47,8 @@ enum Cmd {
     Sync(commands::sync::SyncArgs),
     /// Generate an onboarding reading path (requires LLM).
     Onboard(commands::onboard::OnboardArgs),
+    /// Inspect prompt sources (local override, embedded, or fallback).
+    Prompts(commands::prompts::PromptsArgs),
     /// Semantic search over the wiki (Phase 4 — not yet implemented).
     Search {
         /// Search query.
@@ -68,6 +70,7 @@ fn main() -> ExitCode {
         Cmd::Stats(args) => commands::stats::run(args, cli.wiki_root.as_deref()),
         Cmd::Sync(args) => commands::sync::run(args, cli.wiki_root.as_deref()),
         Cmd::Onboard(args) => commands::onboard::run(args, cli.wiki_root.as_deref()),
+        Cmd::Prompts(args) => commands::prompts::run(args, cli.wiki_root.as_deref()),
         Cmd::Search { .. } => {
             eprintln!("`search` is not implemented in v0.1. Coming in v0.2.");
             return ExitCode::from(2);

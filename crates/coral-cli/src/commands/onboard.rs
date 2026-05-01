@@ -12,10 +12,15 @@ pub struct OnboardArgs {
     pub profile: String,
     #[arg(long)]
     pub model: Option<String>,
+    /// LLM provider: claude (default) | gemini. Or set CORAL_PROVIDER env.
+    #[arg(long)]
+    pub provider: Option<String>,
 }
 
 pub fn run(args: OnboardArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
-    let runner = super::runner_helper::default_runner();
+    let provider = super::runner_helper::resolve_provider(args.provider.as_deref())
+        .map_err(|e| anyhow::anyhow!(e))?;
+    let runner = super::runner_helper::make_runner(provider);
     run_with_runner(args, wiki_root, runner.as_ref())
 }
 
@@ -50,11 +55,10 @@ pub fn run_with_runner(
         .collect::<Vec<_>>()
         .join("\n");
 
+    let prompt_template =
+        super::prompt_loader::load_or_fallback("onboard", ONBOARD_SYSTEM_FALLBACK);
     let prompt = Prompt {
-        system: Some(
-            "You are the Coral wiki onboarding guide. Suggest a reading path tailored to a profile."
-                .into(),
-        ),
+        system: Some(prompt_template.content),
         user: format!(
             "Profile: {}\n\nPages:\n{}\n\nSuggest the optimal 5–10 page reading path with 1-line rationales. Output Markdown list.",
             args.profile, summary
@@ -71,6 +75,9 @@ pub fn run_with_runner(
     println!("{}", out.stdout);
     Ok(ExitCode::SUCCESS)
 }
+
+const ONBOARD_SYSTEM_FALLBACK: &str =
+    "You are the Coral wiki onboarding guide. Suggest a reading path tailored to a profile.";
 
 #[cfg(test)]
 mod tests {
@@ -89,6 +96,7 @@ mod tests {
             OnboardArgs {
                 profile: "backend dev".into(),
                 model: None,
+                provider: None,
             },
             Some(wiki.as_path()),
             &runner,

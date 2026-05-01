@@ -13,10 +13,15 @@ pub struct QueryArgs {
     /// Optional model override (e.g., "sonnet", "haiku", or full id).
     #[arg(long)]
     pub model: Option<String>,
+    /// LLM provider: claude (default) | gemini. Or set CORAL_PROVIDER env.
+    #[arg(long)]
+    pub provider: Option<String>,
 }
 
 pub fn run(args: QueryArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
-    let runner = super::runner_helper::default_runner();
+    let provider = super::runner_helper::resolve_provider(args.provider.as_deref())
+        .map_err(|e| anyhow::anyhow!(e))?;
+    let runner = super::runner_helper::make_runner(provider);
     run_with_runner(args, wiki_root, runner.as_ref())
 }
 
@@ -51,8 +56,9 @@ pub fn run_with_runner(
         ));
     }
 
+    let prompt_template = super::prompt_loader::load_or_fallback("query", QUERY_SYSTEM_FALLBACK);
     let prompt = Prompt {
-        system: Some(QUERY_SYSTEM.to_string()),
+        system: Some(prompt_template.content),
         user: format!(
             "{context}\n\nQuestion: {}\n\nAnswer concisely. Cite the page slugs you used in brackets like [[slug]] at the end.",
             args.question
@@ -76,7 +82,7 @@ pub fn run_with_runner(
     Ok(ExitCode::SUCCESS)
 }
 
-const QUERY_SYSTEM: &str = "You are the Coral wiki bibliotecario. Answer questions using only the wiki snapshot provided. Be terse and cite slugs.";
+const QUERY_SYSTEM_FALLBACK: &str = "You are the Coral wiki bibliotecario. Answer questions using only the wiki snapshot provided. Be terse and cite slugs.";
 
 fn slug_type_str(fm: &coral_core::frontmatter::Frontmatter) -> String {
     serde_json::to_value(fm.page_type)
@@ -113,6 +119,7 @@ mod tests {
             QueryArgs {
                 question: "How is an order created?".into(),
                 model: None,
+                provider: None,
             },
             Some(wiki.as_path()),
             &runner,
@@ -134,6 +141,7 @@ mod tests {
             QueryArgs {
                 question: "x".into(),
                 model: None,
+                provider: None,
             },
             Some(wiki.as_path()),
             &runner,

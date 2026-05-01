@@ -13,9 +13,20 @@ use coral_runner::{Prompt, Runner};
 ///
 /// On runner error, returns a single Critical issue noting the failure.
 pub fn check_semantic(pages: &[Page], runner: &dyn Runner) -> Vec<LintIssue> {
+    check_semantic_with_prompt(pages, runner, SEMANTIC_SYSTEM_PROMPT)
+}
+
+/// Same as [`check_semantic`] but lets the caller supply the system prompt.
+/// `coral-cli` uses this to inject the user's local override or the embedded
+/// `template/prompts/lint-semantic.md`.
+pub fn check_semantic_with_prompt(
+    pages: &[Page],
+    runner: &dyn Runner,
+    system_prompt: &str,
+) -> Vec<LintIssue> {
     let context = build_context(pages);
     let prompt = Prompt {
-        system: Some(SEMANTIC_SYSTEM_PROMPT.to_string()),
+        system: Some(system_prompt.to_string()),
         user: format!(
             "{context}\n\nReport contradictions in this format, one per line:\nseverity:slug:message\nWhere severity is one of: critical, warning, info.\nIf no issues, output exactly: NONE"
         ),
@@ -35,7 +46,7 @@ pub fn check_semantic(pages: &[Page], runner: &dyn Runner) -> Vec<LintIssue> {
     }
 }
 
-const SEMANTIC_SYSTEM_PROMPT: &str = "You are the Coral wiki linter. Read the page summaries and surface contradictions between pages, claims that the SCHEMA invalidates, and obvious obsolescence. Be terse.";
+pub const SEMANTIC_SYSTEM_PROMPT: &str = "You are the Coral wiki linter. Read the page summaries and surface contradictions between pages, claims that the SCHEMA invalidates, and obvious obsolescence. Be terse.";
 
 fn build_context(pages: &[Page]) -> String {
     let mut s = String::from("Wiki snapshot:\n\n");

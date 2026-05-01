@@ -86,6 +86,7 @@ fn full_lifecycle_with_mock_runner() {
         IngestArgs {
             from: Some("abc".into()),
             model: None,
+            provider: None,
             dry_run: true,
             apply: false,
         },
@@ -105,6 +106,7 @@ fn full_lifecycle_with_mock_runner() {
         IngestArgs {
             from: Some("abc".into()),
             model: None,
+            provider: None,
             dry_run: false,
             apply: true,
         },
@@ -126,6 +128,7 @@ fn full_lifecycle_with_mock_runner() {
     bootstrap::run_with_runner(
         BootstrapArgs {
             model: None,
+            provider: None,
             dry_run: false,
             apply: true,
         },
@@ -145,6 +148,7 @@ fn full_lifecycle_with_mock_runner() {
             semantic: false,
             all: false,
             format: "markdown".into(),
+            provider: None,
         },
         Some(&wiki),
     )
@@ -194,6 +198,7 @@ fn lifecycle_init_idempotent_does_not_clobber_seeded_pages() {
             semantic: false,
             all: false,
             format: "markdown".into(),
+            provider: None,
         },
         Some(&wiki),
     )
@@ -229,6 +234,7 @@ fn lifecycle_lint_json_format_emits_valid_json() {
             semantic: false,
             all: false,
             format: "json".into(),
+            provider: None,
         },
         Some(&wiki),
     )

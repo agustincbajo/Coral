@@ -15,6 +15,9 @@ pub struct BootstrapArgs {
     /// Optional model override.
     #[arg(long)]
     pub model: Option<String>,
+    /// LLM provider: claude (default) | gemini. Or set CORAL_PROVIDER env.
+    #[arg(long)]
+    pub provider: Option<String>,
     /// Print the plan without writing pages.
     #[arg(long, conflicts_with = "apply")]
     pub dry_run: bool,
@@ -24,7 +27,9 @@ pub struct BootstrapArgs {
 }
 
 pub fn run(args: BootstrapArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
-    let runner = super::runner_helper::default_runner();
+    let provider = super::runner_helper::resolve_provider(args.provider.as_deref())
+        .map_err(|e| anyhow::anyhow!(e))?;
+    let runner = super::runner_helper::make_runner(provider);
     run_with_runner(args, wiki_root, runner.as_ref())
 }
 
@@ -53,8 +58,10 @@ pub fn run_with_runner(
         .collect::<Vec<_>>()
         .join("\n");
 
+    let prompt_template =
+        super::prompt_loader::load_or_fallback("bootstrap", BOOTSTRAP_SYSTEM_FALLBACK);
     let prompt = Prompt {
-        system: Some(BOOTSTRAP_SYSTEM.to_string()),
+        system: Some(prompt_template.content),
         user: format!(
             "Repo file listing (truncated to 200):\n{listing}\n\nSuggest 5–15 wiki pages to seed `.wiki/`. Output a YAML plan as in the bootstrap prompt template."
         ),
@@ -166,7 +173,7 @@ fn page_relative_path(_root: &Path, page_type: PageType, slug: &str) -> String {
     }
 }
 
-const BOOTSTRAP_SYSTEM: &str = "You are the Coral wiki bibliotecario. Suggest initial wiki pages based on a repo file listing. Output ONLY a YAML plan: see the bootstrap prompt template (`plan: - {slug, type, confidence, rationale, body}`).";
+const BOOTSTRAP_SYSTEM_FALLBACK: &str = "You are the Coral wiki bibliotecario. Suggest initial wiki pages based on a repo file listing. Output ONLY a YAML plan: see the bootstrap prompt template (`plan: - {slug, type, confidence, rationale, body}`).";
 
 fn collect_repo_files(root: &Path) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();

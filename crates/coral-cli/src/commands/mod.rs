@@ -8,6 +8,8 @@ pub mod consolidate;
 pub mod ingest;
 pub mod onboard;
 pub mod plan;
+pub mod prompt_loader;
+pub mod prompts;
 pub mod query;
 
 pub mod runner_helper;

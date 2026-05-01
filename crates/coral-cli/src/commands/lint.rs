@@ -1,7 +1,10 @@
 use anyhow::{Context, Result};
 use clap::Args;
 use coral_core::walk;
-use coral_lint::{LintReport, run_structural, semantic::check_semantic};
+use coral_lint::{
+    LintReport, run_structural,
+    semantic::{SEMANTIC_SYSTEM_PROMPT, check_semantic_with_prompt},
+};
 use coral_runner::Runner;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -20,10 +23,15 @@ pub struct LintArgs {
     /// Output format: markdown (default) or json.
     #[arg(long, default_value = "markdown")]
     pub format: String,
+    /// LLM provider used by --semantic: claude (default) | gemini. Or set CORAL_PROVIDER env.
+    #[arg(long)]
+    pub provider: Option<String>,
 }
 
 pub fn run(args: LintArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
-    let runner = super::runner_helper::default_runner();
+    let provider = super::runner_helper::resolve_provider(args.provider.as_deref())
+        .map_err(|e| anyhow::anyhow!(e))?;
+    let runner = super::runner_helper::make_runner(provider);
     run_with_runner(args, wiki_root, runner.as_ref())
 }
 
@@ -55,7 +63,9 @@ pub fn run_with_runner(
         issues.extend(r.issues);
     }
     if do_semantic {
-        let semantic_issues = check_semantic(&pages, runner);
+        let prompt_template =
+            super::prompt_loader::load_or_fallback("lint-semantic", SEMANTIC_SYSTEM_PROMPT);
+        let semantic_issues = check_semantic_with_prompt(&pages, runner, &prompt_template.content);
         issues.extend(semantic_issues);
     }
     let report = LintReport::from_issues(issues);

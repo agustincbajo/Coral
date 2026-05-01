@@ -31,13 +31,14 @@ coral init [--force]
 Compile the initial wiki from `HEAD`.
 
 ```bash
-coral bootstrap [--model <id>]
+coral bootstrap [--model <id>] [--provider claude|gemini]
 ```
 
 - Walks the repo (skips `.git/`, `target/`, `.wiki/`, `node_modules/`, `.idea/`, `.vscode/`).
 - Sends a truncated file listing (max 200 paths) to the LLM via `claude --print`.
 - Prints a YAML suggestion of 5–15 page slugs (type + rationale).
 - **In v0.1, does not write pages.** Apply suggestions manually.
+- `--provider` (or `CORAL_PROVIDER` env): `claude` (default) or `gemini` (shells to a `gemini` CLI binary).
 
 ---
 
@@ -46,13 +47,14 @@ coral bootstrap [--model <id>]
 Incremental ingest from `last_commit` to `HEAD`.
 
 ```bash
-coral ingest [--from <sha>] [--model <id>]
+coral ingest [--from <sha>] [--model <id>] [--provider claude|gemini]
 ```
 
 - Reads `last_commit` from `.wiki/index.md` unless `--from` is given.
 - Runs `git diff --name-status <from>..HEAD`, sends the summary to the LLM.
 - Prints a YAML plan of `{slug, action, rationale}` items where `action ∈ {create, update, retire}`.
 - **In v0.1, does not write pages.**
+- `--provider` (or `CORAL_PROVIDER` env): `claude` (default) or `gemini`.
 
 ---
 
@@ -61,12 +63,13 @@ coral ingest [--from <sha>] [--model <id>]
 Ask the wiki a question.
 
 ```bash
-coral query "How is an order created?" [--model <id>]
+coral query "How is an order created?" [--model <id>] [--provider claude|gemini]
 ```
 
 - Walks `.wiki/`, builds a snapshot context (truncated to 40 pages, 200 chars each).
 - Sends question + context + citation instructions to the LLM.
 - Prints the answer to stdout (cites slugs as `[[wikilink]]`).
+- `--provider` (or `CORAL_PROVIDER` env): `claude` (default) or `gemini`.
 
 ---
 
@@ -75,12 +78,13 @@ coral query "How is an order created?" [--model <id>]
 Run structural and/or semantic lint.
 
 ```bash
-coral lint [--structural] [--semantic] [--all] [--format markdown|json]
+coral lint [--structural] [--semantic] [--all] [--format markdown|json] [--provider claude|gemini]
 ```
 
 - `--structural` (default if no flag): broken wikilinks, orphans, low confidence, high confidence without sources, stale status. Pure deterministic checks.
 - `--semantic`: requires the LLM. Surfaces contradictions, obsolete claims, confidence/sources mismatches.
 - `--all`: both.
+- `--provider` (or `CORAL_PROVIDER` env): used by `--semantic` only. `claude` (default) or `gemini`.
 - Exit code `1` if any **critical** issue; `0` otherwise.
 
 ---
@@ -90,11 +94,12 @@ coral lint [--structural] [--semantic] [--all] [--format markdown|json]
 Suggest page consolidations.
 
 ```bash
-coral consolidate [--model <id>]
+coral consolidate [--model <id>] [--provider claude|gemini]
 ```
 
 - Lists all page slugs (truncated to 80) and asks the LLM for merge / retire / split candidates.
 - Prints a YAML proposal. **Does not apply changes.**
+- `--provider` (or `CORAL_PROVIDER` env): `claude` (default) or `gemini`.
 
 ---
 
@@ -131,11 +136,29 @@ coral sync [--version <V>] [--force]
 Generate a tailored reading path.
 
 ```bash
-coral onboard [--profile "backend dev" | "data engineer" | "PM" | "on-call"] [--model <id>]
+coral onboard [--profile "backend dev" | "data engineer" | "PM" | "on-call"] [--model <id>] [--provider claude|gemini]
 ```
 
 - Sends the wiki page list + profile to the LLM.
 - Prints a Markdown ordered list of 5–10 pages with rationales.
+- `--provider` (or `CORAL_PROVIDER` env): `claude` (default) or `gemini`.
+
+---
+
+## `coral prompts list`
+
+Inspect prompt sources (local override, embedded, or fallback).
+
+```bash
+coral prompts list
+```
+
+- Prints a Markdown table mapping each known prompt name to its resolved source.
+- Resolution priority (highest first):
+  1. **Local** — `<cwd>/prompts/<name>.md` (if present and readable).
+  2. **Embedded** — the file at `template/prompts/<name>.md` baked into the binary via `include_dir`.
+  3. **Fallback** — a hardcoded string in the corresponding command source.
+- Drop a `prompts/<name>.md` file in your repo to override how Coral talks to the LLM for that subcommand. Known names: `bootstrap`, `ingest`, `query`, `lint-semantic`, `consolidate`, `onboard`.
 
 ---
 

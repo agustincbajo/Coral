@@ -56,6 +56,7 @@ fn query_cycle_with_mock_runner() {
         QueryArgs {
             question: "How is an order created?".into(),
             model: None,
+            provider: None,
         },
         Some(&wiki),
         &runner,
@@ -88,6 +89,7 @@ fn query_propagates_runner_error() {
         QueryArgs {
             question: "anything".into(),
             model: None,
+            provider: None,
         },
         Some(&wiki),
         &runner,

@@ -9,10 +9,15 @@ use std::process::ExitCode;
 pub struct ConsolidateArgs {
     #[arg(long)]
     pub model: Option<String>,
+    /// LLM provider: claude (default) | gemini. Or set CORAL_PROVIDER env.
+    #[arg(long)]
+    pub provider: Option<String>,
 }
 
 pub fn run(args: ConsolidateArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
-    let runner = super::runner_helper::default_runner();
+    let provider = super::runner_helper::resolve_provider(args.provider.as_deref())
+        .map_err(|e| anyhow::anyhow!(e))?;
+    let runner = super::runner_helper::make_runner(provider);
     run_with_runner(args, wiki_root, runner.as_ref())
 }
 
@@ -49,11 +54,10 @@ pub fn run_with_runner(
         .collect::<Vec<_>>()
         .join("\n");
 
+    let prompt_template =
+        super::prompt_loader::load_or_fallback("consolidate", CONSOLIDATE_SYSTEM_FALLBACK);
     let prompt = Prompt {
-        system: Some(
-            "You are the Coral wiki bibliotecario. Suggest page consolidations and archive candidates."
-                .into(),
-        ),
+        system: Some(prompt_template.content),
         user: format!("Pages:\n{summary}\n\nProposed consolidations? Output YAML."),
         model: args.model,
         cwd: None,
@@ -67,6 +71,9 @@ pub fn run_with_runner(
     println!("{}", out.stdout);
     Ok(ExitCode::SUCCESS)
 }
+
+const CONSOLIDATE_SYSTEM_FALLBACK: &str =
+    "You are the Coral wiki bibliotecario. Suggest page consolidations and archive candidates.";
 
 #[cfg(test)]
 mod tests {

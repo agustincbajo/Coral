@@ -202,6 +202,30 @@ fn onboard_without_wiki_fails() {
 }
 
 #[test]
+fn prompts_list_runs() {
+    let tmp = TempDir::new().unwrap();
+    Command::cargo_bin("coral")
+        .unwrap()
+        .current_dir(tmp.path())
+        .args(["prompts", "list"])
+        .assert()
+        .success()
+        .stdout(contains("query"));
+}
+
+#[test]
+fn query_with_unknown_provider_fails() {
+    let tmp = TempDir::new().unwrap();
+    Command::cargo_bin("coral")
+        .unwrap()
+        .current_dir(tmp.path())
+        .args(["query", "x", "--provider", "openai"])
+        .assert()
+        .failure()
+        .stderr(contains("unknown provider"));
+}
+
+#[test]
 fn lint_critical_issue_exits_1() {
     let tmp = TempDir::new().unwrap();
     Command::cargo_bin("coral")
