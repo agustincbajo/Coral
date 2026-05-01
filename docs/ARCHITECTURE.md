@@ -20,7 +20,11 @@ coral/
 │   │   ├── index.rs    ← WikiIndex (catalog + last_commit anchor)
 │   │   ├── log.rs      ← WikiLog (append-only)
 │   │   ├── gitdiff.rs  ← parse_name_status() + run() + head_sha()
-│   │   └── walk.rs     ← rayon-parallel page reader, skips _archive/
+│   │   ├── walk.rs     ← rayon-parallel page reader, skips _archive/
+│   │   ├── cache.rs    ← WalkCache: mtime-keyed Frontmatter cache (.coral-cache.json)
+│   │   ├── embeddings.rs ← EmbeddingsIndex: cosine-similarity vector store
+│   │   │                    (.coral-embeddings.json), schema-versioned
+│   │   └── search.rs   ← TF-IDF tokenizer + scorer (offline default)
 │   │
 │   ├── coral-lint/     ← LintReport + LintIssue + 5 structural checks
 │   │   ├── report.rs    ← issue model + markdown rendering

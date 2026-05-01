@@ -1,6 +1,7 @@
 //! Core types and utilities for Coral.
 
 pub mod cache;
+pub mod embeddings;
 pub mod error;
 pub mod frontmatter;
 pub mod gitdiff;

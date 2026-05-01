@@ -6,6 +6,7 @@ pub mod pins;
 pub mod search;
 pub mod stats;
 pub mod sync;
+pub mod voyage;
 
 pub mod bootstrap;
 pub mod consolidate;

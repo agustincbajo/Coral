@@ -471,6 +471,57 @@ fn init_writes_wiki_gitignore() {
 }
 
 #[test]
+fn search_with_unknown_engine_fails() {
+    let tmp = TempDir::new().unwrap();
+    Command::cargo_bin("coral")
+        .unwrap()
+        .current_dir(tmp.path())
+        .arg("init")
+        .assert()
+        .success();
+    Command::cargo_bin("coral")
+        .unwrap()
+        .current_dir(tmp.path())
+        .args(["search", "x", "--engine", "fancy"])
+        .assert()
+        .failure()
+        .stderr(contains("unknown engine"));
+}
+
+#[test]
+fn search_embeddings_without_api_key_fails() {
+    let tmp = TempDir::new().unwrap();
+    Command::cargo_bin("coral")
+        .unwrap()
+        .current_dir(tmp.path())
+        .arg("init")
+        .assert()
+        .success();
+    Command::cargo_bin("coral")
+        .unwrap()
+        .current_dir(tmp.path())
+        .args(["search", "x", "--engine", "embeddings"])
+        .env_remove("VOYAGE_API_KEY")
+        .assert()
+        .failure()
+        .stderr(contains("VOYAGE_API_KEY"));
+}
+
+#[test]
+fn init_gitignore_includes_embeddings() {
+    let tmp = TempDir::new().unwrap();
+    Command::cargo_bin("coral")
+        .unwrap()
+        .current_dir(tmp.path())
+        .arg("init")
+        .assert()
+        .success();
+    let gi = std::fs::read_to_string(tmp.path().join(".wiki/.gitignore")).unwrap();
+    assert!(gi.contains(".coral-cache.json"));
+    assert!(gi.contains(".coral-embeddings.json"));
+}
+
+#[test]
 fn lint_critical_issue_exits_1() {
     let tmp = TempDir::new().unwrap();
     Command::cargo_bin("coral")

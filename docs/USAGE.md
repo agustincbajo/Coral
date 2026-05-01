@@ -164,17 +164,45 @@ coral prompts list
 
 ## `coral search`
 
-TF-IDF search over the wiki.
+Search the wiki.
 
 ```bash
-coral search "<query>" [--limit <N>] [--format markdown|json]
+coral search "<query>" [--engine tfidf|embeddings] [--reindex] [--limit N] [--format markdown|json]
 ```
 
-- Tokenizes slug + body, scores via TF-IDF, returns the top-N pages (default 5).
-- Stopwords (English + Spanish) filtered out. Single-character tokens dropped.
-- Snippets are 200-char windows around the first matching token.
-- `--format json` for downstream tooling.
-- v0.2 ships TF-IDF (deterministic, no API key). v0.3 will switch to embeddings (Voyage / Anthropic) — see [ADR 0006](./adr/0006-local-semantic-search-storage.md). The CLI surface stays the same on upgrade.
+### Engines
+
+- **`tfidf`** (default): pure-Rust TF-IDF over slug + body. No API key, works offline. Suitable for ~500 pages.
+- **`embeddings`**: semantic similarity via Voyage AI `voyage-3`. Requires `VOYAGE_API_KEY` env var. Embeddings are cached at `<wiki_root>/.coral-embeddings.json`; pages with unchanged mtime aren't re-embedded.
+
+### Examples
+
+```bash
+# Offline TF-IDF (default).
+coral search "outbox dispatcher"
+
+# Semantic via Voyage.
+export VOYAGE_API_KEY=…
+coral search "how does retry work" --engine embeddings
+
+# Force re-embedding (e.g. after model upgrade).
+coral search "x" --engine embeddings --reindex
+
+# JSON output for scripting.
+coral search "x" --engine embeddings --format json
+```
+
+### Notes
+
+- TF-IDF tokenizes slug + body, scores via TF-IDF, returns the top-N pages. Stopwords (English + Spanish) filtered out. Single-character tokens dropped. Snippets are 200-char windows around the first matching token.
+- Embeddings cache is schema-versioned; mtime-keyed per slug. Pages whose mtime didn't change skip re-embedding. Use `--reindex` to force a full rebuild (e.g. after a model upgrade).
+- `--embeddings-model` overrides the default `voyage-3`.
+
+### Cost
+
+Embedding a 200-page wiki with `voyage-3` ≈ $0.001 (200 pages × ~500 tokens × $0.10/1M). Re-runs only embed changed pages.
+
+See [ADR 0006](./adr/0006-local-semantic-search-storage.md) for the rationale on JSON storage vs sqlite-vec (deferred to v0.4).
 
 ---
 

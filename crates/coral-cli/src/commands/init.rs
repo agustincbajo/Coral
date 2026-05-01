@@ -62,13 +62,37 @@ pub fn run(args: InitArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
         tracing::info!(path = %log_path.display(), "wrote log.md");
     }
 
-    // .gitignore — keep `.coral-cache.json` out of git. Idempotent: only writes
-    // if the file doesn't exist; we do NOT overwrite a user-managed .gitignore.
+    // .gitignore — keep `.coral-cache.json` and `.coral-embeddings.json` out of
+    // git. Idempotent: when the file is missing we write both lines; when the
+    // user already manages a .gitignore, we append any missing entries without
+    // touching unrelated lines.
     let gitignore_path = root.join(".gitignore");
+    let needed = [".coral-cache.json", ".coral-embeddings.json"];
     if !gitignore_path.exists() {
-        std::fs::write(&gitignore_path, ".coral-cache.json\n")
+        let content = format!("{}\n{}\n", needed[0], needed[1]);
+        std::fs::write(&gitignore_path, content)
             .with_context(|| format!("writing {}", gitignore_path.display()))?;
         tracing::info!(path = %gitignore_path.display(), "wrote .gitignore");
+    } else {
+        let mut existing = std::fs::read_to_string(&gitignore_path)
+            .with_context(|| format!("reading {}", gitignore_path.display()))?;
+        let mut changed = false;
+        for entry in needed {
+            let already_listed = existing.lines().any(|line| line.trim() == entry);
+            if !already_listed {
+                if !existing.is_empty() && !existing.ends_with('\n') {
+                    existing.push('\n');
+                }
+                existing.push_str(entry);
+                existing.push('\n');
+                changed = true;
+            }
+        }
+        if changed {
+            std::fs::write(&gitignore_path, existing)
+                .with_context(|| format!("updating {}", gitignore_path.display()))?;
+            tracing::info!(path = %gitignore_path.display(), "appended to .gitignore");
+        }
     }
 
     // Subdirectories so the structure exists from day 1.

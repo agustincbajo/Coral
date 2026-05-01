@@ -48,7 +48,7 @@ Coral implements [Andrej Karpathy's LLM Wiki pattern](https://gist.github.com/ka
 | Lock-in | None | None — plain Markdown in Git |
 | Auditability | Opaque | Each page cites verifiable `sources` |
 | Maintenance | Manual | Incremental ingest on every push |
-| Search | grep | TF-IDF (v0.2) → semantic embeddings (v0.3) |
+| Search | grep | TF-IDF (default) + opt-in Voyage embeddings (`--engine embeddings`) |
 
 **What you get out of the box:**
 
@@ -59,7 +59,8 @@ Coral implements [Andrej Karpathy's LLM Wiki pattern](https://gist.github.com/ka
 - 3 composite GitHub Actions for CI: `ingest`, `lint`, `consolidate`.
 - Optional Hermes quality gate: a second LLM independently validates wiki PRs.
 - Multi-provider runner (Claude default, Gemini optional, MockRunner for tests).
-- TF-IDF search and 4 export formats (Markdown bundle, JSON, Notion API bodies, JSONL for fine-tunes).
+- TF-IDF search by default, plus opt-in semantic search via Voyage AI (`coral search --engine embeddings`).
+- 4 export formats (Markdown bundle, JSON, Notion API bodies, JSONL for fine-tunes).
 
 ---
 
@@ -116,8 +117,10 @@ coral lint --structural
 coral stats
 # → Total pages, by type, by status, confidence avg/min/max, orphan candidates.
 
-# 5. Search the wiki (TF-IDF in v0.2; embeddings coming in v0.3).
+# 5. Search the wiki — TF-IDF by default, or semantic embeddings (opt-in).
 coral search "outbox dispatcher"
+# Semantic via Voyage (requires VOYAGE_API_KEY):
+# coral search "how does retry work" --engine embeddings
 # → Top-N pages with scores + snippets.
 
 # 6. Export the wiki — Markdown bundle, raw JSON, Notion API bodies, or JSONL.
@@ -147,7 +150,7 @@ The full reference is in [docs/USAGE.md](docs/USAGE.md).
 | `coral lint [--structural\|--semantic\|--all]` | Structural (deterministic) + semantic (LLM) lint. Exit 1 on critical. | Optional |
 | `coral consolidate` | Suggest merges, retirements, splits. Output YAML — caller decides. | Yes |
 | `coral stats [--format markdown\|json]` | Health dashboard. JSON validates against `docs/schemas/stats.schema.json`. | No |
-| `coral search <q> [--limit N]` | TF-IDF ranking. Top-N pages with score + snippet. | No |
+| `coral search <q> [--engine tfidf\|embeddings] [--limit N]` | TF-IDF (default) or Voyage embeddings (`--engine embeddings`, opt-in). Top-N pages with score + snippet. | No (TF-IDF) / Voyage key (embeddings) |
 | `coral sync [--version V] [--remote] [--pin K=V] [--unpin K]` | Lay subagents/prompts/workflow into `<cwd>/template/`. Per-file pinning via `.coral-pins.toml`. | No |
 | `coral export --format <fmt> [--out FILE] [--qa]` | Export to `markdown-bundle`, `json`, `notion-json`, or `jsonl`. With `--qa`, jsonl emits LLM-generated Q/A pairs. | Optional |
 | `coral notion-push [--type T]` | Push pages to a Notion database via curl (reads `NOTION_TOKEN` + `CORAL_NOTION_DB`). | No |
