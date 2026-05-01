@@ -51,6 +51,25 @@ pub trait Runner: Send + Sync {
     /// Execute a prompt and return the captured output.
     /// Implementations must NOT panic on bad input — return RunnerError instead.
     fn run(&self, prompt: &Prompt) -> RunnerResult<RunOutput>;
+
+    /// Streaming variant: invokes `on_chunk` with each newly-emitted chunk
+    /// from the underlying provider, then returns the full accumulated output.
+    ///
+    /// The default implementation falls back to `run()` and emits a single
+    /// chunk with the full stdout — fine for mocks and tests.
+    ///
+    /// Note: timeouts are NOT enforced in this default streaming path; the
+    /// real runner override may enforce them, but the v0.2 implementation
+    /// reads stdout to completion without polling a deadline.
+    fn run_streaming(
+        &self,
+        prompt: &Prompt,
+        on_chunk: &mut dyn FnMut(&str),
+    ) -> RunnerResult<RunOutput> {
+        let out = self.run(prompt)?;
+        on_chunk(&out.stdout);
+        Ok(out)
+    }
 }
 
 /// The real runner that invokes `claude --print` as a subprocess.
@@ -141,6 +160,86 @@ impl Runner for ClaudeRunner {
         Ok(RunOutput {
             stdout: String::from_utf8_lossy(&output.stdout).to_string(),
             stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+            duration,
+        })
+    }
+
+    /// Streaming runner: spawns claude, reads stdout line-by-line, invokes
+    /// `on_chunk` for each line (including its trailing `\n`), and accumulates
+    /// the full stdout for the returned `RunOutput`.
+    ///
+    /// Note: the `prompt.timeout` field is NOT respected here — once the
+    /// process is spawned we drain stdout until EOF. Adding deadline polling
+    /// requires a separate reader thread; deferred to v0.3.
+    fn run_streaming(
+        &self,
+        prompt: &Prompt,
+        on_chunk: &mut dyn FnMut(&str),
+    ) -> RunnerResult<RunOutput> {
+        use std::io::{BufRead, BufReader, Read};
+        let start = Instant::now();
+        let mut cmd = Command::new(&self.binary);
+        cmd.arg("--print");
+        if let Some(system) = &prompt.system {
+            cmd.arg("--append-system-prompt").arg(system);
+        }
+        if let Some(model) = &prompt.model {
+            cmd.arg("--model").arg(model);
+        }
+        if let Some(cwd) = &prompt.cwd {
+            cmd.current_dir(cwd);
+        }
+        cmd.arg(&prompt.user);
+        cmd.stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .stdin(Stdio::null());
+
+        tracing::debug!(binary = %self.binary.display(), model = ?prompt.model, "spawning claude (streaming)");
+
+        let mut child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(RunnerError::NotFound);
+            }
+            Err(e) => return Err(RunnerError::Io(e)),
+        };
+
+        let stdout_handle = child
+            .stdout
+            .take()
+            .ok_or_else(|| RunnerError::Io(std::io::Error::other("failed to capture stdout")))?;
+        let mut reader = BufReader::new(stdout_handle);
+        let mut accumulated = String::new();
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match reader.read_line(&mut line) {
+                Ok(0) => break,
+                Ok(_) => {
+                    on_chunk(&line);
+                    accumulated.push_str(&line);
+                }
+                Err(e) => return Err(RunnerError::Io(e)),
+            }
+        }
+
+        let status = child.wait()?;
+        let mut stderr = String::new();
+        if let Some(mut h) = child.stderr.take() {
+            let _ = h.read_to_string(&mut stderr);
+        }
+        let duration = start.elapsed();
+
+        if !status.success() {
+            return Err(RunnerError::NonZeroExit {
+                code: status.code(),
+                stderr: stderr.trim().to_string(),
+            });
+        }
+
+        Ok(RunOutput {
+            stdout: accumulated,
+            stderr,
             duration,
         })
     }

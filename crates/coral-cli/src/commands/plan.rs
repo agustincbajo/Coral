@@ -1,0 +1,261 @@
+//! Shared types for parsing LLM-generated bootstrap/ingest plans.
+
+use coral_core::error::{CoralError, Result as CoralResult};
+use coral_core::frontmatter::{Confidence, Frontmatter, PageType, Status};
+use coral_core::page::Page;
+use serde::Deserialize;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Action {
+    Create,
+    Update,
+    Retire,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PlanEntry {
+    pub slug: String,
+    /// Optional in YAML: when missing (e.g. bootstrap output) we default to Create.
+    #[serde(default = "default_action")]
+    pub action: Action,
+    pub r#type: Option<PageType>,
+    pub confidence: Option<f64>,
+    #[serde(default)]
+    pub rationale: String,
+    pub body: Option<String>,
+}
+
+fn default_action() -> Action {
+    Action::Create
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct Plan {
+    pub plan: Vec<PlanEntry>,
+}
+
+impl Plan {
+    /// Tries to parse a YAML response from the runner. Tolerates leading
+    /// fences (` ```yaml `) and trailing prose.
+    pub fn parse(stdout: &str) -> CoralResult<Self> {
+        let trimmed = strip_yaml_fence(stdout);
+        serde_yaml_ng::from_str(trimmed).map_err(CoralError::Yaml)
+    }
+}
+
+fn strip_yaml_fence(s: &str) -> &str {
+    let s = s.trim();
+    if let Some(rest) = s
+        .strip_prefix("```yaml\n")
+        .or_else(|| s.strip_prefix("```\n"))
+    {
+        if let Some(end) = rest.rfind("```") {
+            return rest[..end].trim_end();
+        }
+        return rest;
+    }
+    s
+}
+
+/// Builds a Page in memory from a `create` PlanEntry. Caller writes to disk.
+pub fn build_page(entry: &PlanEntry, head_sha: &str, wiki_root: &Path) -> CoralResult<Page> {
+    let page_type = entry.r#type.ok_or_else(|| {
+        CoralError::Git(format!(
+            "create entry for `{}` missing `type` field",
+            entry.slug
+        ))
+    })?;
+    let confidence = Confidence::try_new(entry.confidence.unwrap_or(0.5))?;
+    let body = entry.body.clone().unwrap_or_else(|| {
+        format!(
+            "# {}\n\n_Stub created by coral. Fill in body._\n\n_Rationale: {}_\n",
+            entry.slug, entry.rationale
+        )
+    });
+
+    let subdir = page_type_subdir(page_type);
+    let path: PathBuf = wiki_root.join(subdir).join(format!("{}.md", entry.slug));
+
+    let frontmatter = Frontmatter {
+        slug: entry.slug.clone(),
+        page_type,
+        last_updated_commit: head_sha.to_string(),
+        confidence,
+        sources: vec![],
+        backlinks: vec![],
+        status: Status::Draft,
+        generated_at: Some(chrono::Utc::now().to_rfc3339()),
+        extra: BTreeMap::new(),
+    };
+
+    Ok(Page {
+        path,
+        frontmatter,
+        body,
+    })
+}
+
+/// Returns the subdirectory (relative to `.wiki/`) that hosts pages of this type.
+/// Top-level pages (`index`, `log`, `schema`, `readme`) live at the root; we
+/// return `"."` for those and the caller resolves to `wiki_root` directly.
+pub fn page_type_subdir(t: PageType) -> &'static str {
+    use PageType::*;
+    match t {
+        Module => "modules",
+        Concept => "concepts",
+        Entity => "entities",
+        Flow => "flows",
+        Decision => "decisions",
+        Synthesis => "synthesis",
+        Operation => "operations",
+        Source => "sources",
+        Gap => "gaps",
+        Index => ".",
+        Log => ".",
+        Schema => ".",
+        Readme => ".",
+        Reference => "examples",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_valid_plan() {
+        let yaml = "\
+plan:
+  - slug: order
+    action: create
+    type: module
+    confidence: 0.7
+    rationale: top-level entity
+    body: |
+      # Order
+
+      Body text.
+  - slug: outbox
+    action: update
+    rationale: handler signature changed
+";
+        let plan = Plan::parse(yaml).expect("parse ok");
+        assert_eq!(plan.plan.len(), 2);
+        assert_eq!(plan.plan[0].slug, "order");
+        assert_eq!(plan.plan[0].action, Action::Create);
+        assert_eq!(plan.plan[0].r#type, Some(PageType::Module));
+        assert!((plan.plan[0].confidence.unwrap() - 0.7).abs() < 1e-9);
+        assert!(plan.plan[0].body.as_deref().unwrap().contains("# Order"));
+        assert_eq!(plan.plan[1].action, Action::Update);
+    }
+
+    #[test]
+    fn parse_with_yaml_fence() {
+        let yaml = "```yaml\nplan:\n  - slug: order\n    type: module\n    confidence: 0.6\n    rationale: anchor\n    body: |\n      # Order\n```";
+        let plan = Plan::parse(yaml).expect("parse ok");
+        assert_eq!(plan.plan.len(), 1);
+        assert_eq!(plan.plan[0].slug, "order");
+        // Default action when omitted is Create — the bootstrap shape skips the field.
+        assert_eq!(plan.plan[0].action, Action::Create);
+    }
+
+    #[test]
+    fn parse_invalid_yaml() {
+        let err = Plan::parse("").expect_err("empty must error");
+        assert!(matches!(err, CoralError::Yaml(_)));
+    }
+
+    #[test]
+    fn parse_invalid_action() {
+        let yaml = "plan:\n  - slug: x\n    action: nuke\n    rationale: r\n";
+        let err = Plan::parse(yaml).expect_err("must error");
+        assert!(matches!(err, CoralError::Yaml(_)));
+    }
+
+    #[test]
+    fn build_page_create_module() {
+        let entry = PlanEntry {
+            slug: "order".to_string(),
+            action: Action::Create,
+            r#type: Some(PageType::Module),
+            confidence: Some(0.7),
+            rationale: "top-level".to_string(),
+            body: Some("# Order\n\nBody.\n".to_string()),
+        };
+        let page = build_page(&entry, "deadbeef", Path::new(".wiki")).expect("build");
+        assert_eq!(page.frontmatter.slug, "order");
+        assert_eq!(page.frontmatter.page_type, PageType::Module);
+        assert_eq!(page.frontmatter.last_updated_commit, "deadbeef");
+        assert!((page.frontmatter.confidence.as_f64() - 0.7).abs() < 1e-9);
+        assert_eq!(page.frontmatter.status, Status::Draft);
+        assert_eq!(
+            page.path,
+            Path::new(".wiki").join("modules").join("order.md")
+        );
+        assert!(page.body.contains("# Order"));
+    }
+
+    #[test]
+    fn build_page_create_missing_type_errors() {
+        let entry = PlanEntry {
+            slug: "rogue".to_string(),
+            action: Action::Create,
+            r#type: None,
+            confidence: Some(0.5),
+            rationale: "n/a".to_string(),
+            body: Some("body".to_string()),
+        };
+        let err = build_page(&entry, "abc", Path::new(".wiki")).expect_err("must error");
+        match err {
+            CoralError::Git(msg) => assert!(msg.contains("rogue")),
+            other => panic!("expected Git error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_page_defaults_confidence_to_half_when_missing() {
+        let entry = PlanEntry {
+            slug: "x".to_string(),
+            action: Action::Create,
+            r#type: Some(PageType::Concept),
+            confidence: None,
+            rationale: "n/a".to_string(),
+            body: Some("body".to_string()),
+        };
+        let page = build_page(&entry, "abc", Path::new(".wiki")).expect("build");
+        assert!((page.frontmatter.confidence.as_f64() - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn page_type_subdir_covers_all_variants() {
+        // Sanity: every concrete dir maps to a non-empty string.
+        for t in [
+            PageType::Module,
+            PageType::Concept,
+            PageType::Entity,
+            PageType::Flow,
+            PageType::Decision,
+            PageType::Synthesis,
+            PageType::Operation,
+            PageType::Source,
+            PageType::Gap,
+            PageType::Reference,
+        ] {
+            let s = page_type_subdir(t);
+            assert!(!s.is_empty());
+            assert_ne!(s, ".");
+        }
+        // Index / Log / Schema / Readme live at the wiki root.
+        for t in [
+            PageType::Index,
+            PageType::Log,
+            PageType::Schema,
+            PageType::Readme,
+        ] {
+            assert_eq!(page_type_subdir(t), ".");
+        }
+    }
+}

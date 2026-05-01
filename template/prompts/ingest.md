@@ -10,24 +10,32 @@ The current `.wiki/index.md` has `last_commit: {{last_commit}}`. The current `HE
 
 ## Your task
 
-For each changed file, decide:
-1. Which `.wiki/` page is affected (or needs to be created).
+For each meaningful change, decide:
+1. Which `.wiki/` page is affected (or needs to be created or retired).
 2. The smallest semantic delta to apply.
-3. The new `last_updated_commit`, `confidence`, `sources`, `backlinks`.
 
-Output a YAML plan:
+Output a YAML plan that the CLI will parse and apply directly to `.wiki/`:
 
 ```yaml
 plan:
-  - page: modules/create-order.md
-    action: update
-    delta: status_machine_changed_state
-    new_confidence: 0.85
-    sources_to_add: [src/features/create_order/service.rs]
-  - page: concepts/idempotency.md
-    action: update
-    delta: clarify_uniqueness_constraint
-    new_confidence: 0.90
+  - slug: order
+    action: create | update | retire
+    type: module          # required when action=create
+    confidence: 0.7        # 0.0..1.0; required when action=create
+    rationale: handler signature changed
+    body: |
+      # Order
+
+      Lorem ipsum...
 ```
 
-Do not write the actual page contents in this output — that's a separate step.
+Rules:
+
+- `slug` is mandatory on every entry. It must match an existing page (for `update` / `retire`) or be a new slug (for `create`).
+- `action` is one of `create`, `update`, `retire`.
+- `type` is required when `action=create`. Allowed values: `module`, `concept`, `entity`, `flow`, `decision`, `synthesis`, `operation`, `source`, `gap`, `index`, `log`, `schema`, `readme`, `reference`.
+- `confidence` is a float in `0.0..1.0`. Required for `create` (default 0.5 if missing).
+- `body` is the Markdown body of the new page. Required for `create`. **Do NOT include frontmatter** — the CLI builds it from the other fields.
+- For `update`, the CLI bumps `last_updated_commit` on the existing page; you only need `slug` + `action: update` + `rationale`.
+- For `retire`, the CLI marks the existing page `status: stale`; you only need `slug` + `action: retire` + `rationale`.
+- Do not invent slugs that don't fit a real change in the diff.

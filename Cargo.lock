@@ -223,6 +223,7 @@ dependencies = [
  "coral-stats",
  "include_dir",
  "predicates",
+ "serde",
  "serde_json",
  "serde_yaml_ng",
  "tempfile",

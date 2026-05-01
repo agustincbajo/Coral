@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use clap::Args;
 use coral_core::walk;
 use coral_runner::{Prompt, Runner};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -61,10 +62,17 @@ pub fn run_with_runner(
         timeout: None,
     };
 
-    let out = runner
-        .run(&prompt)
+    let mut stdout = std::io::stdout().lock();
+    let _out = runner
+        .run_streaming(&prompt, &mut |chunk| {
+            // Best-effort: a write failure on stdout (e.g. broken pipe) shouldn't
+            // surface as a runner error — just stop emitting.
+            let _ = stdout.write_all(chunk.as_bytes());
+            let _ = stdout.flush();
+        })
         .map_err(|e| anyhow::anyhow!("runner failed: {e}"))?;
-    println!("{}", out.stdout);
+    // Trailing newline so the next shell prompt lands on its own line.
+    let _ = stdout.write_all(b"\n");
     Ok(ExitCode::SUCCESS)
 }
 

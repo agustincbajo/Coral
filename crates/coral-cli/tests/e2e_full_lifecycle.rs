@@ -77,13 +77,17 @@ fn full_lifecycle_with_mock_runner() {
         "Pattern used to guarantee at-least-once delivery. See [[order]].",
     );
 
-    // Step 4: ingest with mock runner.
+    // Step 4: ingest with mock runner (dry-run: just confirms the pipeline).
     let runner2 = MockRunner::new();
-    runner2.push_ok("- slug: order\n  action: update\n  rationale: handler signature changed");
+    runner2.push_ok(
+        "plan:\n  - slug: order\n    action: update\n    rationale: handler signature changed",
+    );
     ingest::run_with_runner(
         IngestArgs {
             from: Some("abc".into()),
             model: None,
+            dry_run: true,
+            apply: false,
         },
         Some(&wiki),
         &runner2,
@@ -91,6 +95,48 @@ fn full_lifecycle_with_mock_runner() {
     .unwrap();
     assert_eq!(runner2.calls().len(), 1);
     assert!(runner2.calls()[0].user.contains("abc.."));
+
+    // Step 4b: ingest --apply mutates the existing page (bumps last_updated_commit).
+    let runner3 = MockRunner::new();
+    runner3.push_ok(
+        "plan:\n  - slug: order\n    action: update\n    rationale: handler signature changed",
+    );
+    ingest::run_with_runner(
+        IngestArgs {
+            from: Some("abc".into()),
+            model: None,
+            dry_run: false,
+            apply: true,
+        },
+        Some(&wiki),
+        &runner3,
+    )
+    .unwrap();
+    let order_md = std::fs::read_to_string(wiki.join("modules/order.md")).unwrap();
+    assert!(
+        !order_md.contains("last_updated_commit: abc123"),
+        "ingest --apply should have bumped last_updated_commit on order.md"
+    );
+
+    // Step 4c: bootstrap --apply writes a brand-new page from a YAML plan.
+    let runner_b = MockRunner::new();
+    runner_b.push_ok(
+        "plan:\n  - slug: payments\n    type: module\n    confidence: 0.7\n    rationale: new feature\n    body: |\n      # Payments\n",
+    );
+    bootstrap::run_with_runner(
+        BootstrapArgs {
+            model: None,
+            dry_run: false,
+            apply: true,
+        },
+        Some(&wiki),
+        &runner_b,
+    )
+    .unwrap();
+    assert!(
+        wiki.join("modules/payments.md").exists(),
+        "bootstrap --apply should have written modules/payments.md"
+    );
 
     // Step 5: structural lint passes.
     lint::run(
