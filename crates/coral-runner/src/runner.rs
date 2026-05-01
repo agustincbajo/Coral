@@ -9,14 +9,41 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum RunnerError {
-    #[error("claude binary not found in PATH; install Claude Code")]
+    #[error("claude binary not found in PATH; install Claude Code from https://claude.com/code")]
     NotFound,
+    #[error(
+        "claude is not authenticated. Run `claude setup-token` or export ANTHROPIC_API_KEY in this shell.\n\nProvider response:\n{0}"
+    )]
+    AuthFailed(String),
     #[error("claude exited with code {code:?}: {stderr}")]
     NonZeroExit { code: Option<i32>, stderr: String },
     #[error("claude invocation timed out after {0:?}")]
     Timeout(Duration),
     #[error("io error invoking claude: {0}")]
     Io(#[from] std::io::Error),
+}
+
+/// Combine stdout and stderr into a single error-message string.
+/// `claude --print` writes auth errors to stdout, so a non-zero exit with
+/// empty stderr would otherwise lose the actionable detail.
+pub(crate) fn combine_outputs(stdout: &str, stderr: &str) -> String {
+    let stdout = stdout.trim();
+    let stderr = stderr.trim();
+    match (stderr.is_empty(), stdout.is_empty()) {
+        (true, true) => String::new(),
+        (true, false) => stdout.to_string(),
+        (false, true) => stderr.to_string(),
+        (false, false) => format!("{stderr}\n{stdout}"),
+    }
+}
+
+/// Heuristic for spotting a provider auth failure in combined runner output.
+pub(crate) fn is_auth_failure(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    lower.contains("authenticate")
+        || lower.contains("401")
+        || lower.contains("invalid_api_key")
+        || lower.contains("invalid authentication")
 }
 
 pub type RunnerResult<T> = std::result::Result<T, RunnerError>;
@@ -151,9 +178,15 @@ impl Runner for ClaudeRunner {
 
         let duration = start.elapsed();
         if !output.status.success() {
+            let stdout_str = String::from_utf8_lossy(&output.stdout);
+            let stderr_str = String::from_utf8_lossy(&output.stderr);
+            let combined = combine_outputs(&stdout_str, &stderr_str);
+            if is_auth_failure(&combined) {
+                return Err(RunnerError::AuthFailed(combined));
+            }
             return Err(RunnerError::NonZeroExit {
                 code: output.status.code(),
-                stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+                stderr: combined,
             });
         }
 
@@ -271,9 +304,13 @@ impl Runner for ClaudeRunner {
         let duration = start.elapsed();
 
         if !status.success() {
+            let combined = combine_outputs(&accumulated, &stderr);
+            if is_auth_failure(&combined) {
+                return Err(RunnerError::AuthFailed(combined));
+            }
             return Err(RunnerError::NonZeroExit {
                 code: status.code(),
-                stderr: stderr.trim().to_string(),
+                stderr: combined,
             });
         }
 
@@ -355,6 +392,28 @@ mod tests {
             elapsed < Duration::from_secs(2),
             "should kill within 2s, took {elapsed:?}"
         );
+    }
+
+    #[test]
+    fn combine_outputs_handles_all_combinations() {
+        assert_eq!(combine_outputs("", ""), "");
+        assert_eq!(combine_outputs("out", ""), "out");
+        assert_eq!(combine_outputs("", "err"), "err");
+        assert_eq!(combine_outputs("out", "err"), "err\nout");
+        // Trims whitespace at the boundaries so the formatted output is tidy.
+        assert_eq!(combine_outputs("  out  \n", "\n  err\n"), "err\nout");
+    }
+
+    #[test]
+    fn is_auth_failure_recognizes_provider_signatures() {
+        assert!(is_auth_failure(
+            "Failed to authenticate. API Error: 401 Invalid authentication credentials"
+        ));
+        assert!(is_auth_failure("error 401"));
+        assert!(is_auth_failure("invalid_api_key"));
+        assert!(is_auth_failure("Could not authenticate the request"));
+        assert!(!is_auth_failure("model overloaded"));
+        assert!(!is_auth_failure("rate limit exceeded"));
     }
 
     #[test]

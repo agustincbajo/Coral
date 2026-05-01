@@ -253,11 +253,9 @@ const INGEST_SYSTEM_FALLBACK: &str = "You are the Coral wiki bibliotecario. Tran
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::CWD_LOCK;
     use coral_runner::MockRunner;
-    use std::sync::Mutex;
     use tempfile::TempDir;
-
-    static CWD_LOCK: Mutex<()> = Mutex::new(());
 
     fn write_index(wiki: &Path, last_commit: &str) {
         let idx = format!(

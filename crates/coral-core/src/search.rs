@@ -104,12 +104,26 @@ fn build_snippet(body: &str, query_tokens: &[String], max_len: usize) -> String 
     let lower = body.to_lowercase();
     for q in query_tokens {
         if let Some(pos) = lower.find(q.as_str()) {
-            let start = pos.saturating_sub(40);
-            let end = (pos + q.len() + max_len).min(body.len());
+            let start = floor_char_boundary(body, pos.saturating_sub(40));
+            let end = ceil_char_boundary(body, (pos + q.len() + max_len).min(body.len()));
             return body[start..end].chars().take(max_len).collect::<String>();
         }
     }
     body.chars().take(max_len).collect::<String>()
+}
+
+fn floor_char_boundary(s: &str, mut i: usize) -> usize {
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
+fn ceil_char_boundary(s: &str, mut i: usize) -> usize {
+    while i < s.len() && !s.is_char_boundary(i) {
+        i += 1;
+    }
+    i
 }
 
 #[cfg(test)]
@@ -183,5 +197,18 @@ mod tests {
         let pages = vec![page("a", body)];
         let results = search(&pages, "outbox", 5);
         assert!(results[0].snippet.contains("outbox"));
+    }
+
+    #[test]
+    fn search_does_not_panic_on_multibyte_chars_near_match() {
+        // Em-dash (—) is 3 bytes in UTF-8. With the match positioned so that
+        // `pos - 40` or `pos + len + max_len` lands inside the em-dash, the
+        // previous byte-indexed snippet builder panicked.
+        let prefix = "Karpathy's wiki — bypasses RAG with an evolving markdown library";
+        let body = format!("{prefix} that uses embeddings under the hood for retrieval.");
+        let pages = vec![page("a", &body)];
+        let results = search(&pages, "embeddings", 5);
+        assert!(!results.is_empty());
+        assert!(results[0].snippet.contains("embeddings"));
     }
 }

@@ -206,13 +206,9 @@ fn collect_repo_files(root: &Path) -> Result<Vec<PathBuf>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::CWD_LOCK;
     use coral_runner::MockRunner;
-    use std::sync::Mutex;
     use tempfile::TempDir;
-
-    /// `bootstrap::run_with_runner` walks `current_dir`, so tests that mutate
-    /// the cwd must serialize.
-    static CWD_LOCK: Mutex<()> = Mutex::new(());
 
     fn seed_wiki_with_index(root: &Path) {
         std::fs::create_dir_all(root).unwrap();
