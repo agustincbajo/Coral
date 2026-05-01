@@ -409,7 +409,9 @@ fn notion_push_without_token_fails() {
 }
 
 #[test]
-fn notion_push_dry_run_does_not_call_curl() {
+fn notion_push_defaults_to_dry_run() {
+    // v0.4: dry-run is the default. `--apply` is required to actually POST.
+    // No flag → preview message + success exit, never invokes curl.
     let tmp = TempDir::new().unwrap();
     Command::cargo_bin("coral")
         .unwrap()
@@ -420,17 +422,11 @@ fn notion_push_dry_run_does_not_call_curl() {
     Command::cargo_bin("coral")
         .unwrap()
         .current_dir(tmp.path())
-        .args([
-            "notion-push",
-            "--token",
-            "fake",
-            "--database",
-            "db-fake",
-            "--dry-run",
-        ])
+        .args(["notion-push", "--token", "fake", "--database", "db-fake"])
         .assert()
         .success()
-        .stdout(contains("Would POST"));
+        .stdout(contains("Would POST"))
+        .stdout(contains("--apply"));
 }
 
 #[test]

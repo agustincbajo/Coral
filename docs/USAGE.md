@@ -255,7 +255,7 @@ With `--qa`, each page is sent to the runner with the `qa-pairs` system prompt (
 Push wiki pages directly to a Notion database. Thin wrapper over `coral export --format notion-json` + curl.
 
 ```bash
-coral notion-push [--token <TOKEN>] [--database <DB_ID>] [--type <TYPE>] [--dry-run]
+coral notion-push [--token <TOKEN>] [--database <DB_ID>] [--type <TYPE>] [--apply]
 ```
 
 Env vars (alternative to flags):
@@ -264,16 +264,16 @@ Env vars (alternative to flags):
 
 Filter by page type with `--type concept --type module` (repeatable).
 
-`--dry-run` prints what would be pushed without calling Notion.
+**Default is dry-run** (matches `bootstrap`/`ingest` semantics): without `--apply`, the command prints what would be POSTed and exits 0 without calling Notion. Pass `--apply` to actually push.
 
-Exit code: `0` if all pages POST cleanly (HTTP 2xx), `1` otherwise.
+Exit code: `0` if all pages POST cleanly (HTTP 2xx) or dry-run, `1` otherwise.
 
 ### Setup
 
 1. Create an internal integration at https://www.notion.so/my-integrations — copy the secret as `NOTION_TOKEN`.
 2. Create a database with these properties: `Name` (title), `Type` (select), `Status` (select), `Confidence` (number).
 3. Share the database with your integration. Copy the database id (32-char hex from the URL).
-4. `export NOTION_TOKEN=secret_…` and `export CORAL_NOTION_DB=…`. Run `coral notion-push --dry-run` to verify.
+4. `export NOTION_TOKEN=secret_…` and `export CORAL_NOTION_DB=…`. Run `coral notion-push` (no `--apply`) to preview, then add `--apply` to push.
 
 ---
 

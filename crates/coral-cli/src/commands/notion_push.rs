@@ -27,9 +27,11 @@ pub struct NotionPushArgs {
     /// Filter by page type (repeatable).
     #[arg(long = "type", value_name = "TYPE")]
     pub types: Vec<String>,
-    /// Print what would be pushed without actually calling Notion.
+    /// Apply: actually POST each page to the Notion database.
+    /// Without this flag, the command runs as a dry-run preview (default,
+    /// matches `bootstrap`/`ingest` semantics).
     #[arg(long)]
-    pub dry_run: bool,
+    pub apply: bool,
 }
 
 pub fn run(args: NotionPushArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
@@ -56,9 +58,9 @@ pub fn run(args: NotionPushArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
     let pages = filter_by_types(pages, &args.types);
     let bodies = build_notion_bodies(&pages, &database);
 
-    if args.dry_run {
+    if !args.apply {
         println!(
-            "Would POST {} page(s) to Notion database {database}",
+            "Would POST {} page(s) to Notion database {database} (dry-run; pass --apply to push)",
             bodies.len()
         );
         for (i, _b) in bodies.iter().enumerate() {
