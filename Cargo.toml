@@ -26,6 +26,7 @@ anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 include_dir = "0.7"
+toml = "0.8"
 tempfile = "3"
 assert_fs = "1"
 predicates = "3"
@@ -41,3 +42,4 @@ lto = "thin"
 codegen-units = 1
 strip = true
 opt-level = 3
+panic = "abort"

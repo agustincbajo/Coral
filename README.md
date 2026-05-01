@@ -99,6 +99,12 @@ CI runs all of the above on every push to `main` and every PR.
 
 ---
 
+## Performance
+
+Coral aims for sub-100 ms cold-start on the structural commands (`init`, `lint --structural`, `stats`, `sync`). Methodology, baseline numbers, profiling tips, and the release-profile config live in [docs/PERF.md](docs/PERF.md).
+
+---
+
 ## License
 
 MIT © 2026 Agustín Bajo

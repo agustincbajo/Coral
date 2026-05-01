@@ -63,7 +63,7 @@ fn sync_pinned_version_matches_binary() {
     sync::run(
         SyncArgs {
             version: Some(format!("v{}", env!("CARGO_PKG_VERSION"))),
-            force: false,
+            ..Default::default()
         },
         None,
     )
@@ -85,7 +85,7 @@ fn sync_pinned_version_mismatch_fails() {
     let res = sync::run(
         SyncArgs {
             version: Some("v999.999.999".into()),
-            force: false,
+            ..Default::default()
         },
         None,
     );

@@ -131,6 +131,102 @@ fn sync_extracts_template() {
 }
 
 #[test]
+fn sync_creates_pins_toml() {
+    let tmp = TempDir::new().unwrap();
+    Command::cargo_bin("coral")
+        .unwrap()
+        .current_dir(tmp.path())
+        .arg("sync")
+        .assert()
+        .success();
+    let pins_path = tmp.path().join(".coral-pins.toml");
+    assert!(
+        pins_path.exists(),
+        "expected .coral-pins.toml to be created"
+    );
+    let content = std::fs::read_to_string(&pins_path).unwrap();
+    assert!(
+        content.contains("default ="),
+        "expected `default = ...` line in TOML, got: {content}"
+    );
+}
+
+#[test]
+fn sync_pin_flag_adds_entry() {
+    let tmp = TempDir::new().unwrap();
+    Command::cargo_bin("coral")
+        .unwrap()
+        .current_dir(tmp.path())
+        .args(["sync", "--pin", "agents/x=v0.9.0"])
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(tmp.path().join(".coral-pins.toml")).unwrap();
+    assert!(
+        content.contains("\"agents/x\""),
+        "expected pinned key in TOML, got: {content}"
+    );
+    assert!(
+        content.contains("v0.9.0"),
+        "expected pinned version in TOML, got: {content}"
+    );
+}
+
+#[test]
+fn sync_unpin_flag_removes_entry() {
+    let tmp = TempDir::new().unwrap();
+    // First, set the pin.
+    Command::cargo_bin("coral")
+        .unwrap()
+        .current_dir(tmp.path())
+        .args(["sync", "--pin", "agents/x=v0.9.0"])
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(tmp.path().join(".coral-pins.toml")).unwrap();
+    assert!(content.contains("\"agents/x\""));
+    // Now remove it.
+    Command::cargo_bin("coral")
+        .unwrap()
+        .current_dir(tmp.path())
+        .args(["sync", "--unpin", "agents/x"])
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(tmp.path().join(".coral-pins.toml")).unwrap();
+    assert!(
+        !content.contains("\"agents/x\""),
+        "expected pin to be removed, got: {content}"
+    );
+}
+
+#[test]
+fn sync_remote_without_version_fails() {
+    let tmp = TempDir::new().unwrap();
+    Command::cargo_bin("coral")
+        .unwrap()
+        .current_dir(tmp.path())
+        .args(["sync", "--remote"])
+        .assert()
+        .failure()
+        .stderr(contains("remote sync requires"));
+}
+
+/// Hits the network — requires `git` + reachable github.com. Marked ignored so
+/// CI / cargo test doesn't run it by default.
+#[test]
+#[ignore]
+fn sync_remote_clones_tag_and_lays_template() {
+    let tmp = TempDir::new().unwrap();
+    Command::cargo_bin("coral")
+        .unwrap()
+        .current_dir(tmp.path())
+        .args(["sync", "--remote", "--version", "v0.1.0"])
+        .assert()
+        .success();
+    assert!(tmp.path().join("template").is_dir());
+    let pins = std::fs::read_to_string(tmp.path().join(".coral-pins.toml")).unwrap();
+    assert!(pins.contains("default = \"v0.1.0\""));
+}
+
+#[test]
 fn search_with_init_returns_no_results() {
     let tmp = TempDir::new().unwrap();
     Command::cargo_bin("coral")
