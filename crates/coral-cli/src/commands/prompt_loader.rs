@@ -6,7 +6,7 @@
 //! can override any prompt by writing `<cwd>/prompts/<name>.md`.
 
 use include_dir::{Dir, include_dir};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 static EMBEDDED: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../template/prompts");
 
@@ -27,17 +27,28 @@ pub struct LoadedPrompt {
 /// Try to load `<cwd>/prompts/<name>.md` first. If absent, fall back to the embedded
 /// template at `template/prompts/<name>.md`. If that's also missing, return the
 /// caller's `fallback` string and mark `PromptSource::Fallback`.
+///
+/// This is a thin wrapper over [`load_or_fallback_in`] that uses the process'
+/// current working directory (`Path::new(".")`).
 pub fn load_or_fallback(name: &str, fallback: &str) -> LoadedPrompt {
+    load_or_fallback_in(Path::new("."), name, fallback)
+}
+
+/// Like [`load_or_fallback`], but resolves the local-override path relative to
+/// `cwd` instead of the process' current working directory. Useful for tests
+/// (no `set_current_dir` race) and for programmatic callers that want to
+/// inspect prompt resolution against a specific repo root.
+pub fn load_or_fallback_in(cwd: &Path, name: &str, fallback: &str) -> LoadedPrompt {
     // 1. Local override
-    let local_path = PathBuf::from("prompts").join(format!("{name}.md"));
-    if local_path.exists() {
-        if let Ok(content) = std::fs::read_to_string(&local_path) {
-            return LoadedPrompt {
-                name: name.to_string(),
-                source: PromptSource::Local(local_path),
-                content,
-            };
-        }
+    let local_path = cwd.join("prompts").join(format!("{name}.md"));
+    if local_path.exists()
+        && let Ok(content) = std::fs::read_to_string(&local_path)
+    {
+        return LoadedPrompt {
+            name: name.to_string(),
+            source: PromptSource::Local(local_path),
+            content,
+        };
     }
 
     // 2. Embedded
@@ -61,7 +72,7 @@ pub fn load_or_fallback(name: &str, fallback: &str) -> LoadedPrompt {
 }
 
 /// Names of prompts known to v0.2. Kept in sync with the LLM commands that
-/// call `load_or_fallback`.
+/// call [`load_or_fallback`].
 pub const KNOWN_PROMPTS: &[&str] = &[
     "bootstrap",
     "ingest",
@@ -74,87 +85,82 @@ pub const KNOWN_PROMPTS: &[&str] = &[
 /// Lists all known prompt names with their resolved source. The `content`
 /// field reflects the actual loaded text (or empty if no fallback was supplied).
 pub fn list_prompts() -> Vec<LoadedPrompt> {
+    list_prompts_in(Path::new("."))
+}
+
+/// Like [`list_prompts`], but resolves overrides relative to `cwd`.
+pub fn list_prompts_in(cwd: &Path) -> Vec<LoadedPrompt> {
     KNOWN_PROMPTS
         .iter()
-        .map(|n| load_or_fallback(n, ""))
+        .map(|n| load_or_fallback_in(cwd, n, ""))
         .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
     use tempfile::TempDir;
 
-    /// Tests in this module mutate `current_dir`; serialize them.
-    static CWD_LOCK: Mutex<()> = Mutex::new(());
+    // Tests use `*_in` variants exclusively — no `current_dir` mutation, no
+    // cross-binary race. Safe to run in parallel with any other test.
 
     #[test]
     fn load_uses_local_when_present() {
-        let _guard = CWD_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let tmp = TempDir::new().unwrap();
-        let prev = std::env::current_dir().unwrap();
-        std::env::set_current_dir(tmp.path()).unwrap();
+        std::fs::create_dir(tmp.path().join("prompts")).unwrap();
+        std::fs::write(tmp.path().join("prompts/query.md"), "LOCAL CONTENT").unwrap();
 
-        std::fs::create_dir("prompts").unwrap();
-        std::fs::write("prompts/query.md", "LOCAL CONTENT").unwrap();
-
-        let p = load_or_fallback("query", "fallback");
+        let p = load_or_fallback_in(tmp.path(), "query", "fallback");
         assert_eq!(p.content, "LOCAL CONTENT");
         assert!(matches!(p.source, PromptSource::Local(_)));
-
-        std::env::set_current_dir(prev).unwrap();
     }
 
     #[test]
     fn load_uses_embedded_when_local_missing() {
-        let _guard = CWD_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let tmp = TempDir::new().unwrap();
-        let prev = std::env::current_dir().unwrap();
-        std::env::set_current_dir(tmp.path()).unwrap();
-
-        let p = load_or_fallback("ingest", "fallback");
+        let p = load_or_fallback_in(tmp.path(), "ingest", "fallback");
         // template/prompts/ingest.md exists embedded
         assert!(matches!(p.source, PromptSource::Embedded(_)));
         assert!(
             !p.content.is_empty(),
             "embedded ingest.md must not be empty"
         );
-
-        std::env::set_current_dir(prev).unwrap();
     }
 
     #[test]
     fn load_falls_back_when_neither_present() {
-        let _guard = CWD_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let tmp = TempDir::new().unwrap();
-        let prev = std::env::current_dir().unwrap();
-        std::env::set_current_dir(tmp.path()).unwrap();
-
-        let p = load_or_fallback("nonexistent-prompt-xyz", "FALLBACK");
+        let p = load_or_fallback_in(tmp.path(), "nonexistent-prompt-xyz", "FALLBACK");
         assert!(matches!(p.source, PromptSource::Fallback));
         assert_eq!(p.content, "FALLBACK");
-
-        std::env::set_current_dir(prev).unwrap();
     }
 
     #[test]
     fn list_prompts_returns_all_known() {
-        let _guard = CWD_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let tmp = TempDir::new().unwrap();
-        let prev = std::env::current_dir().unwrap();
-        std::env::set_current_dir(tmp.path()).unwrap();
-
-        let prompts = list_prompts();
+        let prompts = list_prompts_in(tmp.path());
         let names: Vec<_> = prompts.iter().map(|p| p.name.clone()).collect();
-        assert!(names.contains(&"ingest".to_string()));
-        assert!(names.contains(&"query".to_string()));
-        assert!(names.contains(&"bootstrap".to_string()));
-        assert!(names.contains(&"consolidate".to_string()));
-        assert!(names.contains(&"onboard".to_string()));
-        assert!(names.contains(&"lint-semantic".to_string()));
-        assert!(prompts.len() >= 5);
+        for expected in KNOWN_PROMPTS {
+            assert!(
+                names.contains(&expected.to_string()),
+                "missing known prompt: {expected}"
+            );
+        }
+        assert_eq!(prompts.len(), KNOWN_PROMPTS.len());
+    }
 
-        std::env::set_current_dir(prev).unwrap();
+    #[test]
+    fn load_default_uses_process_cwd() {
+        // Sanity: the `load_or_fallback` wrapper delegates to `_in(".")`.
+        // For an embedded-only name with no local override at process CWD,
+        // it must return Embedded.
+        let p = load_or_fallback("query", "fallback");
+        // Either Embedded (template/prompts/query.md exists) or Local (if the
+        // test runner happens to have a prompts/query.md at the workspace root,
+        // which we don't, but be flexible). Fallback would be a regression.
+        assert!(
+            matches!(p.source, PromptSource::Embedded(_) | PromptSource::Local(_)),
+            "process-cwd loader returned Fallback unexpectedly"
+        );
     }
 }
