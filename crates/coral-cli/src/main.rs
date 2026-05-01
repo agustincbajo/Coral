@@ -49,11 +49,8 @@ enum Cmd {
     Onboard(commands::onboard::OnboardArgs),
     /// Inspect prompt sources (local override, embedded, or fallback).
     Prompts(commands::prompts::PromptsArgs),
-    /// Semantic search over the wiki (Phase 4 — not yet implemented).
-    Search {
-        /// Search query.
-        query: String,
-    },
+    /// TF-IDF search over the wiki (v0.2; v0.3 will switch to embeddings).
+    Search(commands::search::SearchArgs),
 }
 
 fn main() -> ExitCode {
@@ -71,10 +68,7 @@ fn main() -> ExitCode {
         Cmd::Sync(args) => commands::sync::run(args, cli.wiki_root.as_deref()),
         Cmd::Onboard(args) => commands::onboard::run(args, cli.wiki_root.as_deref()),
         Cmd::Prompts(args) => commands::prompts::run(args, cli.wiki_root.as_deref()),
-        Cmd::Search { .. } => {
-            eprintln!("`search` is not implemented in v0.1. Coming in v0.2.");
-            return ExitCode::from(2);
-        }
+        Cmd::Search(args) => commands::search::run(args, cli.wiki_root.as_deref()),
     };
 
     match result {

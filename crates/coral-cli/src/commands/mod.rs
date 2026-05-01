@@ -1,5 +1,6 @@
 pub mod init;
 pub mod lint;
+pub mod search;
 pub mod stats;
 pub mod sync;
 

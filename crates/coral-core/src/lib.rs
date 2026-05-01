@@ -6,6 +6,7 @@ pub mod gitdiff;
 pub mod index;
 pub mod log;
 pub mod page;
+pub mod search;
 pub mod walk;
 pub mod wikilinks;
 

@@ -131,14 +131,21 @@ fn sync_extracts_template() {
 }
 
 #[test]
-fn search_returns_not_implemented_exit_2() {
+fn search_with_init_returns_no_results() {
     let tmp = TempDir::new().unwrap();
+    Command::cargo_bin("coral")
+        .unwrap()
+        .current_dir(tmp.path())
+        .arg("init")
+        .assert()
+        .success();
     Command::cargo_bin("coral")
         .unwrap()
         .current_dir(tmp.path())
         .args(["search", "anything"])
         .assert()
-        .code(2);
+        .success()
+        .stdout(contains("No results"));
 }
 
 #[test]

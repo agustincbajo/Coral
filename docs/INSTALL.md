@@ -52,6 +52,8 @@ Then either:
 
 - **Or copy the workflow template** that `coral sync` lays at `template/workflows/wiki-maintenance.yml`.
 
+The Hermes quality gate (`/.github/actions/validate`) is **opt-in** — wire it up explicitly when you want an independent LLM to validate wiki PRs before merge. See [USAGE — CI: Hermes quality gate](./USAGE.md#ci-hermes-quality-gate).
+
 ## Uninstall
 
 ```bash

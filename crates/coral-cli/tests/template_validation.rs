@@ -106,6 +106,38 @@ fn composite_actions_present_with_required_keys() {
 }
 
 #[test]
+fn hermes_validator_subagent_present() {
+    let content = read_md("agents/wiki-validator.md");
+    assert!(content.starts_with("---\n"));
+    for field in ["name:", "description:", "tools:", "model:"] {
+        assert!(content.contains(field), "missing {field}");
+    }
+}
+
+#[test]
+fn hermes_validate_composite_action_present() {
+    let path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.github/actions/validate/action.yml");
+    let content =
+        std::fs::read_to_string(&path).unwrap_or_else(|_| panic!("missing {}", path.display()));
+    let parsed: serde_yaml_ng::Value = serde_yaml_ng::from_str(&content).unwrap();
+    let map = parsed.as_mapping().expect("root mapping");
+    for key in ["name", "description", "inputs", "runs"] {
+        assert!(map.contains_key(serde_yaml_ng::Value::from(key)));
+    }
+    let runs = map
+        .get(serde_yaml_ng::Value::from("runs"))
+        .unwrap()
+        .as_mapping()
+        .unwrap();
+    assert_eq!(
+        runs.get(serde_yaml_ng::Value::from("using"))
+            .and_then(|v| v.as_str()),
+        Some("composite")
+    );
+}
+
+#[test]
 fn workflow_yaml_parses() {
     let content = read_md("workflows/wiki-maintenance.yml");
     // YAML 1.1 quirk: GitHub Actions `on:` key can deserialize as boolean `true`

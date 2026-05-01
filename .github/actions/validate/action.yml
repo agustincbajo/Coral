@@ -1,0 +1,56 @@
+name: 'Coral Hermes wiki validator'
+description: 'Independent LLM validator for wiki/auto-ingest PRs. Reads the diff, validates claims against cited sources, posts a review. Blocks merge if any page rejected.'
+inputs:
+  claude_code_oauth_token:
+    description: 'Claude Code OAuth token.'
+    required: true
+  coral_version:
+    description: 'Coral CLI version (git tag or "main"). Default: main.'
+    required: false
+    default: 'main'
+  pr_number:
+    description: 'Pull request number to validate.'
+    required: true
+  min_pages_to_validate:
+    description: 'Skip validation when fewer than N pages changed (cost saving). Default: 5.'
+    required: false
+    default: '5'
+runs:
+  using: 'composite'
+  steps:
+    - name: Set up Rust
+      uses: dtolnay/rust-toolchain@stable
+    - name: Cache cargo
+      uses: Swatinem/rust-cache@v2
+    - name: Install Coral CLI
+      shell: bash
+      run: |
+        cargo install --locked --git https://github.com/agustincbajo/Coral --branch ${{ inputs.coral_version }} coral-cli
+    - name: Count changed wiki pages
+      id: count
+      shell: bash
+      run: |
+        N=$(git diff --name-only "origin/main..HEAD" -- '.wiki/**/*.md' | wc -l)
+        echo "n=$N" >> "$GITHUB_OUTPUT"
+        echo "Changed wiki pages: $N"
+    - name: Skip validation if change is small
+      if: steps.count.outputs.n < inputs.min_pages_to_validate
+      shell: bash
+      run: |
+        echo "::notice::Skipping Hermes validation — only ${{ steps.count.outputs.n }} page(s) changed (threshold: ${{ inputs.min_pages_to_validate }})."
+    - name: Run Hermes validation
+      if: steps.count.outputs.n >= inputs.min_pages_to_validate
+      uses: anthropics/claude-code-action@v1
+      with:
+        claude_code_oauth_token: ${{ inputs.claude_code_oauth_token }}
+        prompt: |
+          Use the @wiki-validator subagent to review every changed `.wiki/**/*.md` file in
+          this PR. The subagent definition is at `.claude/agents/wiki-validator.md` (or
+          `template/agents/wiki-validator.md` if the consumer hasn't synced yet). For each
+          page, output `OK <slug>` or `REJECT <slug>: <reason>`.
+
+          After collecting all verdicts, post a single PR review:
+          - REQUEST CHANGES if any REJECT lines.
+          - APPROVE if all OK.
+
+          Use `gh pr review ${{ inputs.pr_number }}` to post.

@@ -25,6 +25,7 @@ This is a **link-only** page. Every architectural decision lives in `docs/adr/` 
 - [ADR 0003 — Template distribution via `include_dir!`](../../docs/adr/0003-template-distribution-via-include-dir.md) — embed-in-binary strategy.
 - [ADR 0004 — Multi-agent development flow](../../docs/adr/0004-multi-agent-development-flow.md) — orchestrator/coder/tester loop.
 - [ADR 0005 — Versioning and sync semantics](../../docs/adr/0005-versioning-and-sync.md) — single SemVer line, SCHEMA stays local.
+- [ADR 0006 — Local semantic search storage](../../docs/adr/0006-local-semantic-search-storage.md) — TF-IDF stub in v0.2, embeddings in v0.3.
 
 ## Why link-only
 

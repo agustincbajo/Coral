@@ -164,6 +164,41 @@ coral prompts list
 
 ## `coral search`
 
-Semantic search over the wiki.
+TF-IDF search over the wiki.
 
-> **Not implemented in v0.1.** Returns exit code 2. Coming in v0.2 via local embeddings (sqlite-vec or qmd).
+```bash
+coral search "<query>" [--limit <N>] [--format markdown|json]
+```
+
+- Tokenizes slug + body, scores via TF-IDF, returns the top-N pages (default 5).
+- Stopwords (English + Spanish) filtered out. Single-character tokens dropped.
+- Snippets are 200-char windows around the first matching token.
+- `--format json` for downstream tooling.
+- v0.2 ships TF-IDF (deterministic, no API key). v0.3 will switch to embeddings (Voyage / Anthropic) — see [ADR 0006](./adr/0006-local-semantic-search-storage.md). The CLI surface stays the same on upgrade.
+
+---
+
+## CI: Hermes quality gate
+
+Coral ships an **opt-in** composite action that runs an independent LLM validator (Hermes) against wiki/auto-ingest PRs before merge. The validator (a separate subagent from the bibliotecario, on a different model) reads each changed page in the PR, verifies its `sources:` list resolves and the body doesn't contradict the cited files, and posts a PR review (APPROVE or REQUEST CHANGES).
+
+To enable it, add a job to your workflow that runs on PRs labeled `wiki-auto`:
+
+```yaml
+hermes-validate:
+  if: contains(github.event.pull_request.labels.*.name, 'wiki-auto')
+  runs-on: ubuntu-latest
+  permissions:
+    contents: read
+    pull-requests: write
+  steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - uses: agustincbajo/Coral/.github/actions/validate@main
+      with:
+        claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        pr_number: ${{ github.event.pull_request.number }}
+```
+
+The action skips validation when fewer than `min_pages_to_validate` (default 5) pages changed — keeps token spend predictable on small PRs. The subagent definition lives at `template/agents/wiki-validator.md` (sync via `coral sync`).
