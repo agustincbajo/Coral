@@ -30,6 +30,7 @@ tempfile = "3"
 assert_fs = "1"
 predicates = "3"
 assert_cmd = "2"
+schemars = { version = "0.8", features = ["chrono"] }
 coral-core = { path = "crates/coral-core", version = "0.1.0" }
 coral-lint = { path = "crates/coral-lint", version = "0.1.0" }
 coral-runner = { path = "crates/coral-runner", version = "0.1.0" }

@@ -107,6 +107,7 @@ coral stats [--format markdown|json]
 ```
 
 - Counts pages by type and status, computes confidence stats, lists orphan candidates (excluding system page types).
+- `stats --format json` produces output that validates against [`docs/schemas/stats.schema.json`](./schemas/stats.schema.json). Use `jq` or downstream tooling to parse.
 
 ---
 

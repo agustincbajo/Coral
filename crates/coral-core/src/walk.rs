@@ -1,7 +1,8 @@
 //! Parallel `.md` page discovery and reading under `.wiki/`.
 //!
 //! Skips hidden files, the `_archive/` directory, and the top-level
-//! `SCHEMA.md` / `README.md` operator files. Symlinks are NOT followed.
+//! `SCHEMA.md` / `README.md` / `index.md` / `log.md` operator files.
+//! Symlinks are NOT followed.
 
 use crate::error::Result;
 use crate::page::Page;
@@ -16,6 +17,8 @@ use walkdir::WalkDir;
 ///   - non-`.md` files
 ///   - the SCHEMA.md file at the top level (it's the contract, not a page)
 ///   - the README.md file at the top level (operator notes, not a page)
+///   - the index.md file at the top level (master index, not a page)
+///   - the log.md file at the top level (activity log, not a page)
 ///
 /// Walks `root` even if `root` is `.wiki/SCHEMA.md`'s parent. Symlinks NOT followed.
 pub fn list_page_paths(root: impl AsRef<Path>) -> Result<Vec<PathBuf>> {
@@ -60,8 +63,12 @@ pub fn list_page_paths(root: impl AsRef<Path>) -> Result<Vec<PathBuf>> {
             continue;
         }
 
-        // Skip the top-level SCHEMA.md / README.md.
-        if path == root.join("SCHEMA.md") || path == root.join("README.md") {
+        // Skip the top-level SCHEMA.md / README.md / index.md / log.md.
+        if path == root.join("SCHEMA.md")
+            || path == root.join("README.md")
+            || path == root.join("index.md")
+            || path == root.join("log.md")
+        {
             continue;
         }
 
@@ -161,6 +168,36 @@ mod tests {
         let paths = list_page_paths(root).expect("walk");
         assert_eq!(paths.len(), 1);
         assert_eq!(paths[0], root.join("modules/SCHEMA.md"));
+    }
+
+    #[test]
+    fn walk_skips_top_level_index_and_log() {
+        let dir = TempDir::new().expect("tempdir");
+        let root = dir.path();
+        fs::write(root.join("index.md"), "x").unwrap();
+        fs::write(root.join("log.md"), "x").unwrap();
+        fs::create_dir_all(root.join("modules")).unwrap();
+        fs::write(root.join("modules/index.md"), "x").unwrap();
+        fs::write(root.join("modules/order.md"), "x").unwrap();
+
+        let paths = list_page_paths(root).expect("walk");
+        assert_eq!(paths.len(), 2);
+        assert_eq!(paths[0], root.join("modules/index.md"));
+        assert_eq!(paths[1], root.join("modules/order.md"));
+    }
+
+    #[test]
+    fn walk_does_not_skip_nested_index_or_log() {
+        let dir = TempDir::new().expect("tempdir");
+        let root = dir.path();
+        fs::create_dir_all(root.join("concepts")).unwrap();
+        fs::write(root.join("concepts/index.md"), "x").unwrap();
+        fs::write(root.join("concepts/log.md"), "x").unwrap();
+
+        let paths = list_page_paths(root).expect("walk");
+        assert_eq!(paths.len(), 2);
+        assert!(paths.contains(&root.join("concepts/index.md")));
+        assert!(paths.contains(&root.join("concepts/log.md")));
     }
 
     #[test]

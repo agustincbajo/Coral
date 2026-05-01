@@ -19,11 +19,19 @@ Steps for cutting a Coral release. Owner: maintainer.
 
 1. **All tests green.** `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --all --check`.
 2. **Bump version.** Edit `Cargo.toml` `[workspace.package].version` and the `crates/*/Cargo.toml` files (or use `cargo set-version --workspace X.Y.Z`).
-3. **Update CHANGELOG.md** (when one exists — first one ships in v0.2).
+3. **Update CHANGELOG.md `[Unreleased]` section** with notable changes (Added / Changed / Fixed / Removed). Keep a Changelog 1.1.0 format.
 4. **Run `coral lint --structural`** on this repo's `.wiki/` — must be exit 0.
 5. **Commit + push** the version bump.
 
 ## Tag and release
+
+Either run cargo-release (recommended — it handles the CHANGELOG `[Unreleased]` rotation, version bumps, tagging, and pushing in one step):
+
+```bash
+cargo release X.Y.Z
+```
+
+…or do it manually:
 
 ```bash
 git tag -a v0.X.Y -m "Coral v0.X.Y"

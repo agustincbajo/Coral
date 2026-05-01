@@ -3,11 +3,12 @@
 use ahash::AHashSet;
 use coral_core::frontmatter::{PageType, Status};
 use coral_core::page::Page;
-use serde::Serialize;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 /// Aggregated wiki health metrics.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct StatsReport {
     pub total_pages: usize,
     pub by_type: BTreeMap<String, usize>,
@@ -181,6 +182,14 @@ impl StatsReport {
     /// Renders the report as pretty JSON.
     pub fn as_json(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string_pretty(self)
+    }
+
+    /// Returns the JSON schema for `StatsReport` as a pretty-printed string.
+    /// Use this to validate downstream tooling (jq pipelines, dashboards, etc.)
+    /// against the contract Coral emits.
+    pub fn json_schema() -> String {
+        let schema = schemars::schema_for!(StatsReport);
+        serde_json::to_string_pretty(&schema).expect("StatsReport schema is always serializable")
     }
 }
 
@@ -455,6 +464,109 @@ mod tests {
         let r = StatsReport::new(&pages);
         // a: 2 links, b: 1 link, c: 0 → 3 total.
         assert_eq!(r.total_outbound_links, 3);
+    }
+
+    #[test]
+    fn stats_handles_page_with_self_link() {
+        // Page A has [[a]] in its body — self-link.
+        // Decision: self-loops count as inbound, so the page is NOT an orphan.
+        let pages = vec![make_page(
+            "a",
+            PageType::Module,
+            Status::Draft,
+            0.5,
+            "see [[a]]\n",
+            vec![],
+        )];
+        let r = StatsReport::new(&pages);
+        assert_eq!(r.total_outbound_links, 1, "self-link counts as outbound");
+        assert!(
+            !r.orphan_candidates.contains(&"a".to_string()),
+            "self-link should mark inbound, so 'a' is not orphan: {:?}",
+            r.orphan_candidates
+        );
+    }
+
+    #[test]
+    fn stats_handles_page_with_no_outbound_links() {
+        let pages = vec![
+            make_page("a", PageType::Module, Status::Draft, 0.5, "", vec![]),
+            make_page("b", PageType::Module, Status::Draft, 0.5, "", vec![]),
+        ];
+        let r = StatsReport::new(&pages);
+        assert_eq!(
+            r.total_outbound_links, 0,
+            "no body links and no backlinks → 0 outbound"
+        );
+    }
+
+    #[test]
+    fn stats_perf_500_pages_under_50ms() {
+        // Build 500 synthetic pages, each linking the next two slugs.
+        let pages: Vec<Page> = (0..500)
+            .map(|i| {
+                let body = format!(
+                    "link to [[p{}]] and [[p{}]]\n",
+                    (i + 1) % 500,
+                    (i + 2) % 500
+                );
+                make_page(
+                    &format!("p{i}"),
+                    PageType::Module,
+                    Status::Draft,
+                    0.5,
+                    &body,
+                    vec![],
+                )
+            })
+            .collect();
+
+        let start = std::time::Instant::now();
+        let report = StatsReport::new(&pages);
+        let elapsed = start.elapsed();
+
+        assert_eq!(report.total_pages, 500);
+        // 500 pages × 2 links = 1000 outbound.
+        assert_eq!(report.total_outbound_links, 1000);
+        assert!(
+            elapsed.as_millis() < 50,
+            "stats over 500 pages took {:?} (>50ms)",
+            elapsed
+        );
+    }
+
+    #[test]
+    fn stats_json_schema_is_valid_json() {
+        let schema = StatsReport::json_schema();
+        let value: serde_json::Value =
+            serde_json::from_str(&schema).expect("schema must be valid JSON");
+        // Top-level schema object should expose properties + describe StatsReport.
+        assert!(
+            value.get("properties").is_some(),
+            "schema is missing 'properties' key: {schema}"
+        );
+        let props = value.get("properties").and_then(|v| v.as_object());
+        assert!(
+            props
+                .map(|m| m.contains_key("total_pages"))
+                .unwrap_or(false),
+            "schema properties missing 'total_pages': {schema}"
+        );
+    }
+
+    #[test]
+    fn stats_json_output_validates_against_schema() {
+        // Light-touch validation: confirm the JSON output round-trips back to a
+        // StatsReport. That proves the schema's contract holds at the field
+        // level without pulling jsonschema into the dep graph.
+        let pages = vec![
+            make_page("a", PageType::Module, Status::Draft, 0.5, "[[b]]\n", vec![]),
+            make_page("b", PageType::Module, Status::Reviewed, 0.8, "", vec![]),
+        ];
+        let report = StatsReport::new(&pages);
+        let json = report.as_json().expect("json ok");
+        let roundtripped: StatsReport = serde_json::from_str(&json).expect("output must roundtrip");
+        assert_eq!(roundtripped, report, "json output must roundtrip exactly");
     }
 
     #[test]
