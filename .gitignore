@@ -7,3 +7,4 @@ Cargo.lock.bak
 .vscode/
 .coral-cache.json
 **/.coral-cache.json
+.claude/
