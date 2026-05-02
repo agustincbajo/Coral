@@ -376,6 +376,72 @@ mod tests {
         assert!(matches!(err, RunnerError::NonZeroExit { .. }));
     }
 
+    /// Non-streaming `run` honors `prompt.timeout` and returns
+    /// `RunnerError::Timeout` when the deadline elapses. /usr/bin/yes is
+    /// the same long-running fixture the streaming-timeout test uses.
+    #[test]
+    fn claude_runner_run_honors_timeout() {
+        use std::time::Instant;
+        let r = ClaudeRunner::with_binary("/usr/bin/yes");
+        let prompt = Prompt {
+            user: "ignored".into(),
+            timeout: Some(Duration::from_millis(200)),
+            ..Default::default()
+        };
+        let start = Instant::now();
+        let err = r.run(&prompt).unwrap_err();
+        let elapsed = start.elapsed();
+        assert!(
+            matches!(err, RunnerError::Timeout(_)),
+            "expected Timeout, got {err:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "should kill within 2s, took {elapsed:?}"
+        );
+    }
+
+    /// Display message of every `RunnerError` variant — pins the
+    /// user-facing error format. A change here will surface in `coral` as
+    /// `error: {e}` printed to stderr; we want to know if the wording
+    /// drifts.
+    #[test]
+    fn runner_error_display_messages_are_actionable() {
+        let not_found = RunnerError::NotFound.to_string();
+        assert!(not_found.contains("not found"), "got: {not_found}");
+        assert!(
+            not_found.contains("claude.com/code"),
+            "should link install URL: {not_found}"
+        );
+
+        let auth = RunnerError::AuthFailed("HTTP 401 fake response".into()).to_string();
+        assert!(auth.contains("not authenticated"), "got: {auth}");
+        assert!(
+            auth.contains("setup-token") || auth.contains("ANTHROPIC_API_KEY"),
+            "should hint fix: {auth}"
+        );
+        assert!(
+            auth.contains("HTTP 401"),
+            "should include provider response: {auth}"
+        );
+
+        let nonzero = RunnerError::NonZeroExit {
+            code: Some(2),
+            stderr: "syntax error".into(),
+        }
+        .to_string();
+        assert!(nonzero.contains("Some(2)"), "got: {nonzero}");
+        assert!(nonzero.contains("syntax error"), "got: {nonzero}");
+
+        let timeout = RunnerError::Timeout(Duration::from_secs(5)).to_string();
+        assert!(timeout.contains("timed out"), "got: {timeout}");
+        assert!(timeout.contains("5s"), "should include duration: {timeout}");
+
+        let io = RunnerError::Io(std::io::Error::other("disk full")).to_string();
+        assert!(io.contains("io error"), "got: {io}");
+        assert!(io.contains("disk full"), "got: {io}");
+    }
+
     /// Verifies that a streaming run honors `prompt.timeout` and kills the
     /// child if the deadline elapses. Uses `/usr/bin/yes` which writes "y\n"
     /// indefinitely to stdout and ignores its CLI args — perfect substitute

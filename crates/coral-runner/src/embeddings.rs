@@ -743,4 +743,34 @@ mod tests {
         let _ = provider.embed_batch_chunked(&texts).unwrap();
         assert_eq!(provider.chunk_calls.load(Ordering::SeqCst), 32);
     }
+
+    #[test]
+    fn embeddings_error_display_messages_are_actionable() {
+        let auth = EmbeddingsError::AuthFailed("HTTP 401 Unauthorized".into()).to_string();
+        assert!(auth.contains("auth failed"), "got: {auth}");
+        assert!(
+            auth.contains("API key") || auth.contains("VOYAGE_API_KEY"),
+            "should hint fix: {auth}"
+        );
+        assert!(
+            auth.contains("HTTP 401"),
+            "should include provider response: {auth}"
+        );
+
+        let provider_call = EmbeddingsError::ProviderCall {
+            code: Some(429),
+            detail: "rate limit".into(),
+        }
+        .to_string();
+        assert!(provider_call.contains("429"), "got: {provider_call}");
+        assert!(provider_call.contains("rate limit"), "got: {provider_call}");
+
+        let parse = EmbeddingsError::Parse("missing field 'data'".into()).to_string();
+        assert!(parse.contains("parsing"), "got: {parse}");
+        assert!(parse.contains("missing field"), "got: {parse}");
+
+        let io = EmbeddingsError::Io(std::io::Error::other("curl crashed")).to_string();
+        assert!(io.contains("io error"), "got: {io}");
+        assert!(io.contains("curl crashed"), "got: {io}");
+    }
 }
