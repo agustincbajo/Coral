@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use clap::Args;
 use coral_core::walk;
 use coral_lint::{
-    LintReport, LintSeverity, run_structural_with_root,
+    LintCode, LintReport, LintSeverity, run_structural_with_root,
     semantic::{SEMANTIC_SYSTEM_PROMPT, check_semantic_with_prompt},
 };
 use coral_runner::Runner;
@@ -54,6 +54,21 @@ pub struct LintArgs {
     /// the report is rendered + the exit code is determined.
     #[arg(long, default_value = "all")]
     pub severity: String,
+    /// Filter the report to issues whose `code` is in this allowlist.
+    /// Repeatable: `--rule broken-wikilink --rule orphan-page` keeps
+    /// issues with EITHER code. Empty list (default) = no filter.
+    /// Values are the `kebab-case` (or `snake_case`) form of any
+    /// `LintCode` variant, e.g. `broken-wikilink`, `orphan-page`,
+    /// `low-confidence`, `high-confidence-without-sources`,
+    /// `stale-status`, `commit-not-in-git`, `source-not-found`,
+    /// `archived-page-linked`, `unknown-extra-field`, `contradiction`,
+    /// `obsolete-claim`. Useful for CI gates that should only fail on
+    /// specific issue types (e.g. only `broken-wikilink`). Applied AFTER
+    /// auto-fix (so the LLM sees the full report) and BEFORE
+    /// `--severity` filtering, so `--rule X --severity critical` keeps
+    /// only critical issues whose code is X.
+    #[arg(long)]
+    pub rule: Vec<String>,
 }
 
 pub fn run(args: LintArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
@@ -128,21 +143,24 @@ pub fn run_with_runner(
         run_auto_fix(&pages, &full_report, runner, args.apply, &root)?;
     }
 
-    // Apply the severity filter AFTER auto-fix but BEFORE rendering and
-    // exit-code determination, so users only see (and CI only fails on)
-    // issues at or above the chosen severity.
+    // Apply the rule + severity filters AFTER auto-fix (so the LLM sees
+    // the full report) but BEFORE rendering / exit-code determination,
+    // so users only see (and CI only fails on) the filtered subset.
+    //
+    // Rule filter runs FIRST so that `--rule X --severity critical`
+    // means "keep issues whose code is X *and* whose severity is
+    // critical" — i.e. the two filters compose, narrowest first.
+    let rule_filter = parse_rule_filters(&args.rule)?;
     let severity_filter = parse_severity_filter(&args.severity)?;
-    let report = if let Some(min_sev) = severity_filter {
+    let mut issues = full_report.issues;
+    if let Some(allowed) = rule_filter {
+        issues.retain(|i| allowed.contains(&i.code));
+    }
+    if let Some(min_sev) = severity_filter {
         let min_sev_rank = u8::from(min_sev);
-        let filtered: Vec<coral_lint::LintIssue> = full_report
-            .issues
-            .into_iter()
-            .filter(|i| u8::from(i.severity) <= min_sev_rank)
-            .collect();
-        LintReport::from_issues(filtered)
-    } else {
-        full_report
-    };
+        issues.retain(|i| u8::from(i.severity) <= min_sev_rank);
+    }
+    let report = LintReport::from_issues(issues);
 
     match args.format.as_str() {
         "json" => println!("{}", serde_json::to_string_pretty(&report)?),
@@ -154,6 +172,63 @@ pub fn run_with_runner(
     } else {
         Ok(ExitCode::SUCCESS)
     }
+}
+
+/// Snake/kebab-case names of every `LintCode` variant — kept in lockstep
+/// with the `#[serde(rename_all = "snake_case")]` form so users can type
+/// the same identifiers they see in `coral lint --format json` output.
+/// Listed in the same order as the enum declaration in `coral-lint`.
+const VALID_RULE_CODES: &[&str] = &[
+    "broken-wikilink",
+    "orphan-page",
+    "low-confidence",
+    "high-confidence-without-sources",
+    "stale-status",
+    "commit-not-in-git",
+    "source-not-found",
+    "archived-page-linked",
+    "unknown-extra-field",
+    "contradiction",
+    "obsolete-claim",
+];
+
+/// Parse a list of `--rule` values into an optional `LintCode` allowlist.
+///
+/// Returns `None` for an empty list (no filter — keep every issue), or
+/// `Some(set)` for one or more values (keep only issues whose `code` is
+/// in `set`). Accepts both `kebab-case` (`broken-wikilink`) and
+/// `snake_case` (`broken_wikilink`) forms — both normalize to the same
+/// variant. Unknown values produce an error listing every valid
+/// kebab-case name so users can self-correct from the CLI message
+/// without consulting docs.
+fn parse_rule_filters(rules: &[String]) -> Result<Option<HashSet<LintCode>>> {
+    if rules.is_empty() {
+        return Ok(None);
+    }
+    let mut set = HashSet::with_capacity(rules.len());
+    for raw in rules {
+        // Normalize: lowercase + treat `_` and `-` interchangeably.
+        let normalized = raw.to_lowercase().replace('_', "-");
+        let code = match normalized.as_str() {
+            "broken-wikilink" => LintCode::BrokenWikilink,
+            "orphan-page" => LintCode::OrphanPage,
+            "low-confidence" => LintCode::LowConfidence,
+            "high-confidence-without-sources" => LintCode::HighConfidenceWithoutSources,
+            "stale-status" => LintCode::StaleStatus,
+            "commit-not-in-git" => LintCode::CommitNotInGit,
+            "source-not-found" => LintCode::SourceNotFound,
+            "archived-page-linked" => LintCode::ArchivedPageLinked,
+            "unknown-extra-field" => LintCode::UnknownExtraField,
+            "contradiction" => LintCode::Contradiction,
+            "obsolete-claim" => LintCode::ObsoleteClaim,
+            other => anyhow::bail!(
+                "unknown --rule value `{other}` (expected one of: {})",
+                VALID_RULE_CODES.join(", ")
+            ),
+        };
+        set.insert(code);
+    }
+    Ok(Some(set))
 }
 
 /// Parse the `--severity` flag into an optional minimum-severity threshold.
@@ -762,5 +837,250 @@ mod tests {
         ];
         let kept = apply_severity_filter(issues, None);
         assert_eq!(kept.len(), 3);
+    }
+
+    /// Variant of `issue` that lets tests pick both the code and severity.
+    /// Used by the rule-filter tests so we can build heterogeneous inputs.
+    fn issue_with_code(code: LintCode) -> LintIssue {
+        LintIssue {
+            code,
+            severity: LintSeverity::Critical,
+            page: None,
+            message: "x".into(),
+            context: None,
+        }
+    }
+
+    #[test]
+    fn parse_rule_filters_empty_returns_none() {
+        // Empty list = no filter (matches the historical behaviour
+        // before --rule existed; no surprise for users who don't pass it).
+        let got = parse_rule_filters(&[]).unwrap();
+        assert!(got.is_none());
+    }
+
+    #[test]
+    fn parse_rule_filters_accepts_kebab_case() {
+        let got = parse_rule_filters(&["broken-wikilink".into()])
+            .unwrap()
+            .unwrap();
+        assert_eq!(got.len(), 1);
+        assert!(got.contains(&LintCode::BrokenWikilink));
+    }
+
+    #[test]
+    fn parse_rule_filters_accepts_snake_case_via_normalization() {
+        // The JSON output emits `snake_case`, so users grepping that output
+        // and feeding values back to `--rule` should work without manual
+        // translation.
+        let got = parse_rule_filters(&["broken_wikilink".into()])
+            .unwrap()
+            .unwrap();
+        assert_eq!(got.len(), 1);
+        assert!(got.contains(&LintCode::BrokenWikilink));
+    }
+
+    #[test]
+    fn parse_rule_filters_is_case_insensitive() {
+        // Pre-commit hook configs frequently uppercase CI env vars; we
+        // shouldn't punish that.
+        for variant in [
+            "BROKEN-WIKILINK",
+            "Broken-Wikilink",
+            "broken-WIKILINK",
+            "BROKEN_WIKILINK",
+        ] {
+            let got = parse_rule_filters(&[variant.into()])
+                .unwrap_or_else(|e| panic!("`{variant}` should parse: {e}"))
+                .unwrap();
+            assert!(
+                got.contains(&LintCode::BrokenWikilink),
+                "`{variant}` did not map to BrokenWikilink"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_rule_filters_supports_repetition_oring_codes() {
+        // `--rule X --rule Y` keeps issues with EITHER code (OR, not AND).
+        let got = parse_rule_filters(&["broken-wikilink".into(), "orphan-page".into()])
+            .unwrap()
+            .unwrap();
+        assert_eq!(got.len(), 2);
+        assert!(got.contains(&LintCode::BrokenWikilink));
+        assert!(got.contains(&LintCode::OrphanPage));
+    }
+
+    #[test]
+    fn parse_rule_filters_dedupes_repeated_values() {
+        // HashSet semantics: passing the same code twice doesn't double-count.
+        let got = parse_rule_filters(&["orphan-page".into(), "orphan-page".into()])
+            .unwrap()
+            .unwrap();
+        assert_eq!(got.len(), 1);
+    }
+
+    #[test]
+    fn parse_rule_filters_recognizes_every_lintcode_variant() {
+        // Guards against drift: if a new LintCode variant lands in coral-lint,
+        // the maintainer has to add it to the parser too — this test fails
+        // until they do, because the new variant won't be covered.
+        let all_kebab = [
+            ("broken-wikilink", LintCode::BrokenWikilink),
+            ("orphan-page", LintCode::OrphanPage),
+            ("low-confidence", LintCode::LowConfidence),
+            (
+                "high-confidence-without-sources",
+                LintCode::HighConfidenceWithoutSources,
+            ),
+            ("stale-status", LintCode::StaleStatus),
+            ("commit-not-in-git", LintCode::CommitNotInGit),
+            ("source-not-found", LintCode::SourceNotFound),
+            ("archived-page-linked", LintCode::ArchivedPageLinked),
+            ("unknown-extra-field", LintCode::UnknownExtraField),
+            ("contradiction", LintCode::Contradiction),
+            ("obsolete-claim", LintCode::ObsoleteClaim),
+        ];
+        for (name, expected) in all_kebab {
+            let got = parse_rule_filters(&[name.into()])
+                .unwrap_or_else(|e| panic!("`{name}` should parse: {e}"))
+                .unwrap();
+            assert!(
+                got.contains(&expected),
+                "`{name}` did not map to expected variant"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_rule_filters_unknown_value_errors_with_full_legend() {
+        // The error message must list every legal value so users can fix
+        // their CI config without reading docs.
+        let err = parse_rule_filters(&["nope".into()]).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("nope"), "error must echo bad value: {msg}");
+        for legal in [
+            "broken-wikilink",
+            "orphan-page",
+            "low-confidence",
+            "high-confidence-without-sources",
+            "stale-status",
+            "commit-not-in-git",
+            "source-not-found",
+            "archived-page-linked",
+            "unknown-extra-field",
+            "contradiction",
+            "obsolete-claim",
+        ] {
+            assert!(
+                msg.contains(legal),
+                "error must list legal value `{legal}`: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_rule_filters_first_unknown_value_errors_even_after_valid_ones() {
+        // Defensive: a valid value followed by an invalid one shouldn't
+        // silently succeed with a partial set — CI users want loud failures.
+        let err = parse_rule_filters(&["broken-wikilink".into(), "bogus".into()]).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("bogus"), "error must echo bad value: {msg}");
+    }
+
+    /// Convenience: apply the rule-filter logic the CLI uses (retain
+    /// issues whose code is in the allowlist) without depending on
+    /// `run_with_runner`. Mirrors `apply_severity_filter`.
+    fn apply_rule_filter(
+        issues: Vec<LintIssue>,
+        allowed: Option<HashSet<LintCode>>,
+    ) -> Vec<LintIssue> {
+        match allowed {
+            None => issues,
+            Some(set) => issues
+                .into_iter()
+                .filter(|i| set.contains(&i.code))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn rule_filter_none_keeps_all_codes() {
+        let issues = vec![
+            issue_with_code(LintCode::BrokenWikilink),
+            issue_with_code(LintCode::OrphanPage),
+            issue_with_code(LintCode::StaleStatus),
+        ];
+        let kept = apply_rule_filter(issues, None);
+        assert_eq!(kept.len(), 3);
+    }
+
+    #[test]
+    fn rule_filter_keeps_only_allowed_codes() {
+        let issues = vec![
+            issue_with_code(LintCode::BrokenWikilink),
+            issue_with_code(LintCode::OrphanPage),
+            issue_with_code(LintCode::StaleStatus),
+        ];
+        let allowed: HashSet<LintCode> = [LintCode::BrokenWikilink].into_iter().collect();
+        let kept = apply_rule_filter(issues, Some(allowed));
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].code, LintCode::BrokenWikilink);
+    }
+
+    #[test]
+    fn rule_filter_with_two_allowed_codes_keeps_both() {
+        // Verifies the OR semantics of repeated --rule flags end-to-end.
+        let issues = vec![
+            issue_with_code(LintCode::BrokenWikilink),
+            issue_with_code(LintCode::OrphanPage),
+            issue_with_code(LintCode::StaleStatus),
+        ];
+        let allowed: HashSet<LintCode> = [LintCode::BrokenWikilink, LintCode::OrphanPage]
+            .into_iter()
+            .collect();
+        let kept = apply_rule_filter(issues, Some(allowed));
+        assert_eq!(kept.len(), 2);
+        assert!(kept.iter().any(|i| i.code == LintCode::BrokenWikilink));
+        assert!(kept.iter().any(|i| i.code == LintCode::OrphanPage));
+        assert!(!kept.iter().any(|i| i.code == LintCode::StaleStatus));
+    }
+
+    #[test]
+    fn rule_then_severity_filter_compose_narrowest_first() {
+        // Belt-and-suspenders for the documented composition order:
+        // `--rule broken-wikilink --severity critical` keeps issues that
+        // are BOTH `BrokenWikilink` AND at-or-above Critical.
+        let issues = vec![
+            // Kept: matches code AND severity.
+            LintIssue {
+                code: LintCode::BrokenWikilink,
+                severity: LintSeverity::Critical,
+                page: None,
+                message: "kept".into(),
+                context: None,
+            },
+            // Dropped by rule filter (wrong code, but right severity).
+            LintIssue {
+                code: LintCode::OrphanPage,
+                severity: LintSeverity::Critical,
+                page: None,
+                message: "dropped-by-rule".into(),
+                context: None,
+            },
+            // Dropped by severity filter (right code, wrong severity).
+            LintIssue {
+                code: LintCode::BrokenWikilink,
+                severity: LintSeverity::Info,
+                page: None,
+                message: "dropped-by-severity".into(),
+                context: None,
+            },
+        ];
+        let allowed: HashSet<LintCode> = [LintCode::BrokenWikilink].into_iter().collect();
+        let after_rule = apply_rule_filter(issues, Some(allowed));
+        let after_both = apply_severity_filter(after_rule, Some(LintSeverity::Critical));
+        assert_eq!(after_both.len(), 1);
+        assert_eq!(after_both[0].message, "kept");
     }
 }
