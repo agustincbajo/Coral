@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-05-02
+
+### Added
+
+- **`coral lint --rule <CODE>`** ([crates/coral-cli/src/commands/lint.rs](crates/coral-cli/src/commands/lint.rs)): repeatable filter that keeps only issues whose `LintCode` is in the allowlist (OR semantics across repeats). Useful for CI gates that only care about specific issue types. Codes are kebab-case (snake_case also accepted): `broken-wikilink`, `orphan-page`, `low-confidence`, `high-confidence-without-sources`, `stale-status`, `contradiction`, `obsolete-claim`, `commit-not-in-git`, `source-not-found`, `archived-page-linked`, `unknown-extra-field`. Composes with `--severity` (`--rule X --severity critical` keeps only critical X). Auto-fix still sees the FULL report. **12 new unit tests + 2 snapshot tests**.
+
+### Documentation
+
+- USAGE.md: documented `--rule` flag with all 11 valid codes + composition with `--severity`.
+
+### Tests
+
+- 3 new error-path tests in `coral-runner` ([crates/coral-runner/src/runner.rs](crates/coral-runner/src/runner.rs), [crates/coral-runner/src/embeddings.rs](crates/coral-runner/src/embeddings.rs)):
+  - Non-streaming `claude_runner_run_honors_timeout` mirroring the existing streaming-timeout test.
+  - `runner_error_display_messages_are_actionable` — pins the user-facing Display for every `RunnerError` variant (NotFound / AuthFailed / NonZeroExit / Timeout / Io).
+  - `embeddings_error_display_messages_are_actionable` — same shape for `EmbeddingsError`.
+
 ## [0.9.0] - 2026-05-02
 
 ### Added
@@ -241,7 +258,8 @@ Test count: 385 (v0.8.0) → 427 (+42).
 - 5 ADRs: Rust CLI architecture, Claude CLI vs API, template via include_dir, multi-agent flow, versioning + sync.
 - Self-hosted `.wiki/` with 14 seed pages (cli/core/lint/runner/stats modules + concepts + entities + flow + decisions + synthesis + operations + sources).
 
-[Unreleased]: https://github.com/agustincbajo/Coral/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/agustincbajo/Coral/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/agustincbajo/Coral/releases/tag/v0.10.0
 [0.9.0]: https://github.com/agustincbajo/Coral/releases/tag/v0.9.0
 [0.8.1]: https://github.com/agustincbajo/Coral/releases/tag/v0.8.1
 [0.8.0]: https://github.com/agustincbajo/Coral/releases/tag/v0.8.0
