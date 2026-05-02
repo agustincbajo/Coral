@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-05-02
+
+Test + docs only (no behavior change). All 4 of these are quality-of-
+maintenance investments rather than user-facing features.
+
+### Added
+
+- **`docs/TUTORIAL.md`** — 5-minute walkthrough exercising every deterministic Coral subcommand (init, lint, stats, search TF-IDF + BM25, diff, export HTML, validate-pin) against a synthetic 4-page seed wiki. No `claude setup-token`, no `VOYAGE_API_KEY`, no network. Every output block is REAL — captured by running the binary.
+- **Property-based test suites** (proptest) for 4 hot paths:
+  - `crates/coral-lint/tests/proptest_lint.rs` (6 properties): `run_structural` totality, issue invariants, empty input contract, order-independence, system-page-type orphan-skip, high-conf-without-sources predicate.
+  - `crates/coral-core/tests/proptest_search.rs` (10 properties × TF-IDF and BM25): totality, result-count limits, non-negative scores, sort-descending invariant, slug membership, BM25 ⊆ TF-IDF slug set, empty input contracts.
+  - `crates/coral-core/tests/proptest_wikilinks.rs` (9 properties): totality, no duplicates, document order, alias/anchor stripping, output safety (no `]` / `|` / `#` / newlines), code-fence skip, escape skip.
+  - `crates/coral-core/tests/proptest_frontmatter.rs` (6 properties): YAML round-trip identity, body-bytes verbatim preservation, missing/unterminated rejection.
+- **Snapshot tests** (insta) — 11 frozen-output tests in `crates/coral-cli/tests/snapshot_cli.rs` against the same 4-page seed: stats markdown + JSON, lint structural markdown + JSON, search TF-IDF + BM25, diff, export JSON + markdown-bundle + HTML head, prompts list. Catches accidental regressions in user-facing output that hand-written `contains(...)` assertions miss.
+
+Test count: 385 (v0.8.0) → 427 (+42).
+
 ## [0.8.0] - 2026-05-02
 
 ### Added
@@ -211,7 +228,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 5 ADRs: Rust CLI architecture, Claude CLI vs API, template via include_dir, multi-agent flow, versioning + sync.
 - Self-hosted `.wiki/` with 14 seed pages (cli/core/lint/runner/stats modules + concepts + entities + flow + decisions + synthesis + operations + sources).
 
-[Unreleased]: https://github.com/agustincbajo/Coral/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/agustincbajo/Coral/compare/v0.8.1...HEAD
+[0.8.1]: https://github.com/agustincbajo/Coral/releases/tag/v0.8.1
 [0.8.0]: https://github.com/agustincbajo/Coral/releases/tag/v0.8.0
 [0.7.0]: https://github.com/agustincbajo/Coral/releases/tag/v0.7.0
 [0.6.0]: https://github.com/agustincbajo/Coral/releases/tag/v0.6.0
