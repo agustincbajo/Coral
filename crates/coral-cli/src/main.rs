@@ -63,6 +63,17 @@ enum Cmd {
     Status(commands::status::StatusArgs),
     /// Show log entries that mention a slug (reverse chronological).
     History(commands::history::HistoryArgs),
+    /// **Hidden** test-only helper: acquires `with_exclusive_lock(path)`,
+    /// reads the file as a u64 counter, increments by 1, writes back.
+    /// Used by `tests/cross_process_lock.rs` to verify the v0.15
+    /// flock-based lock works at the OS-process boundary, not just
+    /// thread-in-process. The leading underscore is convention for
+    /// "internal, do not depend on this".
+    #[command(name = "_test_lock_incr", hide = true)]
+    TestLockIncr {
+        /// Path to the counter file (must contain a valid u64).
+        path: PathBuf,
+    },
 }
 
 fn main() -> ExitCode {
@@ -87,6 +98,7 @@ fn main() -> ExitCode {
         Cmd::Diff(args) => commands::diff::run(args, cli.wiki_root.as_deref()),
         Cmd::Status(args) => commands::status::run(args, cli.wiki_root.as_deref()),
         Cmd::History(args) => commands::history::run(args, cli.wiki_root.as_deref()),
+        Cmd::TestLockIncr { path } => run_test_lock_incr(&path),
     };
 
     match result {
@@ -96,6 +108,33 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// **Hidden test-only handler** for the `_test_lock_incr` subcommand.
+/// Acquires `with_exclusive_lock(path)`, reads `path` as a u64 counter,
+/// increments by 1, atomic-writes back. Returns Ok(SUCCESS) on success.
+///
+/// Lives in `main.rs` (not `commands/`) because it's deliberately not a
+/// public/documented subcommand — it's wiring for the cross-process
+/// lock test in `tests/cross_process_lock.rs`. Keeping it here makes
+/// it impossible for external callers to depend on as a stable API.
+fn run_test_lock_incr(path: &std::path::Path) -> Result<ExitCode> {
+    use anyhow::Context as _;
+    coral_core::atomic::with_exclusive_lock(path, || {
+        let current: u64 = std::fs::read_to_string(path)
+            .map_err(|e| coral_core::error::CoralError::Io {
+                path: path.to_path_buf(),
+                source: e,
+            })?
+            .trim()
+            .parse()
+            .map_err(|e: std::num::ParseIntError| {
+                coral_core::error::CoralError::Walk(format!("parse counter: {e}"))
+            })?;
+        coral_core::atomic::atomic_write_string(path, &(current + 1).to_string())
+    })
+    .with_context(|| format!("locked counter increment on {}", path.display()))?;
+    Ok(ExitCode::SUCCESS)
 }
 
 fn setup_tracing(quiet: bool, verbose: bool) {

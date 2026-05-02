@@ -194,11 +194,6 @@ explícitamente, o hasta que un consumer real demuestre la necesidad.
   schedule periódico.
 - **AnthropicProvider real**: cambiar el placeholder a endpoint real
   cuando Anthropic publique el embeddings API.
-- **Cross-process integration test for `with_exclusive_lock`**: hoy
-  el stress test es 50 threads en UN proceso. flock(2) funciona igual
-  cross-process pero un test que spawn N coral subprocesses (vía un
-  hidden test-only subcommand o helper binary) probaría el contrato
-  end-to-end al límite del proceso.
 
 ---
 
