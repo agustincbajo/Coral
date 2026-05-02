@@ -202,7 +202,14 @@ pub fn run_with_runner(
     // output above. Always last so the lint report renders first and
     // the fix proposal/result is appended cleanly.
     if args.fix {
-        let fix_report = run_no_llm_fix(&pages, args.apply, &root)?;
+        // The repo root (parent of `.wiki/`) is needed for the
+        // confidence-from-coverage rule which checks whether each
+        // page's `sources:` paths still exist on disk.
+        let repo_root: PathBuf = root
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        let fix_report = run_no_llm_fix(&pages, args.apply, &root, &repo_root)?;
         println!("{}", render_fix_report(&fix_report));
     }
 
@@ -803,6 +810,70 @@ pub(crate) fn trim_trailing_line_whitespace(body: &str) -> Option<String> {
     if changed { Some(out) } else { None }
 }
 
+/// **confidence-from-coverage** rule (v0.14): if the page has ANY
+/// `sources:` path that no longer resolves to a file/dir under
+/// `repo_root`, downgrade `confidence` by `DOWNGRADE_STEP` (capped
+/// at the floor of `MIN_AFTER_DOWNGRADE`). Returns `true` if the
+/// confidence was changed.
+///
+/// Rationale: a page with a high confidence value backed by sources
+/// that no longer exist is less reliable than the number suggests.
+/// Auto-downgrade gives lint + downstream consumers (search, query,
+/// onboard) a calibrated signal without requiring an LLM round trip.
+///
+/// Skips: pages with no sources (no signal to act on), pages whose
+/// confidence is already at or below the floor (idempotent), HTTP/HTTPS
+/// sources (the rule only cares about filesystem paths). Mirrors the
+/// `check_source_exists` filter logic in `coral-lint` exactly so the
+/// rule fires for the same set of pages that already trigger the
+/// `SourceNotFound` lint.
+///
+/// Pure-rule (no LLM). Pure (no I/O outside of `Path::exists`).
+pub(crate) fn downgrade_confidence_for_missing_sources(
+    fm: &mut coral_core::frontmatter::Frontmatter,
+    repo_root: &Path,
+) -> bool {
+    /// Amount to subtract from a page's confidence on each fix pass.
+    /// Conservative — one missing source shouldn't tank the whole
+    /// page; if the user runs `lint --fix --apply` repeatedly with
+    /// no remediation, the rule keeps stepping down toward the floor.
+    const DOWNGRADE_STEP: f64 = 0.20;
+    /// Floor: the rule never drives confidence below this. Pages
+    /// already at or under this value are left alone (idempotent).
+    /// 0.30 chosen to align with the "Critical low confidence (<0.3)"
+    /// threshold in `coral stats` — this rule pushes pages INTO the
+    /// warning band but doesn't push them into the critical band on
+    /// its own.
+    const MIN_AFTER_DOWNGRADE: f64 = 0.30;
+
+    if fm.sources.is_empty() {
+        return false;
+    }
+    let any_missing = fm.sources.iter().any(|src| {
+        if src.starts_with("http://") || src.starts_with("https://") {
+            return false;
+        }
+        !repo_root.join(src).exists()
+    });
+    if !any_missing {
+        return false;
+    }
+    let current = fm.confidence.as_f64();
+    if current <= MIN_AFTER_DOWNGRADE {
+        return false;
+    }
+    let target = (current - DOWNGRADE_STEP).max(MIN_AFTER_DOWNGRADE);
+    // `Confidence::try_new` clamps via the validated constructor —
+    // bail silently if the math somehow produces an invalid value
+    // (shouldn't happen because we capped at MIN_AFTER_DOWNGRADE).
+    if let Ok(new_conf) = coral_core::frontmatter::Confidence::try_new(target) {
+        fm.confidence = new_conf;
+        true
+    } else {
+        false
+    }
+}
+
 /// Run the no-LLM fix pass over `pages`. With `apply == false` this
 /// is a pure dry-run — pages on disk are untouched and the returned
 /// report describes what *would* change. With `apply == true` each
@@ -823,6 +894,7 @@ fn run_no_llm_fix(
     pages: &[coral_core::page::Page],
     apply: bool,
     _wiki_root: &Path,
+    repo_root: &Path,
 ) -> Result<NoLlmFixReport> {
     let mut changed_pages: Vec<(String, PathBuf, Vec<&'static str>)> = Vec::new();
 
@@ -856,6 +928,9 @@ fn run_no_llm_fix(
         if let Some(b) = normalize_eol(&new_page.body) {
             new_page.body = b;
             rules_fired.push("normalize-eol");
+        }
+        if downgrade_confidence_for_missing_sources(&mut new_page.frontmatter, repo_root) {
+            rules_fired.push("confidence-from-coverage");
         }
 
         if !rules_fired.is_empty() {
@@ -2063,6 +2138,7 @@ mod tests {
             std::slice::from_ref(&page),
             false,
             &tmp.path().join(".wiki"),
+            tmp.path(),
         )
         .unwrap();
         assert_eq!(report.total_changed, 1);
@@ -2085,8 +2161,13 @@ mod tests {
         page.frontmatter.slug = "ord  ".into();
         page.write().unwrap();
 
-        let report =
-            run_no_llm_fix(std::slice::from_ref(&page), true, &tmp.path().join(".wiki")).unwrap();
+        let report = run_no_llm_fix(
+            std::slice::from_ref(&page),
+            true,
+            &tmp.path().join(".wiki"),
+            tmp.path(),
+        )
+        .unwrap();
         assert_eq!(report.total_changed, 1);
         assert!(report.applied);
 
@@ -2115,11 +2196,166 @@ mod tests {
             std::slice::from_ref(&page),
             false,
             &tmp.path().join(".wiki"),
+            tmp.path(),
         )
         .unwrap();
         assert_eq!(report.total_changed, 0);
         assert!(report.changed_pages.is_empty());
         assert!(!report.applied);
+    }
+
+    // ---- downgrade_confidence_for_missing_sources --------------
+
+    #[test]
+    fn downgrade_confidence_skips_when_no_sources() {
+        use coral_core::frontmatter::{Confidence, Frontmatter, PageType, Status};
+        use std::collections::BTreeMap;
+        use tempfile::TempDir;
+        let tmp = TempDir::new().unwrap();
+        let mut fm = Frontmatter {
+            slug: "p".into(),
+            page_type: PageType::Module,
+            last_updated_commit: "abc".into(),
+            confidence: Confidence::try_new(0.9).unwrap(),
+            sources: vec![],
+            backlinks: vec![],
+            status: Status::Reviewed,
+            generated_at: None,
+            extra: BTreeMap::new(),
+        };
+        let changed = downgrade_confidence_for_missing_sources(&mut fm, tmp.path());
+        assert!(!changed);
+        assert!((fm.confidence.as_f64() - 0.9).abs() < 1e-9);
+    }
+
+    #[test]
+    fn downgrade_confidence_skips_when_all_sources_exist() {
+        use coral_core::frontmatter::{Confidence, Frontmatter, PageType, Status};
+        use std::collections::BTreeMap;
+        use tempfile::TempDir;
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("real.rs"), "// stub").unwrap();
+        let mut fm = Frontmatter {
+            slug: "p".into(),
+            page_type: PageType::Module,
+            last_updated_commit: "abc".into(),
+            confidence: Confidence::try_new(0.9).unwrap(),
+            sources: vec!["real.rs".into()],
+            backlinks: vec![],
+            status: Status::Reviewed,
+            generated_at: None,
+            extra: BTreeMap::new(),
+        };
+        let changed = downgrade_confidence_for_missing_sources(&mut fm, tmp.path());
+        assert!(!changed);
+        assert!((fm.confidence.as_f64() - 0.9).abs() < 1e-9);
+    }
+
+    #[test]
+    fn downgrade_confidence_steps_down_when_source_missing() {
+        use coral_core::frontmatter::{Confidence, Frontmatter, PageType, Status};
+        use std::collections::BTreeMap;
+        use tempfile::TempDir;
+        let tmp = TempDir::new().unwrap();
+        let mut fm = Frontmatter {
+            slug: "p".into(),
+            page_type: PageType::Module,
+            last_updated_commit: "abc".into(),
+            confidence: Confidence::try_new(0.9).unwrap(),
+            sources: vec!["does-not-exist.rs".into()],
+            backlinks: vec![],
+            status: Status::Reviewed,
+            generated_at: None,
+            extra: BTreeMap::new(),
+        };
+        let changed = downgrade_confidence_for_missing_sources(&mut fm, tmp.path());
+        assert!(changed);
+        // 0.9 - 0.2 = 0.7
+        assert!(
+            (fm.confidence.as_f64() - 0.7).abs() < 1e-9,
+            "expected 0.7, got {}",
+            fm.confidence.as_f64()
+        );
+    }
+
+    #[test]
+    fn downgrade_confidence_floors_at_threshold() {
+        use coral_core::frontmatter::{Confidence, Frontmatter, PageType, Status};
+        use std::collections::BTreeMap;
+        use tempfile::TempDir;
+        let tmp = TempDir::new().unwrap();
+        let mut fm = Frontmatter {
+            slug: "p".into(),
+            page_type: PageType::Module,
+            last_updated_commit: "abc".into(),
+            confidence: Confidence::try_new(0.45).unwrap(),
+            sources: vec!["does-not-exist.rs".into()],
+            backlinks: vec![],
+            status: Status::Reviewed,
+            generated_at: None,
+            extra: BTreeMap::new(),
+        };
+        let changed = downgrade_confidence_for_missing_sources(&mut fm, tmp.path());
+        assert!(changed);
+        // 0.45 - 0.20 = 0.25, but floor is 0.30 → result is 0.30
+        assert!(
+            (fm.confidence.as_f64() - 0.30).abs() < 1e-9,
+            "expected 0.30 (floored), got {}",
+            fm.confidence.as_f64()
+        );
+    }
+
+    #[test]
+    fn downgrade_confidence_idempotent_at_floor() {
+        use coral_core::frontmatter::{Confidence, Frontmatter, PageType, Status};
+        use std::collections::BTreeMap;
+        use tempfile::TempDir;
+        let tmp = TempDir::new().unwrap();
+        let mut fm = Frontmatter {
+            slug: "p".into(),
+            page_type: PageType::Module,
+            last_updated_commit: "abc".into(),
+            confidence: Confidence::try_new(0.30).unwrap(),
+            sources: vec!["does-not-exist.rs".into()],
+            backlinks: vec![],
+            status: Status::Reviewed,
+            generated_at: None,
+            extra: BTreeMap::new(),
+        };
+        // First call: already at floor — must not change.
+        let changed_first = downgrade_confidence_for_missing_sources(&mut fm, tmp.path());
+        assert!(!changed_first);
+        assert!((fm.confidence.as_f64() - 0.30).abs() < 1e-9);
+        // Idempotent: second call with the same input is also a no-op.
+        let changed_second = downgrade_confidence_for_missing_sources(&mut fm, tmp.path());
+        assert!(!changed_second);
+    }
+
+    #[test]
+    fn downgrade_confidence_skips_http_sources() {
+        use coral_core::frontmatter::{Confidence, Frontmatter, PageType, Status};
+        use std::collections::BTreeMap;
+        use tempfile::TempDir;
+        let tmp = TempDir::new().unwrap();
+        // All sources are URLs — even though they don't "exist on
+        // disk", the rule must skip them.
+        let mut fm = Frontmatter {
+            slug: "p".into(),
+            page_type: PageType::Module,
+            last_updated_commit: "abc".into(),
+            confidence: Confidence::try_new(0.9).unwrap(),
+            sources: vec![
+                "https://example.com/spec".into(),
+                "http://docs.example.org/x".into(),
+            ],
+            backlinks: vec![],
+            status: Status::Reviewed,
+            generated_at: None,
+            extra: BTreeMap::new(),
+        };
+        let changed = downgrade_confidence_for_missing_sources(&mut fm, tmp.path());
+        assert!(!changed);
+        assert!((fm.confidence.as_f64() - 0.9).abs() < 1e-9);
     }
 
     // ---- render_fix_report --------------------------------------
