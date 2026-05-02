@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use clap::Args;
 use coral_core::walk;
 use coral_lint::{
-    LintReport, run_structural_with_root,
+    LintReport, LintSeverity, run_structural_with_root,
     semantic::{SEMANTIC_SYSTEM_PROMPT, check_semantic_with_prompt},
 };
 use coral_runner::Runner;
@@ -45,6 +45,15 @@ pub struct LintArgs {
     /// `ingest` semantics).
     #[arg(long)]
     pub apply: bool,
+    /// Filter the report to issues at or above the given severity level:
+    /// `critical` (most strict — only Critical), `warning` (Critical +
+    /// Warning), `info` or `all` (every level — default). Useful for CI
+    /// gates that should only fail on critical issues, or for noisy wikis
+    /// where users want to see only warnings. The filter is applied AFTER
+    /// auto-fix runs (so the LLM still sees the full report) and BEFORE
+    /// the report is rendered + the exit code is determined.
+    #[arg(long, default_value = "all")]
+    pub severity: String,
 }
 
 pub fn run(args: LintArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
@@ -109,21 +118,59 @@ pub fn run_with_runner(
         );
     }
 
-    let report = LintReport::from_issues(issues);
+    // Build the FULL report (pre-severity-filter) so auto-fix sees every
+    // issue. Otherwise a CI run with `--severity critical --auto-fix` would
+    // hide warnings/info from the LLM and it couldn't propose fixes for
+    // them.
+    let full_report = LintReport::from_issues(issues);
+
+    if args.auto_fix && !full_report.issues.is_empty() {
+        run_auto_fix(&pages, &full_report, runner, args.apply, &root)?;
+    }
+
+    // Apply the severity filter AFTER auto-fix but BEFORE rendering and
+    // exit-code determination, so users only see (and CI only fails on)
+    // issues at or above the chosen severity.
+    let severity_filter = parse_severity_filter(&args.severity)?;
+    let report = if let Some(min_sev) = severity_filter {
+        let min_sev_rank = u8::from(min_sev);
+        let filtered: Vec<coral_lint::LintIssue> = full_report
+            .issues
+            .into_iter()
+            .filter(|i| u8::from(i.severity) <= min_sev_rank)
+            .collect();
+        LintReport::from_issues(filtered)
+    } else {
+        full_report
+    };
 
     match args.format.as_str() {
         "json" => println!("{}", serde_json::to_string_pretty(&report)?),
         _ => println!("{}", report.as_markdown()),
     }
 
-    if args.auto_fix && !report.issues.is_empty() {
-        run_auto_fix(&pages, &report, runner, args.apply, &root)?;
-    }
-
     if report.critical_count() > 0 {
         Ok(ExitCode::from(1))
     } else {
         Ok(ExitCode::SUCCESS)
+    }
+}
+
+/// Parse the `--severity` flag into an optional minimum-severity threshold.
+///
+/// Returns `None` for `"all"` (no filter — keep every issue), `Some(sev)`
+/// for `critical|warning|info` (keep issues with `u8::from(severity) <=
+/// u8::from(min_sev)` since Critical=0 < Warning=1 < Info=2 — lower rank
+/// is more severe). Errors on any other value with a friendly hint.
+fn parse_severity_filter(s: &str) -> Result<Option<LintSeverity>> {
+    match s.to_lowercase().as_str() {
+        "all" => Ok(None),
+        "critical" => Ok(Some(LintSeverity::Critical)),
+        "warning" => Ok(Some(LintSeverity::Warning)),
+        "info" => Ok(Some(LintSeverity::Info)),
+        other => anyhow::bail!(
+            "unknown --severity value `{other}` (expected one of: critical, warning, info, all)"
+        ),
     }
 }
 
@@ -427,6 +474,37 @@ mod tests {
         }
     }
 
+    /// Variant of `issue` that lets tests pick the severity. Used by the
+    /// severity-filter rank tests below.
+    fn issue_sev(severity: LintSeverity) -> LintIssue {
+        LintIssue {
+            code: LintCode::OrphanPage,
+            severity,
+            page: None,
+            message: "x".into(),
+            context: None,
+        }
+    }
+
+    /// Convenience: apply the same severity-filter logic the CLI uses
+    /// (`u8::from(severity) <= u8::from(min_sev)`) without depending on the
+    /// full `run_with_runner` plumbing.
+    fn apply_severity_filter(
+        issues: Vec<LintIssue>,
+        min_sev: Option<LintSeverity>,
+    ) -> Vec<LintIssue> {
+        match min_sev {
+            None => issues,
+            Some(min) => {
+                let rank = u8::from(min);
+                issues
+                    .into_iter()
+                    .filter(|i| u8::from(i.severity) <= rank)
+                    .collect()
+            }
+        }
+    }
+
     #[test]
     fn filter_keeps_issues_in_staged_set() {
         let staged: HashSet<PathBuf> = [PathBuf::from("/repo/.wiki/modules/order.md")]
@@ -584,5 +662,105 @@ mod tests {
         let kept = filter_issues_by_paths(issues, &staged);
         assert_eq!(kept.len(), 1);
         assert!(kept[0].page.is_none());
+    }
+
+    #[test]
+    fn parse_severity_filter_all_returns_none() {
+        // "all" means: no filter — keep every issue regardless of severity.
+        // This is the CLI default and must preserve historical behavior.
+        assert!(parse_severity_filter("all").unwrap().is_none());
+    }
+
+    #[test]
+    fn parse_severity_filter_is_case_insensitive() {
+        // Users in pre-commit hooks tend to type "CRITICAL" in env vars.
+        for variant in ["critical", "CRITICAL", "Critical", "CrItIcAl"] {
+            let got = parse_severity_filter(variant)
+                .unwrap_or_else(|e| panic!("`{variant}` should parse: {e}"));
+            assert_eq!(
+                got,
+                Some(LintSeverity::Critical),
+                "`{variant}` should map to Critical"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_severity_filter_warning_and_info() {
+        assert_eq!(
+            parse_severity_filter("warning").unwrap(),
+            Some(LintSeverity::Warning)
+        );
+        assert_eq!(
+            parse_severity_filter("info").unwrap(),
+            Some(LintSeverity::Info)
+        );
+    }
+
+    #[test]
+    fn parse_severity_filter_unknown_value_errors_with_actionable_message() {
+        let err = parse_severity_filter("foo").unwrap_err();
+        let msg = format!("{err}");
+        // Hint must list every legal value so the user can self-correct.
+        for expected in ["foo", "critical", "warning", "info", "all"] {
+            assert!(
+                msg.contains(expected),
+                "error message `{msg}` must mention `{expected}`"
+            );
+        }
+    }
+
+    #[test]
+    fn severity_filter_critical_keeps_only_critical() {
+        // Rank 0 (Critical): only issues with rank <= 0 survive.
+        let issues = vec![
+            issue_sev(LintSeverity::Critical),
+            issue_sev(LintSeverity::Warning),
+            issue_sev(LintSeverity::Info),
+        ];
+        let kept = apply_severity_filter(issues, Some(LintSeverity::Critical));
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].severity, LintSeverity::Critical);
+    }
+
+    #[test]
+    fn severity_filter_warning_keeps_critical_and_warning() {
+        // Rank 1 (Warning): Critical (0) + Warning (1) survive; Info (2) drops.
+        let issues = vec![
+            issue_sev(LintSeverity::Critical),
+            issue_sev(LintSeverity::Warning),
+            issue_sev(LintSeverity::Info),
+        ];
+        let kept = apply_severity_filter(issues, Some(LintSeverity::Warning));
+        assert_eq!(kept.len(), 2);
+        assert!(kept.iter().any(|i| i.severity == LintSeverity::Critical));
+        assert!(kept.iter().any(|i| i.severity == LintSeverity::Warning));
+        assert!(!kept.iter().any(|i| i.severity == LintSeverity::Info));
+    }
+
+    #[test]
+    fn severity_filter_info_keeps_all_three() {
+        // Rank 2 (Info): everything survives — semantically equivalent to None
+        // but kept distinct because the user *did* type a level.
+        let issues = vec![
+            issue_sev(LintSeverity::Critical),
+            issue_sev(LintSeverity::Warning),
+            issue_sev(LintSeverity::Info),
+        ];
+        let kept = apply_severity_filter(issues, Some(LintSeverity::Info));
+        assert_eq!(kept.len(), 3);
+    }
+
+    #[test]
+    fn severity_filter_none_keeps_all_three() {
+        // The "all" CLI value parses to None — same shape as Info but cheaper
+        // (no filter pass at all).
+        let issues = vec![
+            issue_sev(LintSeverity::Critical),
+            issue_sev(LintSeverity::Warning),
+            issue_sev(LintSeverity::Info),
+        ];
+        let kept = apply_severity_filter(issues, None);
+        assert_eq!(kept.len(), 3);
     }
 }

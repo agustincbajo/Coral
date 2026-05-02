@@ -569,3 +569,153 @@ fn lint_critical_issue_exits_1() {
         .assert()
         .code(1);
 }
+
+/// Build a tempdir wiki that surfaces a Critical issue (broken wikilink) AND
+/// at least one Warning (orphan page — `a` has no inbound backlinks). Returns
+/// the tempdir so callers can run `coral lint --severity ... --format json`
+/// against it and assert which issues survive the filter.
+fn fixture_with_critical_and_warning() -> TempDir {
+    let tmp = TempDir::new().unwrap();
+    Command::cargo_bin("coral")
+        .unwrap()
+        .current_dir(tmp.path())
+        .arg("init")
+        .assert()
+        .success();
+    let modules = tmp.path().join(".wiki/modules");
+    std::fs::create_dir_all(&modules).unwrap();
+    // Page `a`: broken wikilink (Critical) AND nothing links to it (Warning:
+    // orphan). Two issues from one page keeps the test focused.
+    std::fs::write(
+        modules.join("a.md"),
+        "---\nslug: a\ntype: module\nlast_updated_commit: abc\nconfidence: 0.5\nstatus: draft\n---\n\nSee [[nonexistent]]\n",
+    )
+    .unwrap();
+    tmp
+}
+
+fn parse_lint_json(stdout: &str) -> serde_json::Value {
+    serde_json::from_str(stdout).expect("lint --format json should emit valid json")
+}
+
+fn issues_array(json: &serde_json::Value) -> &Vec<serde_json::Value> {
+    json.get("issues")
+        .and_then(|v| v.as_array())
+        .expect("lint json must have an `issues` array")
+}
+
+#[test]
+fn lint_severity_critical_filters_to_critical_only() {
+    let tmp = fixture_with_critical_and_warning();
+    // `--severity critical` keeps only Critical issues; the report still
+    // exits 1 because the broken-wikilink Critical survives the filter.
+    let assert = Command::cargo_bin("coral")
+        .unwrap()
+        .current_dir(tmp.path())
+        .args(["lint", "--severity", "critical", "--format", "json"])
+        .assert()
+        .code(1);
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    let json = parse_lint_json(&stdout);
+    let issues = issues_array(&json);
+    assert!(
+        !issues.is_empty(),
+        "expected at least one Critical issue: {stdout}"
+    );
+    for issue in issues {
+        assert_eq!(
+            issue.get("severity").and_then(|v| v.as_str()),
+            Some("critical"),
+            "non-Critical issue leaked through filter: {issue}"
+        );
+    }
+}
+
+#[test]
+fn lint_severity_warning_keeps_critical_and_warning() {
+    let tmp = fixture_with_critical_and_warning();
+    let assert = Command::cargo_bin("coral")
+        .unwrap()
+        .current_dir(tmp.path())
+        .args(["lint", "--severity", "warning", "--format", "json"])
+        .assert()
+        .code(1);
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    let json = parse_lint_json(&stdout);
+    let issues = issues_array(&json);
+    let has_critical = issues
+        .iter()
+        .any(|i| i.get("severity").and_then(|v| v.as_str()) == Some("critical"));
+    let has_warning = issues
+        .iter()
+        .any(|i| i.get("severity").and_then(|v| v.as_str()) == Some("warning"));
+    let has_info = issues
+        .iter()
+        .any(|i| i.get("severity").and_then(|v| v.as_str()) == Some("info"));
+    assert!(
+        has_critical,
+        "Critical missing under --severity warning: {stdout}"
+    );
+    assert!(
+        has_warning,
+        "Warning missing under --severity warning: {stdout}"
+    );
+    assert!(!has_info, "Info leaked under --severity warning: {stdout}");
+}
+
+#[test]
+fn lint_severity_all_keeps_every_issue() {
+    let tmp = fixture_with_critical_and_warning();
+    // Baseline (all issues) — must be a strict superset of the warning run.
+    let assert_all = Command::cargo_bin("coral")
+        .unwrap()
+        .current_dir(tmp.path())
+        .args(["lint", "--severity", "all", "--format", "json"])
+        .assert()
+        .code(1);
+    let stdout_all = String::from_utf8_lossy(&assert_all.get_output().stdout);
+    let count_all = issues_array(&parse_lint_json(&stdout_all)).len();
+
+    let assert_warn = Command::cargo_bin("coral")
+        .unwrap()
+        .current_dir(tmp.path())
+        .args(["lint", "--severity", "warning", "--format", "json"])
+        .assert()
+        .code(1);
+    let stdout_warn = String::from_utf8_lossy(&assert_warn.get_output().stdout);
+    let count_warn = issues_array(&parse_lint_json(&stdout_warn)).len();
+
+    assert!(
+        count_all >= count_warn,
+        "`all` ({count_all}) must be >= `warning` ({count_warn})"
+    );
+}
+
+#[test]
+fn lint_severity_unknown_value_fails_with_helpful_error() {
+    let tmp = TempDir::new().unwrap();
+    Command::cargo_bin("coral")
+        .unwrap()
+        .current_dir(tmp.path())
+        .arg("init")
+        .assert()
+        .success();
+    let assert = Command::cargo_bin("coral")
+        .unwrap()
+        .current_dir(tmp.path())
+        .args(["lint", "--severity", "bogus"])
+        .assert()
+        .failure();
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+    assert!(
+        stderr.contains("bogus"),
+        "stderr should echo the bad value: {stderr}"
+    );
+    assert!(
+        stderr.contains("critical")
+            && stderr.contains("warning")
+            && stderr.contains("info")
+            && stderr.contains("all"),
+        "stderr should list every valid value: {stderr}"
+    );
+}
