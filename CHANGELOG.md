@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-05-02
+
+### Added
+
+- **4 new structural lint checks** ([crates/coral-lint/src/structural.rs](crates/coral-lint/src/structural.rs)):
+  - `CommitNotInGit` (Warning) — page's `last_updated_commit` not in `git rev-list --all`. Single git invocation per lint run; degrades gracefully via `tracing::warn!` when git is missing/detached. Skips placeholder commits (`""`, `"unknown"`, `"abc"`, `"zero"`, anything <7 chars).
+  - `SourceNotFound` (Warning) — each `frontmatter.sources` entry must exist on disk relative to repo root. `http(s)://` URLs skipped.
+  - `ArchivedPageLinked` (Warning) — for each `status: archived` page, finds linkers and emits one issue per (linker, archived target) pair. Archived → archived self-noise filtered.
+  - `UnknownExtraField` (Info) — one issue per key in `frontmatter.extra`. Surfaces unrecognized YAML extensions for review.
+
+  New `pub fn run_structural_with_root(pages, repo_root) -> LintReport` fans out all 9 checks via parallel rayon iterators. Existing `run_structural(&[Page])` preserved for backward compat. CLI computes `repo_root` as parent of `.wiki/`. **18 new unit tests** including real `git init` fixtures via tempfile.
+- **`coral diff --semantic`** ([crates/coral-cli/src/commands/diff.rs](crates/coral-cli/src/commands/diff.rs)): LLM-driven contradictions + overlap analysis between two wiki pages. After the structural diff, the runner receives both bodies and proposes contradictions, overlap (merge candidates), and coverage gaps. Markdown output appends `## Semantic analysis` section; JSON output adds top-level `semantic.{model, analysis}` field. `--model` and `--provider` for runner selection. Override prompt at `<cwd>/prompts/diff-semantic.md`. **9 new unit tests** including MockRunner success/failure paths.
+- **`coral consolidate --apply` for merges + splits** ([crates/coral-cli/src/commands/consolidate.rs](crates/coral-cli/src/commands/consolidate.rs)): previously only `retirements[]` were materialized; now `merges[]` and `splits[]` actually run.
+  - Merge: in-place if target is a source, append-to-existing if target slug exists, create-new otherwise (page_type = mode of sources, alphabetical tiebreak). Body concat with markdown separator. Frontmatter union (sources + backlinks deduped; backlinks gain source slugs). Confidence = min(target baseline OR 0.5, min source confidence). Status = draft. Sources marked stale with `_Merged into [[<target>]]_` footer.
+  - Split: stub pages at `<wiki>/<source.page_type subdir>/<target>.md` with `confidence: 0.4`, `status: draft`. Source marked stale with `_Split into [[a]], [[b]]_` footer. Per-target skip if slug already exists.
+  - Outbound wikilinks intentionally NOT rewritten — structural lint surfaces them as broken so the user reviews + fixes incrementally.
+  - **10 new unit tests** covering all 3 merge paths, all 4 merge edge cases, both split paths, all 4 split edge cases, plus combined retire+merge+split scenario.
+- **`criterion` benchmarks** for 5 hot paths ([crates/coral-core/benches/](crates/coral-core/benches/), [crates/coral-lint/benches/structural_bench.rs](crates/coral-lint/benches/structural_bench.rs)): `search` (100 pages / 2-token query), `wikilinks::extract` (50-link body), `Frontmatter` parse (5-field block), `walk::read_pages` (100 pages / 4 subdirs), `run_structural` (100-page graph). Run via `cargo bench --workspace`. `target/criterion/report/index.html` for visual reports across runs. `docs/PERF.md` updated.
+- **`cargo-audit` + `cargo-deny` CI jobs** ([.github/workflows/ci.yml](.github/workflows/ci.yml), [deny.toml](deny.toml)): security advisory scan + license/duplicate-version gate. Audit is `continue-on-error: true` (transitive advisories surface but don't block); deny is a hard gate with a hand-curated license allowlist (MIT, Apache-2.0, BSD-2/3, ISC, Unicode-3.0, Zlib, MPL-2.0, CC0-1.0, 0BSD).
+- **ADR 0008** ([docs/adr/0008-multi-provider-runner-and-embeddings-traits.md](docs/adr/0008-multi-provider-runner-and-embeddings-traits.md)) and **ADR 0009** ([docs/adr/0009-auto-fix-scope-and-yaml-plan.md](docs/adr/0009-auto-fix-scope-and-yaml-plan.md)): documents the v0.4–v0.5 design decisions (two parallel traits, four runners, three providers, capped auto-fix scope + YAML plan shape, explicit alternatives considered).
+
+### Changed
+
+- **`SCHEMA.base.md` aligned with the 10 PageType variants** ([template/schema/SCHEMA.base.md](template/schema/SCHEMA.base.md)): the base SCHEMA only documented 9 page types; the Rust enum has 10 (`Reference` was added but never described). Plus the 4 system page types (`index`, `log`, `schema`, `readme`) are now called out. The frontmatter example inlines the full enum list.
+
+### Performance
+
+- **Parallelized embeddings batching** ([crates/coral-runner/src/embeddings.rs](crates/coral-runner/src/embeddings.rs)): both `VoyageProvider::embed_batch` and `OpenAIProvider::embed_batch` now fan their internal chunks (128 / 256 inputs each) across rayon's global thread pool. For a 1000-page wiki, an 8-core dev box does all chunks in flight at once instead of one-at-a-time. First-error-aborts semantics preserved; output order matches input order. New `embed_chunk` private methods extract the per-chunk curl-and-parse logic. **4 new unit tests** using a test-only `ChunkedMockProvider`.
+
 ## [0.5.0] - 2026-05-01
 
 ### Added
@@ -155,7 +184,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 5 ADRs: Rust CLI architecture, Claude CLI vs API, template via include_dir, multi-agent flow, versioning + sync.
 - Self-hosted `.wiki/` with 14 seed pages (cli/core/lint/runner/stats modules + concepts + entities + flow + decisions + synthesis + operations + sources).
 
-[Unreleased]: https://github.com/agustincbajo/Coral/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/agustincbajo/Coral/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/agustincbajo/Coral/releases/tag/v0.6.0
 [0.5.0]: https://github.com/agustincbajo/Coral/releases/tag/v0.5.0
 [0.4.0]: https://github.com/agustincbajo/Coral/releases/tag/v0.4.0
 [0.3.2]: https://github.com/agustincbajo/Coral/releases/tag/v0.3.2
