@@ -4,10 +4,12 @@ use coral_core::frontmatter::{Confidence, Frontmatter, PageType, Status};
 use coral_core::page::Page;
 use coral_core::walk;
 use coral_runner::{Prompt, Runner};
+use regex::Regex;
 use serde::Deserialize;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::OnceLock;
 
 use super::plan::page_type_subdir;
 
@@ -23,6 +25,11 @@ pub struct ConsolidateArgs {
     /// and create stub pages for `splits[]` targets (marking the source stale).
     #[arg(long)]
     pub apply: bool,
+    /// After applying merges/splits, scan every other page and rewrite outbound
+    /// `[[wikilinks]]` that point at retired source slugs so they point at the
+    /// merge target (or, for splits, the FIRST split target). Requires `--apply`.
+    #[arg(long)]
+    pub rewrite_links: bool,
 }
 
 pub fn run(args: ConsolidateArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
@@ -37,6 +44,9 @@ pub fn run_with_runner(
     wiki_root: Option<&Path>,
     runner: &dyn Runner,
 ) -> Result<ExitCode> {
+    if args.rewrite_links && !args.apply {
+        anyhow::bail!("--rewrite-links requires --apply");
+    }
     let root: PathBuf = wiki_root
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from(".wiki"));
@@ -91,7 +101,7 @@ pub fn run_with_runner(
     // Parse and apply.
     let plan = parse_consolidate_plan(&out.stdout)
         .context("parsing consolidate YAML plan (LLM output below)")?;
-    let report = apply_consolidate_plan(&plan, &pages)?;
+    let report = apply_consolidate_plan(&plan, &pages, args.rewrite_links)?;
     println!("# Consolidation applied\n");
     println!("Retired: {} page(s)", report.retired.len());
     for slug in &report.retired {
@@ -138,6 +148,19 @@ pub fn run_with_runner(
             "\nWarning: split entries skipped (source slug unknown or no targets): {}",
             report.unknown_split_sources.join(", ")
         );
+    }
+
+    if !report.rewrites.is_empty() {
+        println!("\nRewrites: {} page(s) patched", report.rewrites.len());
+        for entry in &report.rewrites {
+            let edits = entry
+                .from_to
+                .iter()
+                .map(|(from, to)| format!("`{from}` → `{to}`"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            println!("- `{}` — {edits}", entry.page_slug);
+        }
     }
 
     Ok(ExitCode::SUCCESS)
@@ -196,6 +219,23 @@ pub(crate) struct ApplyReport {
     /// Split entries skipped (source slug unknown, or `targets: []`).
     /// Each entry is the proposed source slug.
     pub unknown_split_sources: Vec<String>,
+    /// Per-page summaries of outbound `[[wikilink]]` rewrites performed when
+    /// `--rewrite-links` was set. Pages with zero rewrites are omitted.
+    pub rewrites: Vec<RewriteSummary>,
+}
+
+/// One page's worth of `[[wikilink]]` rewrites, returned as part of
+/// `ApplyReport.rewrites` when the caller passed `rewrite_links = true` to
+/// `apply_consolidate_plan`.
+#[derive(Debug, Clone)]
+pub(crate) struct RewriteSummary {
+    /// Slug of the page whose body was patched.
+    pub page_slug: String,
+    /// Pairs of `(old_target, new_target)` for each distinct slug rewrite that
+    /// landed in this page. Order matches the rewrite map iteration; aliased
+    /// and anchored forms (`[[X|alias]]`, `[[X#anchor]]`) collapse into one
+    /// entry per source slug.
+    pub from_to: Vec<(String, String)>,
 }
 
 /// Successful merge bookkeeping returned by `apply_merge`.
@@ -233,9 +273,16 @@ fn strip_yaml_fence(s: &str) -> &str {
 /// Applies a consolidation plan against the on-disk wiki. Mutates pages on
 /// disk for retirements, merges, and splits. Returns a report describing
 /// what was applied and what was skipped.
+///
+/// When `rewrite_links` is `true`, after merges and splits land, every other
+/// page in the wiki is scanned for outbound `[[wikilinks]]` pointing at a
+/// retired source slug and rewritten to point at the merge target (or, for
+/// splits, the FIRST split target). See
+/// [`rewrite_outbound_links_to_merged_targets`] for details.
 pub(crate) fn apply_consolidate_plan(
     plan: &ConsolidatePlan,
     pages: &[Page],
+    rewrite_links: bool,
 ) -> Result<ApplyReport> {
     let mut report = ApplyReport::default();
 
@@ -274,13 +321,17 @@ pub(crate) fn apply_consolidate_plan(
     };
     let now = chrono::Utc::now().to_rfc3339();
 
+    let mut merge_outcomes: Vec<MergeOutcome> = Vec::new();
+    let mut split_outcomes: Vec<SplitOutcome> = Vec::new();
+
     if let Some(root) = wiki_root.as_deref() {
         for merge in &plan.merges {
             match apply_merge(merge, pages, &mut working_bodies, root, &now) {
                 Ok(Some(outcome)) => {
                     report
                         .merged
-                        .push((outcome.target_slug, outcome.source_slugs));
+                        .push((outcome.target_slug.clone(), outcome.source_slugs.clone()));
+                    merge_outcomes.push(outcome);
                 }
                 Ok(None) => {
                     report.unknown_merge_targets.push(merge.target.clone());
@@ -297,7 +348,7 @@ pub(crate) fn apply_consolidate_plan(
                     if !outcome.created_targets.is_empty() {
                         report
                             .split
-                            .push((outcome.source_slug.clone(), outcome.created_targets));
+                            .push((outcome.source_slug.clone(), outcome.created_targets.clone()));
                     }
                     if !outcome.skipped_targets.is_empty() {
                         eprintln!(
@@ -306,6 +357,7 @@ pub(crate) fn apply_consolidate_plan(
                             outcome.skipped_targets.join(", ")
                         );
                     }
+                    split_outcomes.push(outcome);
                 }
                 Ok(None) => {
                     report.unknown_split_sources.push(split.source.clone());
@@ -317,7 +369,128 @@ pub(crate) fn apply_consolidate_plan(
         }
     }
 
+    if rewrite_links {
+        // Build the slug-rewrite map and the skip set from the successful
+        // outcomes captured above. Every retired source becomes a key
+        // pointing at its successor (merge target or first split target).
+        // The skip set covers BOTH retired sources (now stale) and merge
+        // targets / split targets (already handled by the merge body
+        // concat / split stub creation).
+        let mut rewrite_map: HashMap<String, String> = HashMap::new();
+        let mut skip_slugs: HashSet<String> = HashSet::new();
+        for outcome in &merge_outcomes {
+            for src in &outcome.source_slugs {
+                if src != &outcome.target_slug {
+                    rewrite_map.insert(src.clone(), outcome.target_slug.clone());
+                }
+                skip_slugs.insert(src.clone());
+            }
+            skip_slugs.insert(outcome.target_slug.clone());
+        }
+        for outcome in &split_outcomes {
+            if let Some(first_target) = outcome.created_targets.first() {
+                rewrite_map.insert(outcome.source_slug.clone(), first_target.clone());
+            }
+            skip_slugs.insert(outcome.source_slug.clone());
+            for tgt in &outcome.created_targets {
+                skip_slugs.insert(tgt.clone());
+            }
+        }
+
+        if !rewrite_map.is_empty() {
+            report.rewrites =
+                rewrite_outbound_links_to_merged_targets(pages, &rewrite_map, &skip_slugs)?;
+        }
+    }
+
     Ok(report)
+}
+
+/// Returns the cached compiled regex used to scan page bodies for wikilinks.
+/// Mirrors the pattern from `coral_core::wikilinks::wikilink_re` — a flat
+/// match over the inner text between `[[` and `]]`, with the alias / anchor
+/// split handled by string ops in the replace closure.
+fn outbound_wikilink_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"\[\[([^\]\n]+)\]\]").expect("valid wikilink regex"))
+}
+
+/// Scans every page in `pages` (other than those in `skip_slugs`) for outbound
+/// `[[wikilinks]]` whose target appears as a key in `rewrites`, and rewrites
+/// the link to the corresponding value while preserving any alias (`|alias`)
+/// or anchor (`#anchor`) suffix. Pages whose body actually changes are
+/// written back via `Page::write()` and surfaced in the returned summary;
+/// untouched pages are omitted.
+///
+/// Idempotent: a second call with the same arguments will find no matching
+/// links (the slugs to rewrite are already gone) and write nothing.
+///
+/// Pages listed in `skip_slugs` are explicitly NOT touched. Callers should
+/// include both the retired sources (their bodies are stale and their
+/// outbound links are moot) and the merge / split targets (their bodies
+/// were just (re)built by the merge/split steps).
+pub(crate) fn rewrite_outbound_links_to_merged_targets(
+    pages: &[Page],
+    rewrites: &HashMap<String, String>,
+    skip_slugs: &HashSet<String>,
+) -> Result<Vec<RewriteSummary>> {
+    let re = outbound_wikilink_re();
+    let mut summaries: Vec<RewriteSummary> = Vec::new();
+
+    for page in pages {
+        if skip_slugs.contains(&page.frontmatter.slug) {
+            continue;
+        }
+
+        // Track which (old, new) slug pairs landed in THIS page so the
+        // summary collapses `[[a]]` + `[[a|alias]]` + `[[a#anchor]]` into a
+        // single `(a, ab)` row instead of three.
+        let mut applied_pairs: Vec<(String, String)> = Vec::new();
+        let mut applied_seen: HashSet<String> = HashSet::new();
+
+        let new_body = re.replace_all(&page.body, |caps: &regex::Captures| {
+            let inner = &caps[1];
+            // Split the inner text into (target, suffix) where suffix is
+            // either `|alias`, `#anchor`, or empty. Whitespace around the
+            // target is trimmed (matching `coral_core::wikilinks::extract`).
+            let (target_raw, suffix) = if let Some(idx) = inner.find('|') {
+                (&inner[..idx], &inner[idx..])
+            } else if let Some(idx) = inner.find('#') {
+                (&inner[..idx], &inner[idx..])
+            } else {
+                (inner, "")
+            };
+            let target = target_raw.trim();
+            match rewrites.get(target) {
+                Some(new_target) => {
+                    if applied_seen.insert(target.to_string()) {
+                        applied_pairs.push((target.to_string(), new_target.clone()));
+                    }
+                    format!("[[{new_target}{suffix}]]")
+                }
+                None => caps[0].to_string(),
+            }
+        });
+
+        if applied_pairs.is_empty() {
+            continue;
+        }
+
+        let updated = Page {
+            path: page.path.clone(),
+            frontmatter: page.frontmatter.clone(),
+            body: new_body.into_owned(),
+        };
+        updated
+            .write()
+            .with_context(|| format!("rewriting outbound links in `{}`", page.frontmatter.slug))?;
+        summaries.push(RewriteSummary {
+            page_slug: page.frontmatter.slug.clone(),
+            from_to: applied_pairs,
+        });
+    }
+
+    Ok(summaries)
 }
 
 /// Recovers the wiki root from any page path by stripping
@@ -896,7 +1069,7 @@ splits:
             retirements: vec![],
             splits: vec![],
         };
-        let report = apply_consolidate_plan(&plan, &[a.clone(), b.clone()]).unwrap();
+        let report = apply_consolidate_plan(&plan, &[a.clone(), b.clone()], false).unwrap();
 
         assert_eq!(report.merged.len(), 1);
         assert_eq!(report.merged[0].0, "a");
@@ -966,7 +1139,7 @@ splits:
             retirements: vec![],
             splits: vec![],
         };
-        let report = apply_consolidate_plan(&plan, &[a.clone(), b.clone()]).unwrap();
+        let report = apply_consolidate_plan(&plan, &[a.clone(), b.clone()], false).unwrap();
         assert_eq!(report.merged.len(), 1);
         assert_eq!(report.merged[0].0, "ab");
 
@@ -1033,7 +1206,7 @@ splits:
             splits: vec![],
         };
         let report =
-            apply_consolidate_plan(&plan, &[a.clone(), b.clone(), target.clone()]).unwrap();
+            apply_consolidate_plan(&plan, &[a.clone(), b.clone(), target.clone()], false).unwrap();
         assert_eq!(report.merged.len(), 1);
         assert_eq!(report.merged[0].0, "existing-target");
 
@@ -1081,7 +1254,7 @@ splits:
             retirements: vec![],
             splits: vec![],
         };
-        let report = apply_consolidate_plan(&plan, std::slice::from_ref(&_seed)).unwrap();
+        let report = apply_consolidate_plan(&plan, std::slice::from_ref(&_seed), false).unwrap();
         assert!(report.merged.is_empty());
         assert!(
             report.unknown_merge_targets.contains(&"x".to_string()),
@@ -1118,7 +1291,7 @@ splits:
             retirements: vec![],
             splits: vec![],
         };
-        let report = apply_consolidate_plan(&plan, std::slice::from_ref(&a)).unwrap();
+        let report = apply_consolidate_plan(&plan, std::slice::from_ref(&a), false).unwrap();
         assert!(report.merged.is_empty());
         assert!(report.unknown_merge_targets.contains(&"x".to_string()));
         let target_path = wiki.join("modules").join("x.md");
@@ -1149,7 +1322,7 @@ splits:
                 rationale: "covered two topics".into(),
             }],
         };
-        let report = apply_consolidate_plan(&plan, std::slice::from_ref(&too_big)).unwrap();
+        let report = apply_consolidate_plan(&plan, std::slice::from_ref(&too_big), false).unwrap();
         assert_eq!(report.split.len(), 1);
         assert_eq!(report.split[0].0, "too-big");
         assert_eq!(
@@ -1225,7 +1398,8 @@ splits:
                 rationale: "rationale".into(),
             }],
         };
-        let report = apply_consolidate_plan(&plan, &[too_big.clone(), part_a.clone()]).unwrap();
+        let report =
+            apply_consolidate_plan(&plan, &[too_big.clone(), part_a.clone()], false).unwrap();
         assert_eq!(report.split.len(), 1);
         assert_eq!(report.split[0].0, "too-big");
         // Only the newly-created `part-b` is reported.
@@ -1267,7 +1441,7 @@ splits:
                 rationale: String::new(),
             }],
         };
-        let report = apply_consolidate_plan(&plan, std::slice::from_ref(&seed)).unwrap();
+        let report = apply_consolidate_plan(&plan, std::slice::from_ref(&seed), false).unwrap();
         assert!(report.split.is_empty());
         assert!(
             report.unknown_split_sources.contains(&"ghost".to_string()),
@@ -1300,7 +1474,7 @@ splits:
                 rationale: String::new(),
             }],
         };
-        let report = apply_consolidate_plan(&plan, std::slice::from_ref(&too_big)).unwrap();
+        let report = apply_consolidate_plan(&plan, std::slice::from_ref(&too_big), false).unwrap();
         assert!(report.split.is_empty());
         assert!(
             report
@@ -1375,6 +1549,7 @@ splits:
         let report = apply_consolidate_plan(
             &plan,
             &[gone.clone(), a.clone(), b.clone(), too_big.clone()],
+            false,
         )
         .unwrap();
         assert_eq!(report.retired.len(), 1);
@@ -1410,6 +1585,484 @@ splits:
                 .frontmatter
                 .status,
             Status::Stale
+        );
+    }
+
+    // ---------- rewrite_outbound_links_to_merged_targets helper-level tests ----------
+
+    /// Build a single-page fixture with a custom body for helper-level tests.
+    fn linker_page(wiki: &Path, slug: &str, body: &str) -> Page {
+        page_full(
+            wiki,
+            slug,
+            Status::Reviewed,
+            PageType::Module,
+            0.7,
+            body,
+            vec![],
+        )
+    }
+
+    #[test]
+    fn rewrite_helper_plain_wikilink_rewrites_to_merge_target() {
+        let tmp = TempDir::new().unwrap();
+        let wiki = tmp.path().join(".wiki");
+        let p = linker_page(&wiki, "linker", "see [[a]]");
+        let mut rewrites: HashMap<String, String> = HashMap::new();
+        rewrites.insert("a".into(), "ab".into());
+        let skip: HashSet<String> = HashSet::new();
+
+        let summaries =
+            rewrite_outbound_links_to_merged_targets(std::slice::from_ref(&p), &rewrites, &skip)
+                .unwrap();
+
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].page_slug, "linker");
+        assert_eq!(summaries[0].from_to, vec![("a".into(), "ab".into())]);
+        let on_disk = read_back(&wiki, PageType::Module, "linker");
+        assert!(
+            on_disk.body.contains("see [[ab]]"),
+            "body should contain rewritten link, got: {}",
+            on_disk.body
+        );
+    }
+
+    #[test]
+    fn rewrite_helper_aliased_wikilink_preserves_alias() {
+        let tmp = TempDir::new().unwrap();
+        let wiki = tmp.path().join(".wiki");
+        let p = linker_page(&wiki, "linker", "see [[a|the order page]]");
+        let mut rewrites: HashMap<String, String> = HashMap::new();
+        rewrites.insert("a".into(), "ab".into());
+        let skip: HashSet<String> = HashSet::new();
+
+        let summaries =
+            rewrite_outbound_links_to_merged_targets(std::slice::from_ref(&p), &rewrites, &skip)
+                .unwrap();
+
+        assert_eq!(summaries.len(), 1);
+        let on_disk = read_back(&wiki, PageType::Module, "linker");
+        assert!(
+            on_disk.body.contains("see [[ab|the order page]]"),
+            "alias must be preserved, got: {}",
+            on_disk.body
+        );
+    }
+
+    #[test]
+    fn rewrite_helper_anchored_wikilink_preserves_anchor() {
+        let tmp = TempDir::new().unwrap();
+        let wiki = tmp.path().join(".wiki");
+        let p = linker_page(&wiki, "linker", "see [[a#step-3]]");
+        let mut rewrites: HashMap<String, String> = HashMap::new();
+        rewrites.insert("a".into(), "ab".into());
+        let skip: HashSet<String> = HashSet::new();
+
+        let summaries =
+            rewrite_outbound_links_to_merged_targets(std::slice::from_ref(&p), &rewrites, &skip)
+                .unwrap();
+
+        assert_eq!(summaries.len(), 1);
+        let on_disk = read_back(&wiki, PageType::Module, "linker");
+        assert!(
+            on_disk.body.contains("see [[ab#step-3]]"),
+            "anchor must be preserved, got: {}",
+            on_disk.body
+        );
+    }
+
+    #[test]
+    fn rewrite_helper_collapses_multiple_forms_to_one_summary_row() {
+        let tmp = TempDir::new().unwrap();
+        let wiki = tmp.path().join(".wiki");
+        let body = "plain [[a]], aliased [[a|alias text]], and anchored [[a#anchor]]";
+        let p = linker_page(&wiki, "linker", body);
+        let mut rewrites: HashMap<String, String> = HashMap::new();
+        rewrites.insert("a".into(), "ab".into());
+        let skip: HashSet<String> = HashSet::new();
+
+        let summaries =
+            rewrite_outbound_links_to_merged_targets(std::slice::from_ref(&p), &rewrites, &skip)
+                .unwrap();
+
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(
+            summaries[0].from_to.len(),
+            1,
+            "all three forms must collapse into a single (a, ab) summary row"
+        );
+        assert_eq!(summaries[0].from_to[0], ("a".into(), "ab".into()));
+
+        // All three forms in the body actually rewritten.
+        let on_disk = read_back(&wiki, PageType::Module, "linker");
+        assert!(on_disk.body.contains("plain [[ab]]"));
+        assert!(on_disk.body.contains("aliased [[ab|alias text]]"));
+        assert!(on_disk.body.contains("anchored [[ab#anchor]]"));
+    }
+
+    #[test]
+    fn rewrite_helper_skip_set_actually_skips_the_page() {
+        let tmp = TempDir::new().unwrap();
+        let wiki = tmp.path().join(".wiki");
+        // Page has a [[a]] link, but its slug `linker` is in skip_slugs.
+        let p = linker_page(&wiki, "linker", "see [[a]]");
+        let mut rewrites: HashMap<String, String> = HashMap::new();
+        rewrites.insert("a".into(), "ab".into());
+        let mut skip: HashSet<String> = HashSet::new();
+        skip.insert("linker".into());
+
+        let summaries =
+            rewrite_outbound_links_to_merged_targets(std::slice::from_ref(&p), &rewrites, &skip)
+                .unwrap();
+
+        assert!(summaries.is_empty(), "skipped page should yield no summary");
+        let on_disk = read_back(&wiki, PageType::Module, "linker");
+        assert!(
+            on_disk.body.contains("see [[a]]"),
+            "skipped page body must remain untouched, got: {}",
+            on_disk.body
+        );
+    }
+
+    #[test]
+    fn rewrite_helper_unrelated_wikilink_left_alone_and_no_write() {
+        let tmp = TempDir::new().unwrap();
+        let wiki = tmp.path().join(".wiki");
+        let p = linker_page(&wiki, "linker", "see [[unrelated]] only");
+        // Capture mtime before the call so we can confirm Page::write was NOT
+        // invoked for an unaffected page.
+        let mtime_before = std::fs::metadata(&p.path).unwrap().modified().unwrap();
+        // Sleep briefly so any potential write would yield a different mtime.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let mut rewrites: HashMap<String, String> = HashMap::new();
+        rewrites.insert("a".into(), "ab".into());
+        let skip: HashSet<String> = HashSet::new();
+
+        let summaries =
+            rewrite_outbound_links_to_merged_targets(std::slice::from_ref(&p), &rewrites, &skip)
+                .unwrap();
+
+        assert!(summaries.is_empty(), "no rewrites means no summary entries");
+        let on_disk = read_back(&wiki, PageType::Module, "linker");
+        assert!(on_disk.body.contains("see [[unrelated]] only"));
+        let mtime_after = std::fs::metadata(&p.path).unwrap().modified().unwrap();
+        assert_eq!(
+            mtime_before, mtime_after,
+            "Page::write must not be called for unaffected pages"
+        );
+    }
+
+    #[test]
+    fn rewrite_helper_is_idempotent() {
+        let tmp = TempDir::new().unwrap();
+        let wiki = tmp.path().join(".wiki");
+        let p = linker_page(&wiki, "linker", "see [[a]] and [[a|alias]]");
+        let mut rewrites: HashMap<String, String> = HashMap::new();
+        rewrites.insert("a".into(), "ab".into());
+        let skip: HashSet<String> = HashSet::new();
+
+        // First pass rewrites.
+        let first =
+            rewrite_outbound_links_to_merged_targets(std::slice::from_ref(&p), &rewrites, &skip)
+                .unwrap();
+        assert_eq!(first.len(), 1);
+
+        // Re-read the patched page from disk; second pass should be a no-op
+        // because `a` is no longer referenced anywhere — only `ab` is.
+        let p_after = read_back(&wiki, PageType::Module, "linker");
+        let second = rewrite_outbound_links_to_merged_targets(
+            std::slice::from_ref(&p_after),
+            &rewrites,
+            &skip,
+        )
+        .unwrap();
+        assert!(
+            second.is_empty(),
+            "second pass should produce zero rewrites (source slugs are gone)"
+        );
+    }
+
+    #[test]
+    fn rewrite_helper_pages_with_zero_rewrites_omitted_from_result() {
+        let tmp = TempDir::new().unwrap();
+        let wiki = tmp.path().join(".wiki");
+        // Two pages: one matches, one doesn't.
+        let p_match = linker_page(&wiki, "matched", "see [[a]]");
+        let p_no_match = linker_page(&wiki, "no-links-here", "no links here");
+        let mut rewrites: HashMap<String, String> = HashMap::new();
+        rewrites.insert("a".into(), "ab".into());
+        let skip: HashSet<String> = HashSet::new();
+
+        let summaries = rewrite_outbound_links_to_merged_targets(
+            &[p_match.clone(), p_no_match.clone()],
+            &rewrites,
+            &skip,
+        )
+        .unwrap();
+
+        assert_eq!(summaries.len(), 1, "only the matched page should appear");
+        assert_eq!(summaries[0].page_slug, "matched");
+        assert!(
+            !summaries.iter().any(|s| s.page_slug == "no-links-here"),
+            "page with zero rewrites must be omitted from the result vec"
+        );
+    }
+
+    /// Smoke test that constructs a `RewriteSummary` directly to confirm its
+    /// fields are reachable from inside the test module.
+    #[test]
+    fn mk_summary() {
+        let s = RewriteSummary {
+            page_slug: "linker".into(),
+            from_to: vec![("a".into(), "ab".into())],
+        };
+        assert_eq!(s.page_slug, "linker");
+        assert_eq!(s.from_to.len(), 1);
+    }
+
+    // ---------- end-to-end --apply --rewrite-links tests ----------
+
+    #[test]
+    fn apply_with_rewrite_links_patches_other_pages_for_merge() {
+        let tmp = TempDir::new().unwrap();
+        let wiki = tmp.path().join(".wiki");
+        let a = page_full(
+            &wiki,
+            "a",
+            Status::Reviewed,
+            PageType::Module,
+            0.7,
+            "# a\n\nbody-a",
+            vec![],
+        );
+        let b = page_full(
+            &wiki,
+            "b",
+            Status::Reviewed,
+            PageType::Module,
+            0.7,
+            "# b\n\nbody-b",
+            vec![],
+        );
+        let linker1 = page_full(
+            &wiki,
+            "linker1",
+            Status::Reviewed,
+            PageType::Module,
+            0.7,
+            "refers to [[a]] and [[b]]",
+            vec![],
+        );
+        let linker2 = page_full(
+            &wiki,
+            "linker2",
+            Status::Reviewed,
+            PageType::Module,
+            0.7,
+            "only [[a]]",
+            vec![],
+        );
+        let plan = ConsolidatePlan {
+            merges: vec![MergeOp {
+                target: "ab".into(),
+                sources: vec!["a".into(), "b".into()],
+                rationale: "redundant".into(),
+            }],
+            retirements: vec![],
+            splits: vec![],
+        };
+        let report = apply_consolidate_plan(
+            &plan,
+            &[a.clone(), b.clone(), linker1.clone(), linker2.clone()],
+            true,
+        )
+        .unwrap();
+
+        assert_eq!(report.merged.len(), 1);
+        assert_eq!(report.merged[0].0, "ab");
+        // `ab` exists.
+        let ab = read_back(&wiki, PageType::Module, "ab");
+        assert_eq!(ab.frontmatter.slug, "ab");
+        // `a` and `b` are stale.
+        assert_eq!(
+            read_back(&wiki, PageType::Module, "a").frontmatter.status,
+            Status::Stale
+        );
+        assert_eq!(
+            read_back(&wiki, PageType::Module, "b").frontmatter.status,
+            Status::Stale
+        );
+        // linker1 contains [[ab]] twice (one from [[a]], one from [[b]]).
+        let l1 = read_back(&wiki, PageType::Module, "linker1");
+        assert_eq!(
+            l1.body.matches("[[ab]]").count(),
+            2,
+            "linker1 should have two [[ab]] occurrences, body: {}",
+            l1.body
+        );
+        assert!(
+            !l1.body.contains("[[a]]") && !l1.body.contains("[[b]]"),
+            "old slugs must be gone from linker1, body: {}",
+            l1.body
+        );
+        // linker2 contains [[ab]].
+        let l2 = read_back(&wiki, PageType::Module, "linker2");
+        assert!(
+            l2.body.contains("[[ab]]"),
+            "linker2 must contain [[ab]], body: {}",
+            l2.body
+        );
+        // Two pages were patched (linker1 + linker2).
+        assert_eq!(report.rewrites.len(), 2);
+    }
+
+    #[test]
+    fn apply_with_rewrite_links_uses_first_split_target() {
+        let tmp = TempDir::new().unwrap();
+        let wiki = tmp.path().join(".wiki");
+        let too_big = page_full(
+            &wiki,
+            "too-big",
+            Status::Reviewed,
+            PageType::Module,
+            0.7,
+            "# too big\n\nbody",
+            vec![],
+        );
+        let linker = page_full(
+            &wiki,
+            "linker",
+            Status::Reviewed,
+            PageType::Module,
+            0.7,
+            "see [[too-big]]",
+            vec![],
+        );
+        let plan = ConsolidatePlan {
+            merges: vec![],
+            retirements: vec![],
+            splits: vec![SplitOp {
+                source: "too-big".into(),
+                targets: vec!["part-a".into(), "part-b".into()],
+                rationale: "split it".into(),
+            }],
+        };
+        let report =
+            apply_consolidate_plan(&plan, &[too_big.clone(), linker.clone()], true).unwrap();
+
+        assert_eq!(report.split.len(), 1);
+        assert_eq!(report.split[0].1, vec!["part-a", "part-b"]);
+        let l = read_back(&wiki, PageType::Module, "linker");
+        assert!(
+            l.body.contains("see [[part-a]]"),
+            "linker must point at the FIRST split target (part-a), body: {}",
+            l.body
+        );
+        assert!(
+            !l.body.contains("[[too-big]]"),
+            "old [[too-big]] must be gone, body: {}",
+            l.body
+        );
+        assert_eq!(report.rewrites.len(), 1);
+        assert_eq!(report.rewrites[0].page_slug, "linker");
+    }
+
+    #[test]
+    fn apply_with_rewrite_links_skips_merge_sources() {
+        let tmp = TempDir::new().unwrap();
+        let wiki = tmp.path().join(".wiki");
+        // Source `a` has its own [[b]] and [[external]] links, but since `a`
+        // is in skip_slugs (it's a merge source), its body must NOT be
+        // patched by the rewrite pass.
+        let a = page_full(
+            &wiki,
+            "a",
+            Status::Reviewed,
+            PageType::Module,
+            0.7,
+            "# a\n\nlinks to [[b]] and [[external]]",
+            vec![],
+        );
+        let b = page_full(
+            &wiki,
+            "b",
+            Status::Reviewed,
+            PageType::Module,
+            0.7,
+            "# b\n\nbody-b",
+            vec![],
+        );
+        let linker = page_full(
+            &wiki,
+            "linker",
+            Status::Reviewed,
+            PageType::Module,
+            0.7,
+            "see [[a]] and [[b]]",
+            vec![],
+        );
+        let plan = ConsolidatePlan {
+            merges: vec![MergeOp {
+                target: "ab".into(),
+                sources: vec!["a".into(), "b".into()],
+                rationale: "redundant".into(),
+            }],
+            retirements: vec![],
+            splits: vec![],
+        };
+        let report =
+            apply_consolidate_plan(&plan, &[a.clone(), b.clone(), linker.clone()], true).unwrap();
+
+        // a is now stale (merge source), and its body's [[b]] reference is
+        // NOT rewritten because `a` is in the skip set.
+        let a_after = read_back(&wiki, PageType::Module, "a");
+        assert_eq!(a_after.frontmatter.status, Status::Stale);
+        assert!(
+            a_after.body.contains("[[b]]"),
+            "merge source `a` body must NOT be link-patched (a is in skip_slugs), body: {}",
+            a_after.body
+        );
+
+        // linker IS patched.
+        let l = read_back(&wiki, PageType::Module, "linker");
+        assert!(
+            l.body.contains("[[ab]]"),
+            "linker must be patched to point at [[ab]], body: {}",
+            l.body
+        );
+        assert!(
+            !l.body.contains("[[a]]") && !l.body.contains("[[b]]"),
+            "linker old slugs must be gone, body: {}",
+            l.body
+        );
+
+        // Only `linker` appears in rewrites — `a` was skipped.
+        assert_eq!(report.rewrites.len(), 1);
+        assert_eq!(report.rewrites[0].page_slug, "linker");
+    }
+
+    #[test]
+    fn rewrite_links_without_apply_returns_error() {
+        let tmp = TempDir::new().unwrap();
+        let wiki = tmp.path().join(".wiki");
+        // Need at least one page so the wiki dir exists.
+        let _seed = page(&wiki, "seed", Status::Reviewed);
+        let runner = MockRunner::new();
+        // Runner shouldn't even be invoked — the validation must fire first.
+        let err = run_with_runner(
+            ConsolidateArgs {
+                apply: false,
+                rewrite_links: true,
+                ..Default::default()
+            },
+            Some(wiki.as_path()),
+            &runner,
+        )
+        .unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("--apply"),
+            "error message must mention --apply, got: {msg}"
         );
     }
 }
