@@ -5,7 +5,7 @@
 [![CI](https://github.com/agustincbajo/Coral/actions/workflows/ci.yml/badge.svg)](https://github.com/agustincbajo/Coral/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/agustincbajo/Coral?display_name=tag)](https://github.com/agustincbajo/Coral/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-214%20passing-brightgreen)](#testing--ci)
+[![Tests](https://img.shields.io/badge/tests-342%20passing-brightgreen)](#testing--ci)
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange?logo=rust)](rust-toolchain.toml)
 
 Coral compiles your codebase into an interconnected Markdown wiki that an LLM (Claude) maintains as you push code. Each merge updates the wiki incrementally; nightly lint catches contradictions; weekly consolidation prunes redundant pages.
@@ -466,29 +466,32 @@ Methodology, hot paths, and profiling tips in [docs/PERF.md](docs/PERF.md).
 ## Testing & CI
 
 ```bash
-cargo test --workspace                        # 214 tests passing
-cargo test --workspace -- --ignored           # 4 ignored (real claude/git/gemini smoke)
+cargo test --workspace                        # 342 tests passing
+cargo test --workspace -- --ignored           # 8 ignored (real-claude / real-gemini /
+                                              # real-llama / real-voyage / real-openai
+                                              # / real-git smokes)
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
+cargo bench --workspace -- --test             # benchmarks compile + run once
 ```
 
-### Test breakdown
+### Test breakdown (v0.6.0)
 
 | Crate / target | Tests |
 |---|---|
-| `coral-core` | 76 + 2 ignored (real-git smoke) |
-| `coral-lint` | 25 |
-| `coral-runner` | 18 + 1 ignored (real-claude smoke) |
+| `coral-core` (lib + benches) | 94 + 2 ignored (real-git smoke) |
+| `coral-lint` (lib + benches) | 47 |
+| `coral-runner` | 47 + 5 ignored (real-claude / real-gemini / real-llama / real-voyage / real-openai smokes) |
 | `coral-stats` | 14 |
-| `coral-cli` (unit) | 41 |
-| `coral-cli` (integration: cli_smoke) | 24 |
-| `coral-cli` (e2e: full_lifecycle, multi_repo, query_cycle) | 8 |
-| `coral-cli` (template_validation) | 8 |
-| **Total** | **214 + 4 ignored** |
+| `coral-cli` (unit) | 96 + 2 ignored |
+| `coral-cli` (integration: cli_smoke) | 31 + 1 ignored |
+| `coral-cli` (e2e: full_lifecycle, multi_repo, query_cycle) | 9 |
+| `coral-cli` (template_validation) | 14 |
+| **Total** | **342 + 8 ignored** |
 
 ### CI pipeline
 
-- **`ci.yml`** runs on every push to `main` and PR: fmt + clippy + test.
+- **`ci.yml`** runs on every push to `main` and PR: `fmt`, `clippy`, `test`, `audit` (cargo-audit, soft-fail), `deny` (cargo-deny, hard gate on licenses + duplicate-versions per [`deny.toml`](deny.toml)).
 - **`release.yml`** runs on tag push (`v*.*.*`): builds Linux x86_64 + macOS x86_64+aarch64, strips binaries, uploads `.tar.gz` + `.sha256` to a GitHub Release.
 
 ---
@@ -543,14 +546,48 @@ Coral v0.1.0 shipped through 9 sequential phases (A–I), each landing as one at
 | #14 | Perf docs + release-profile tweaks | ✅ |
 | #15 | Stats coverage + JSON schema | ✅ |
 
-### v0.3.0 — planned
+### v0.3.x — patches ✅
 
-- **Real Q/A pairs** in `coral export --format jsonl` (LLM-driven).
-- **Embeddings-backed search** via `sqlite-vec` (replace TF-IDF). See [ADR 0006](docs/adr/0006-local-semantic-search-storage.md).
-- **`coral notion-push`** thin wrapper over `export --format notion-json` + curl.
-- **mtime-cached frontmatter parsing** for faster `lint`/`stats` on large wikis.
-- **Streaming timeout** in `ClaudeRunner::run_streaming`.
-- **`orchestra-ingest`** reference consumer repo (deferred from v0.2 #12).
+- v0.3.0: mtime-cached frontmatter parsing + LLM-driven Q/A pairs.
+- v0.3.1: embeddings-backed search via Voyage AI.
+- v0.3.2: 3 dogfooding fixes (UTF-8 search panic, runner auth UX, CWD_LOCK race).
+
+### v0.4.0 — multi-provider runners ✅
+
+- `EmbeddingsProvider` trait + Voyage / OpenAI / Mock impls.
+- Real `GeminiRunner` (no longer wraps Claude).
+- `LocalRunner` (llama.cpp / `llama-cli`).
+- `coral search --embeddings-provider <voyage|openai>`.
+- README "Auth setup" section.
+- `coral query` telemetry + `notion-push` dry-run-default.
+
+### v0.5.0 — apply-flow + streaming + docs ✅
+
+- `coral validate-pin`.
+- `coral lint --staged` + `--auto-fix [--apply]`.
+- `embeddings-cache` composite GH action.
+- `coral diff <slugA> <slugB>` (structural).
+- `coral export --format html` (single-file static site).
+- `coral consolidate --apply` (retire path).
+- `coral onboard --apply` (persists path as wiki page).
+- Streaming runner unification (Gemini + Local now token-by-token).
+
+### v0.6.0 — quality + apply-flow extension + CI hardening ✅
+
+- 4 new structural lint checks (`CommitNotInGit`, `SourceNotFound`, `ArchivedPageLinked`, `UnknownExtraField`).
+- `coral diff --semantic` (LLM-driven contradictions + overlap).
+- `coral consolidate --apply` extended to handle merges + splits.
+- `criterion` benchmarks for 5 hot paths.
+- `cargo-audit` + `cargo-deny` CI jobs.
+- ADR 0008 (multi-provider runner+embeddings) + ADR 0009 (auto-fix scope).
+- Parallelized embeddings batching across rayon thread pool.
+
+### Tracked but blocked
+
+- **Self-hosted dogfooding** of `.wiki/` — needs `claude setup-token` from the maintainer (the parent's `ANTHROPIC_API_KEY` doesn't reach the `claude --print` subprocess when Coral runs from inside Claude Code).
+- **`AnthropicEmbeddingsProvider`** — gated on Anthropic publishing the embeddings API.
+- **`sqlite-vec` migration** — explicitly deferred in [ADR 0006](docs/adr/0006-local-semantic-search-storage.md) until a wiki crosses ~5k pages.
+- **`orchestra-ingest` reference consumer repo** — separate-repo follow-up (issue #12).
 
 ---
 
