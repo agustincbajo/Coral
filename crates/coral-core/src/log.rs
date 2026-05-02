@@ -306,8 +306,8 @@ random nonsense
     fn append_atomic_seeds_header_and_writes_entry_when_file_missing() {
         let dir = TempDir::new().expect("tempdir");
         let target = dir.path().join("log.md");
-        let entry = WikiLog::append_atomic(&target, "bootstrap", "12 pages")
-            .expect("first append_atomic");
+        let entry =
+            WikiLog::append_atomic(&target, "bootstrap", "12 pages").expect("first append_atomic");
         assert_eq!(entry.op, "bootstrap");
         assert_eq!(entry.summary, "12 pages");
         let reloaded = WikiLog::load(&target).expect("reload");

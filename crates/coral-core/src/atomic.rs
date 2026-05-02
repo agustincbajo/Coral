@@ -143,7 +143,11 @@ mod tests {
             .filter_map(|e| e.ok())
             .map(|e| e.file_name())
             .collect();
-        assert_eq!(entries.len(), 1, "expected exactly target file, got {entries:?}");
+        assert_eq!(
+            entries.len(),
+            1,
+            "expected exactly target file, got {entries:?}"
+        );
     }
 
     /// Stress test: 50 threads each replace the target with their own
