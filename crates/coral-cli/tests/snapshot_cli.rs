@@ -342,3 +342,56 @@ fn prompts_list_against_embedded_bundle() {
         insta::assert_snapshot!(stdout);
     });
 }
+
+// ---- validate-pin --------------------------------------------------------
+
+/// Pins the `coral validate-pin` "no pins file" path. Drop in any
+/// directory without `.coral-pins.toml` and the command should be a
+/// no-op success with a stderr hint.
+#[test]
+fn validate_pin_no_pins_file() {
+    let tmp = TempDir::new().unwrap();
+    let assert = Command::cargo_bin("coral")
+        .unwrap()
+        .current_dir(tmp.path())
+        .arg("validate-pin")
+        .assert()
+        .success();
+    let output = assert.get_output();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    insta::with_settings!({ filters => standard_filters() }, {
+        insta::assert_snapshot!(stderr);
+    });
+}
+
+// ---- lint additional shapes ---------------------------------------------
+
+/// Pins `coral lint --severity critical --format json`. Empty when the
+/// seed has no Critical issues. Catches regressions where the filter
+/// silently leaks Warning entries through.
+#[test]
+fn lint_severity_critical_json_4_page_seed() {
+    let tmp = TempDir::new().unwrap();
+    write_seed_wiki(tmp.path());
+    let stdout = run_coral(
+        tmp.path(),
+        &["lint", "--severity", "critical", "--format", "json"],
+    );
+    insta::with_settings!({ filters => standard_filters() }, {
+        insta::assert_snapshot!(stdout);
+    });
+}
+
+/// Pins `coral lint --severity warning` markdown output. Should include
+/// every issue the seed produces (all are Warning) — same shape as the
+/// existing `lint_structural_4_page_seed` snapshot but worth pinning
+/// independently to catch any future severity-filter logic drift.
+#[test]
+fn lint_severity_warning_4_page_seed() {
+    let tmp = TempDir::new().unwrap();
+    write_seed_wiki(tmp.path());
+    let stdout = run_coral(tmp.path(), &["lint", "--severity", "warning"]);
+    insta::with_settings!({ filters => standard_filters() }, {
+        insta::assert_snapshot!(stdout);
+    });
+}
