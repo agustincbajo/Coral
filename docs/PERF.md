@@ -56,6 +56,49 @@ Active in `[profile.release]`:
 
 The `regex` crate auto-detects SIMD on aarch64 (Apple Silicon) and amd64. No extra config needed.
 
+## Benchmarks
+
+`hyperfine` measures the CLI end-to-end; for sub-millisecond hot paths we use
+`criterion` micro-benchmarks. Each crate ships its own `benches/` directory
+and the workspace runner exercises all of them at once:
+
+```bash
+cargo bench --workspace
+```
+
+Results are written to `target/criterion/<bench-id>/` along with HTML reports.
+The top-level summary is at `target/criterion/report/index.html` — open it in
+a browser to see throughput, distribution, and run-over-run regression
+comparisons. Criterion automatically diffs against the previous run, so a
+typical workflow is:
+
+1. Run `cargo bench --workspace` on `main` to capture a baseline.
+2. Make a change.
+3. Run `cargo bench --workspace` again — the report shows percentage deltas
+   and flags statistically significant regressions or improvements.
+
+For a sanity-only pass that runs every bench exactly once (no measurement),
+use the criterion `--test` mode — useful in CI to catch broken benches without
+paying the full bench wall-clock:
+
+```bash
+cargo bench --workspace -- --test
+```
+
+Current benches:
+
+| Bench id | Crate | What it measures |
+|---|---|---|
+| `search/100_pages_2_token_query` | `coral-core` | TF-IDF over 100-page corpus, 2-token query |
+| `wikilinks/extract_50_links` | `coral-core` | Regex extraction of 50 wikilinks from a body |
+| `frontmatter/parse_5_field_block` | `coral-core` | `serde_yaml_ng::from_str` for a typical frontmatter |
+| `walk/read_pages_100_pages_4_subdirs` | `coral-core` | End-to-end disk walk + parse for 100 pages |
+| `lint/run_structural_100_pages` | `coral-lint` | All 7 pure structural checks against 100 pages |
+
+The two context-aware lint checks (`commit_in_git`, `source_exists`) are not
+benched here — they shell out to git / hit the filesystem and need their own
+fixture story.
+
 ## Future work
 
 - mimalloc / jemalloc allocator (issue follow-up).

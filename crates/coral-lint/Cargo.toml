@@ -20,3 +20,8 @@ rayon = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 serde_yaml_ng = { workspace = true }
+criterion = "0.5"
+
+[[bench]]
+name = "structural_bench"
+harness = false

@@ -22,3 +22,20 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+criterion = "0.5"
+
+[[bench]]
+name = "search_bench"
+harness = false
+
+[[bench]]
+name = "wikilinks_bench"
+harness = false
+
+[[bench]]
+name = "frontmatter_bench"
+harness = false
+
+[[bench]]
+name = "walk_bench"
+harness = false
