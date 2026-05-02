@@ -69,6 +69,16 @@ pub struct LintArgs {
     /// only critical issues whose code is X.
     #[arg(long)]
     pub rule: Vec<String>,
+    /// No-LLM, pure-rule auto-fix mode. Applies deterministic, mechanical
+    /// fixes (trim trailing whitespace in frontmatter strings, sort
+    /// `sources` and `backlinks`, normalize wikilink spacing
+    /// `[[ slug ]]` → `[[slug]]`, trim trailing whitespace on body
+    /// lines). Independent of `--auto-fix`: they can be combined as
+    /// `--fix --auto-fix --apply` to run rules first, then the LLM.
+    /// Default: dry-run prints the proposed fixes per page. Pass
+    /// `--apply` to write them. Useful for users without LLM auth.
+    #[arg(long)]
+    pub fix: bool,
 }
 
 pub fn run(args: LintArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
@@ -165,6 +175,14 @@ pub fn run_with_runner(
     match args.format.as_str() {
         "json" => println!("{}", serde_json::to_string_pretty(&report)?),
         _ => println!("{}", report.as_markdown()),
+    }
+
+    // No-LLM rule-based fix pass — runs INDEPENDENTLY of the lint
+    // output above. Always last so the lint report renders first and
+    // the fix proposal/result is appended cleanly.
+    if args.fix {
+        let fix_report = run_no_llm_fix(&pages, args.apply, &root)?;
+        println!("{}", render_fix_report(&fix_report));
     }
 
     if report.critical_count() > 0 {
@@ -514,6 +532,239 @@ pub(crate) fn filter_issues_by_paths(
             None => true,
         })
         .collect()
+}
+
+/// Per-page record of which deterministic rules fired during a
+/// no-LLM fix pass. The rule names are static string slices so they
+/// can be cheaply joined into a comma-separated list at render time.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct NoLlmFixReport {
+    /// One entry per page that would be (or was) modified, in
+    /// alphabetical-by-slug order. The `Vec<&'static str>` lists the
+    /// rules that fired on that page (also in deterministic order).
+    pub changed_pages: Vec<(String, PathBuf, Vec<&'static str>)>,
+    /// Cached `changed_pages.len()` — duplicated for readability at
+    /// the call sites and to keep the render function pure.
+    pub total_changed: usize,
+    /// Whether `--apply` was passed (controls "would change" vs
+    /// "wrote" wording in the rendered report).
+    pub applied: bool,
+}
+
+/// Trim trailing ASCII whitespace from frontmatter string fields
+/// (`slug`, `last_updated_commit`). Returns `true` if any field
+/// changed. Pure — caller decides whether to persist.
+pub(crate) fn trim_frontmatter_strings(fm: &mut coral_core::frontmatter::Frontmatter) -> bool {
+    let mut changed = false;
+    let trimmed_slug = fm.slug.trim_end().to_string();
+    if trimmed_slug != fm.slug {
+        fm.slug = trimmed_slug;
+        changed = true;
+    }
+    let trimmed_commit = fm.last_updated_commit.trim_end().to_string();
+    if trimmed_commit != fm.last_updated_commit {
+        fm.last_updated_commit = trimmed_commit;
+        changed = true;
+    }
+    changed
+}
+
+/// Sort `sources` alphabetically in place. Returns `true` if the
+/// order changed (so the caller can record that the rule fired
+/// without re-sorting in the no-op case).
+pub(crate) fn sort_sources(fm: &mut coral_core::frontmatter::Frontmatter) -> bool {
+    let mut sorted = fm.sources.clone();
+    sorted.sort();
+    if sorted != fm.sources {
+        fm.sources = sorted;
+        true
+    } else {
+        false
+    }
+}
+
+/// Sort `backlinks` alphabetically in place. Returns `true` if the
+/// order changed.
+pub(crate) fn sort_backlinks(fm: &mut coral_core::frontmatter::Frontmatter) -> bool {
+    let mut sorted = fm.backlinks.clone();
+    sorted.sort();
+    if sorted != fm.backlinks {
+        fm.backlinks = sorted;
+        true
+    } else {
+        false
+    }
+}
+
+/// Normalize wikilink spacing in the body: `[[ slug ]]` → `[[slug]]`.
+/// Returns `Some(new_body)` if anything changed, else `None`. Pure.
+///
+/// The regex matches a `[[`, optional surrounding ASCII whitespace
+/// (no newlines — wikilinks don't span lines), and `]]`. Inner pipes
+/// (`[[ slug | label ]]`) are preserved verbatim so the rule never
+/// touches link aliases.
+pub(crate) fn normalize_wikilink_spacing(body: &str) -> Option<String> {
+    use regex::Regex;
+    use std::sync::OnceLock;
+    // OnceLock so we compile the regex exactly once per process.
+    // Failure to compile is a programmer error; the literal is
+    // checked at test time.
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| {
+        Regex::new(
+            r"\[\[[ \t]+([^\]\n]*?)[ \t]+\]\]|\[\[[ \t]+([^\]\n]*?)\]\]|\[\[([^\]\n]*?)[ \t]+\]\]",
+        )
+        .expect("wikilink-spacing regex compiles")
+    });
+    let new_body = re.replace_all(body, |caps: &regex::Captures<'_>| {
+        let inner = caps
+            .get(1)
+            .or_else(|| caps.get(2))
+            .or_else(|| caps.get(3))
+            .map(|m| m.as_str())
+            .unwrap_or("");
+        format!("[[{inner}]]")
+    });
+    if new_body == body {
+        None
+    } else {
+        Some(new_body.into_owned())
+    }
+}
+
+/// Trim trailing ASCII whitespace from each line of `body`. Returns
+/// `Some(new_body)` if anything changed, else `None`. Pure.
+///
+/// Preserves the line terminator (`\n`) and the final-line
+/// no-newline case verbatim — only the run of spaces/tabs immediately
+/// before the newline (or end of body) is removed.
+pub(crate) fn trim_trailing_line_whitespace(body: &str) -> Option<String> {
+    let mut out = String::with_capacity(body.len());
+    let mut changed = false;
+    // split_inclusive keeps each line's trailing `\n` (or no newline
+    // for the last line if there isn't one). That lets us trim the
+    // text portion without losing the line break.
+    for raw in body.split_inclusive('\n') {
+        let (text, term) = match raw.strip_suffix('\n') {
+            Some(t) => (t, "\n"),
+            None => (raw, ""),
+        };
+        let trimmed = text.trim_end_matches([' ', '\t']);
+        if trimmed.len() != text.len() {
+            changed = true;
+        }
+        out.push_str(trimmed);
+        out.push_str(term);
+    }
+    if changed { Some(out) } else { None }
+}
+
+/// Run the no-LLM fix pass over `pages`. With `apply == false` this
+/// is a pure dry-run — pages on disk are untouched and the returned
+/// report describes what *would* change. With `apply == true` each
+/// modified page is persisted via `Page::write()` before the next
+/// page is examined.
+///
+/// Order of operations per page (matters because every rule sees the
+/// state left by the previous one):
+/// 1. `trim_frontmatter_strings`
+/// 2. `sort_sources`
+/// 3. `sort_backlinks`
+/// 4. `normalize_wikilink_spacing`
+/// 5. `trim_trailing_line_whitespace`
+fn run_no_llm_fix(
+    pages: &[coral_core::page::Page],
+    apply: bool,
+    _wiki_root: &Path,
+) -> Result<NoLlmFixReport> {
+    let mut changed_pages: Vec<(String, PathBuf, Vec<&'static str>)> = Vec::new();
+
+    for page in pages {
+        let mut new_page = page.clone();
+        let mut rules_fired: Vec<&'static str> = Vec::new();
+
+        if trim_frontmatter_strings(&mut new_page.frontmatter) {
+            rules_fired.push("trim-frontmatter-whitespace");
+        }
+        if sort_sources(&mut new_page.frontmatter) {
+            rules_fired.push("sort-sources");
+        }
+        if sort_backlinks(&mut new_page.frontmatter) {
+            rules_fired.push("sort-backlinks");
+        }
+        if let Some(b) = normalize_wikilink_spacing(&new_page.body) {
+            new_page.body = b;
+            rules_fired.push("normalize-wikilinks");
+        }
+        if let Some(b) = trim_trailing_line_whitespace(&new_page.body) {
+            new_page.body = b;
+            rules_fired.push("trim-trailing-whitespace");
+        }
+
+        if !rules_fired.is_empty() {
+            if apply {
+                new_page
+                    .write()
+                    .with_context(|| format!("writing fixed page `{}`", page.frontmatter.slug))?;
+            }
+            changed_pages.push((
+                page.frontmatter.slug.clone(),
+                page.path.clone(),
+                rules_fired,
+            ));
+        }
+    }
+
+    // Sort by slug for stable, deterministic output regardless of
+    // walk order (which depends on filesystem listing).
+    changed_pages.sort_by(|a, b| a.0.cmp(&b.0));
+    let total_changed = changed_pages.len();
+
+    Ok(NoLlmFixReport {
+        changed_pages,
+        total_changed,
+        applied: apply,
+    })
+}
+
+/// Render a [`NoLlmFixReport`] as the Markdown shown to the user.
+/// Pure — no I/O, no formatting variation based on env.
+pub(crate) fn render_fix_report(report: &NoLlmFixReport) -> String {
+    if report.total_changed == 0 {
+        return "\n# No-LLM lint fixes\n\nNo fixes needed.\n".to_string();
+    }
+
+    let header = if report.applied {
+        "\n# No-LLM lint fixes (applied)\n\n"
+    } else {
+        "\n# No-LLM lint fixes (dry-run)\n\n"
+    };
+    let mut out = String::from(header);
+    for (slug, path, rules) in &report.changed_pages {
+        // Render path relative to cwd when possible — falls back to
+        // the absolute display so the report is still readable in
+        // any environment (tests, CI, ad-hoc runs).
+        let path_display = std::env::current_dir()
+            .ok()
+            .and_then(|cwd| path.strip_prefix(&cwd).ok().map(Path::to_path_buf))
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| path.display().to_string());
+        out.push_str(&format!(
+            "- `{slug}` ({}): {}\n",
+            path_display,
+            rules.join(", ")
+        ));
+    }
+    let footer = if report.applied {
+        format!("\nWrote {} page(s).\n", report.total_changed)
+    } else {
+        format!(
+            "\n{} page(s) would change. Pass `--apply` to write.\n",
+            report.total_changed
+        )
+    };
+    out.push_str(&footer);
+    out
 }
 
 #[cfg(test)]
@@ -1082,5 +1333,347 @@ mod tests {
         let after_both = apply_severity_filter(after_rule, Some(LintSeverity::Critical));
         assert_eq!(after_both.len(), 1);
         assert_eq!(after_both[0].message, "kept");
+    }
+
+    // -------------------------------------------------------------
+    // No-LLM rule-based fix pass (`coral lint --fix`)
+    //
+    // The block below covers the pure helpers
+    // (`trim_frontmatter_strings`, `sort_sources`, `sort_backlinks`,
+    // `normalize_wikilink_spacing`, `trim_trailing_line_whitespace`),
+    // the `run_no_llm_fix` orchestrator (dry-run vs `--apply`), and
+    // the `render_fix_report` markdown emitter. Each helper has a
+    // "no change → false/None" test so we never spuriously report a
+    // page as changed when nothing fired.
+    // -------------------------------------------------------------
+
+    /// Build a stock `Frontmatter` for the no-LLM-fix tests below.
+    /// Keeps boilerplate out of every test by exposing only the fields
+    /// each test cares about (slug + sources/backlinks).
+    fn fixture_frontmatter(
+        slug: &str,
+        sources: Vec<String>,
+        backlinks: Vec<String>,
+    ) -> coral_core::frontmatter::Frontmatter {
+        use coral_core::frontmatter::{Confidence, Frontmatter, PageType, Status};
+        Frontmatter {
+            slug: slug.into(),
+            page_type: PageType::Module,
+            last_updated_commit: "abc".into(),
+            confidence: Confidence::try_new(0.9).unwrap(),
+            sources,
+            backlinks,
+            status: Status::Verified,
+            generated_at: None,
+            extra: Default::default(),
+        }
+    }
+
+    // ---- trim_frontmatter_strings -------------------------------
+
+    #[test]
+    fn trim_frontmatter_strings_no_change_returns_false() {
+        // A clean frontmatter must report `false` so the orchestrator
+        // doesn't add the page to `changed_pages` for a no-op rule.
+        let mut fm = fixture_frontmatter("order", vec![], vec![]);
+        assert!(!trim_frontmatter_strings(&mut fm));
+        assert_eq!(fm.slug, "order");
+        assert_eq!(fm.last_updated_commit, "abc");
+    }
+
+    #[test]
+    fn trim_frontmatter_strings_trims_slug_trailing_ws() {
+        let mut fm = fixture_frontmatter("order  ", vec![], vec![]);
+        assert!(trim_frontmatter_strings(&mut fm));
+        assert_eq!(fm.slug, "order");
+    }
+
+    #[test]
+    fn trim_frontmatter_strings_trims_last_updated_commit() {
+        // Belt-and-suspenders for the second field the rule covers.
+        let mut fm = fixture_frontmatter("order", vec![], vec![]);
+        fm.last_updated_commit = "deadbeef \t".into();
+        assert!(trim_frontmatter_strings(&mut fm));
+        assert_eq!(fm.last_updated_commit, "deadbeef");
+    }
+
+    // ---- sort_sources -------------------------------------------
+
+    #[test]
+    fn sort_sources_already_sorted_returns_false() {
+        let mut fm = fixture_frontmatter(
+            "order",
+            vec!["a.rs".into(), "b.rs".into(), "c.rs".into()],
+            vec![],
+        );
+        assert!(!sort_sources(&mut fm));
+        assert_eq!(
+            fm.sources,
+            vec!["a.rs".to_string(), "b.rs".into(), "c.rs".into()]
+        );
+    }
+
+    #[test]
+    fn sort_sources_unsorted_returns_true() {
+        let mut fm = fixture_frontmatter(
+            "order",
+            vec!["c.rs".into(), "a.rs".into(), "b.rs".into()],
+            vec![],
+        );
+        assert!(sort_sources(&mut fm));
+        assert_eq!(
+            fm.sources,
+            vec!["a.rs".to_string(), "b.rs".into(), "c.rs".into()]
+        );
+    }
+
+    // ---- sort_backlinks -----------------------------------------
+
+    #[test]
+    fn sort_backlinks_dedup_not_required() {
+        // Document the spec: this rule sorts only — duplicates are
+        // *preserved*. A separate dedup pass (out of scope here) would
+        // need to handle that.
+        let mut fm = fixture_frontmatter("order", vec![], vec!["b".into(), "a".into(), "a".into()]);
+        assert!(sort_backlinks(&mut fm));
+        assert_eq!(fm.backlinks, vec!["a".to_string(), "a".into(), "b".into()]);
+    }
+
+    // ---- normalize_wikilink_spacing -----------------------------
+
+    #[test]
+    fn normalize_wikilink_spacing_plain() {
+        // Symmetric whitespace on both sides → collapsed inner content.
+        let body = "see [[ slug ]] now";
+        assert_eq!(
+            normalize_wikilink_spacing(body),
+            Some("see [[slug]] now".into())
+        );
+    }
+
+    #[test]
+    fn normalize_wikilink_spacing_left_only() {
+        let body = "[[ slug]]";
+        assert_eq!(normalize_wikilink_spacing(body), Some("[[slug]]".into()));
+    }
+
+    #[test]
+    fn normalize_wikilink_spacing_right_only() {
+        let body = "[[slug ]]";
+        assert_eq!(normalize_wikilink_spacing(body), Some("[[slug]]".into()));
+    }
+
+    #[test]
+    fn normalize_wikilink_spacing_no_change_returns_none() {
+        // Already-clean wikilinks must report `None` so the
+        // orchestrator doesn't mark the body as "changed".
+        let body = "see [[clean]] now";
+        assert_eq!(normalize_wikilink_spacing(body), None);
+    }
+
+    #[test]
+    fn normalize_wikilink_spacing_with_alias() {
+        // Aliases (`|` separator) are preserved verbatim — the rule
+        // only trims whitespace adjacent to the surrounding `[[` /
+        // `]]` brackets, never inside the link body. So the inner
+        // " | " stays intact.
+        let body = "[[ slug | alias ]]";
+        assert_eq!(
+            normalize_wikilink_spacing(body),
+            Some("[[slug | alias]]".into())
+        );
+    }
+
+    // ---- trim_trailing_line_whitespace --------------------------
+
+    #[test]
+    fn trim_trailing_line_whitespace_no_change_returns_none() {
+        let body = "line1\nline2\n";
+        assert_eq!(trim_trailing_line_whitespace(body), None);
+    }
+
+    #[test]
+    fn trim_trailing_line_whitespace_preserves_newline() {
+        // Critical: only the trailing whitespace before `\n` is
+        // removed — the `\n` itself stays so the line count is
+        // unchanged.
+        let body = "line  \n";
+        assert_eq!(trim_trailing_line_whitespace(body), Some("line\n".into()));
+    }
+
+    #[test]
+    fn trim_trailing_line_whitespace_multiline() {
+        // Mixed: dirty / clean / dirty / final-line-without-newline.
+        // Verifies trim is applied per-line and the trailing-no-\n
+        // case is handled.
+        let body = "a  \nb\nc\t \nd  ";
+        assert_eq!(
+            trim_trailing_line_whitespace(body),
+            Some("a\nb\nc\nd".into())
+        );
+    }
+
+    // ---- run_no_llm_fix (apply path) ----------------------------
+
+    /// Helper: write a single-page tempdir wiki and return the
+    /// in-memory `Page` plus the absolute path so the test can
+    /// re-read disk after `run_no_llm_fix(apply=…)`.
+    fn write_one_page_wiki(
+        tmp: &tempfile::TempDir,
+        slug: &str,
+        body: &str,
+    ) -> (coral_core::page::Page, std::path::PathBuf) {
+        use coral_core::page::Page;
+        let wiki = tmp.path().join(".wiki");
+        let modules = wiki.join("modules");
+        std::fs::create_dir_all(&modules).unwrap();
+        let page_path = modules.join(format!("{slug}.md"));
+        let page = Page {
+            path: page_path.clone(),
+            frontmatter: fixture_frontmatter(slug, vec![], vec![]),
+            body: body.into(),
+        };
+        page.write().unwrap();
+        (page, page_path)
+    }
+
+    #[test]
+    fn run_no_llm_fix_dry_run_does_not_write() {
+        use tempfile::TempDir;
+        let tmp = TempDir::new().unwrap();
+        // Use a slug that would trigger trim-frontmatter-whitespace.
+        let (mut page, page_path) = write_one_page_wiki(&tmp, "order", "body\n");
+        // Re-set slug after `write_one_page_wiki` (which derives the
+        // file name from the clean slug) so the on-disk content has
+        // the trailing whitespace we want to assert is preserved.
+        page.frontmatter.slug = "ord  ".into();
+        page.write().unwrap();
+        let on_disk_before = std::fs::read_to_string(&page_path).unwrap();
+
+        let report = run_no_llm_fix(
+            std::slice::from_ref(&page),
+            false,
+            &tmp.path().join(".wiki"),
+        )
+        .unwrap();
+        assert_eq!(report.total_changed, 1);
+        assert!(!report.applied);
+
+        let on_disk_after = std::fs::read_to_string(&page_path).unwrap();
+        assert_eq!(
+            on_disk_before, on_disk_after,
+            "dry-run must not modify disk"
+        );
+    }
+
+    #[test]
+    fn run_no_llm_fix_apply_writes() {
+        use tempfile::TempDir;
+        let tmp = TempDir::new().unwrap();
+        let (mut page, page_path) = write_one_page_wiki(&tmp, "order", "body\n");
+        // Trailing whitespace on the slug — `trim_frontmatter_strings`
+        // should rewrite this to `"ord"` after `--apply`.
+        page.frontmatter.slug = "ord  ".into();
+        page.write().unwrap();
+
+        let report =
+            run_no_llm_fix(std::slice::from_ref(&page), true, &tmp.path().join(".wiki")).unwrap();
+        assert_eq!(report.total_changed, 1);
+        assert!(report.applied);
+
+        let on_disk = std::fs::read_to_string(&page_path).unwrap();
+        // Frontmatter is YAML; a trimmed slug serializes without the
+        // trailing whitespace. We assert against the `slug:` line so
+        // the test isn't sensitive to the rest of the YAML order.
+        assert!(
+            on_disk.contains("slug: ord\n"),
+            "slug not trimmed on disk: {on_disk}"
+        );
+        assert!(
+            !on_disk.contains("slug: ord  "),
+            "trailing whitespace still present: {on_disk}"
+        );
+    }
+
+    #[test]
+    fn run_no_llm_fix_clean_pages_returns_empty_report() {
+        use tempfile::TempDir;
+        let tmp = TempDir::new().unwrap();
+        // Page is born clean — no fix rule should fire.
+        let (page, _) = write_one_page_wiki(&tmp, "order", "clean body\n");
+
+        let report = run_no_llm_fix(
+            std::slice::from_ref(&page),
+            false,
+            &tmp.path().join(".wiki"),
+        )
+        .unwrap();
+        assert_eq!(report.total_changed, 0);
+        assert!(report.changed_pages.is_empty());
+        assert!(!report.applied);
+    }
+
+    // ---- render_fix_report --------------------------------------
+
+    #[test]
+    fn render_fix_report_dry_run_says_pass_apply() {
+        // Empty report: short "no fixes needed" message, no header.
+        let empty = NoLlmFixReport {
+            changed_pages: vec![],
+            total_changed: 0,
+            applied: false,
+        };
+        let out_empty = render_fix_report(&empty);
+        assert!(out_empty.contains("No fixes needed."), "got: {out_empty}");
+
+        // Non-empty dry-run: must surface the `--apply` hint so users
+        // know how to commit the proposed fixes.
+        let dry = NoLlmFixReport {
+            changed_pages: vec![(
+                "order".into(),
+                std::path::PathBuf::from("/tmp/.wiki/modules/order.md"),
+                vec!["sort-sources"],
+            )],
+            total_changed: 1,
+            applied: false,
+        };
+        let out_dry = render_fix_report(&dry);
+        assert!(
+            out_dry.contains("Pass `--apply` to write."),
+            "dry-run footer missing: {out_dry}"
+        );
+        assert!(
+            out_dry.contains("dry-run"),
+            "dry-run header missing: {out_dry}"
+        );
+    }
+
+    #[test]
+    fn render_fix_report_applied_says_wrote_n() {
+        let applied = NoLlmFixReport {
+            changed_pages: vec![
+                (
+                    "alpha".into(),
+                    std::path::PathBuf::from("/tmp/.wiki/modules/alpha.md"),
+                    vec!["sort-sources"],
+                ),
+                (
+                    "beta".into(),
+                    std::path::PathBuf::from("/tmp/.wiki/modules/beta.md"),
+                    vec!["normalize-wikilinks", "trim-trailing-whitespace"],
+                ),
+            ],
+            total_changed: 2,
+            applied: true,
+        };
+        let out = render_fix_report(&applied);
+        assert!(out.contains("Wrote 2 page(s)."), "wrote-N missing: {out}");
+        assert!(out.contains("(applied)"), "applied header missing: {out}");
+        // Per-page rule joining: confirms the comma-separator formatting
+        // for the multi-rule case.
+        assert!(
+            out.contains("normalize-wikilinks, trim-trailing-whitespace"),
+            "rule list missing: {out}"
+        );
     }
 }

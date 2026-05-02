@@ -425,3 +425,57 @@ fn lint_rule_two_codes_or_semantics_4_page_seed() {
         insta::assert_snapshot!(stdout);
     });
 }
+
+/// Pins `coral lint --fix` (dry-run) against the 4-page seed. The
+/// seed is intentionally clean for the no-LLM rule set: sources are
+/// single-element (so `sort-sources` is a no-op), backlinks are
+/// short and either empty or single-element, no wikilink spacing
+/// noise, no trailing whitespace, and no slug whitespace. The
+/// dry-run should therefore report "No fixes needed." beneath the
+/// existing lint output. Pinning catches regressions in either the
+/// seed or the rule pass that would silently change which pages
+/// fire — and confirms the fix output is appended without
+/// disturbing the lint render above it.
+#[test]
+fn lint_fix_dry_run_4_page_seed() {
+    let tmp = TempDir::new().unwrap();
+    write_seed_wiki(tmp.path());
+    let stdout = run_coral(tmp.path(), &["lint", "--structural", "--fix"]);
+    insta::with_settings!({ filters => standard_filters() }, {
+        insta::assert_snapshot!(stdout);
+    });
+}
+
+// ---- status -------------------------------------------------------------
+
+/// Pins `coral status` markdown output against the 4-page seed wiki.
+/// The seed has 4 pages, 1 init log entry, several Warning lint issues
+/// (LowConfidence + OrphanPage on `idempotency`, SourceNotFound on the
+/// three sourced pages). Filters scrub the path/timestamp noise so the
+/// snapshot is stable across machines.
+#[test]
+fn status_4_page_seed() {
+    let tmp = TempDir::new().unwrap();
+    write_seed_wiki(tmp.path());
+    let stdout = run_coral(tmp.path(), &["status"]);
+    insta::with_settings!({ filters => standard_filters() }, {
+        insta::assert_snapshot!(stdout);
+    });
+}
+
+// ---- history ------------------------------------------------------------
+
+/// Pins `coral history outbox` against the 4-page seed. The seed only
+/// has the init log entry from `coral init`, which mentions "wiki" not
+/// "outbox" — so the expected output is the documented "no entries
+/// mention 'outbox'" line. Acts as a regression guard for the empty-
+/// match branch's wording.
+#[test]
+fn history_outbox_4_page_seed() {
+    let tmp = TempDir::new().unwrap();
+    write_seed_wiki(tmp.path());
+    let stdout = run_coral(tmp.path(), &["history", "outbox"]);
+    insta::with_settings!({ filters => standard_filters() }, {
+        insta::assert_snapshot!(stdout);
+    });
+}
