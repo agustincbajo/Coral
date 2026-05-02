@@ -195,7 +195,8 @@ pub fn run_with_runner(
     }
 
     index.bump_last_commit(head.clone());
-    std::fs::write(&idx_path, index.to_string()?).context("writing .wiki/index.md")?;
+    coral_core::atomic::atomic_write_string(&idx_path, &index.to_string()?)
+        .context("writing .wiki/index.md")?;
 
     let log_path = root.join("log.md");
     let summary = format!("range {range}: {created} created, {updated} updated, {retired} retired");

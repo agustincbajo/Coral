@@ -47,7 +47,7 @@ pub fn run(args: InitArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
             .unwrap_or_else(|_| "0000000000000000000000000000000000000000".into());
         let mut idx = WikiIndex::new(head);
         idx.generated_at = Utc::now();
-        std::fs::write(&index_path, idx.to_string()?)
+        coral_core::atomic::atomic_write_string(&index_path, &idx.to_string()?)
             .with_context(|| format!("writing {}", index_path.display()))?;
         tracing::info!(path = %index_path.display(), "wrote index.md");
     }

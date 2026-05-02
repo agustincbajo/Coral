@@ -43,21 +43,14 @@ impl Page {
         serialize_fm(&self.frontmatter, &self.body)
     }
 
-    /// Writes the page to its `path`. Creates parent dirs if missing.
+    /// Writes the page to its `path` atomically (temp-file + rename).
+    /// Creates parent dirs if missing. Race-free against concurrent
+    /// readers — they observe either the OLD content or the NEW
+    /// content, never a half-written file. See `atomic::atomic_write_string`
+    /// for the underlying implementation.
     pub fn write(&self) -> Result<()> {
-        if let Some(parent) = self.path.parent() {
-            if !parent.as_os_str().is_empty() {
-                fs::create_dir_all(parent).map_err(|source| CoralError::Io {
-                    path: parent.to_path_buf(),
-                    source,
-                })?;
-            }
-        }
         let content = self.to_string()?;
-        fs::write(&self.path, content).map_err(|source| CoralError::Io {
-            path: self.path.clone(),
-            source,
-        })
+        crate::atomic::atomic_write_string(&self.path, &content)
     }
 
     /// Returns wikilinks discovered in the body (and in `backlinks` field, deduplicated).

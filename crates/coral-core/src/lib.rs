@@ -1,5 +1,6 @@
 //! Core types and utilities for Coral.
 
+pub mod atomic;
 pub mod cache;
 pub mod embeddings;
 pub mod embeddings_sqlite;

@@ -107,22 +107,15 @@ impl WikiLog {
         out
     }
 
-    /// Persists to disk (overwrite). Creates parent dirs.
+    /// Persists the entire log to disk (overwrite). Atomic via
+    /// temp-file + rename, so concurrent readers never see a torn file.
+    /// Creates parent dirs.
+    ///
+    /// For SINGLE-ENTRY appends prefer `WikiLog::append_atomic` — it
+    /// uses `O_APPEND` and avoids the load+modify+save lost-update race
+    /// entirely.
     pub fn save(&self, path: impl AsRef<Path>) -> Result<()> {
-        let path = path.as_ref();
-        if let Some(parent) = path.parent() {
-            if !parent.as_os_str().is_empty() {
-                fs::create_dir_all(parent).map_err(|source| CoralError::Io {
-                    path: parent.to_path_buf(),
-                    source,
-                })?;
-            }
-        }
-        let content = self.to_string();
-        fs::write(path, content).map_err(|source| CoralError::Io {
-            path: path.to_path_buf(),
-            source,
-        })
+        crate::atomic::atomic_write_string(path, &self.to_string())
     }
 
     /// **Atomic single-entry append.** Opens the log file in append mode
