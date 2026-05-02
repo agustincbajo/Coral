@@ -5,7 +5,7 @@
 [![CI](https://github.com/agustincbajo/Coral/actions/workflows/ci.yml/badge.svg)](https://github.com/agustincbajo/Coral/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/agustincbajo/Coral?display_name=tag)](https://github.com/agustincbajo/Coral/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-583%20passing-brightgreen)](#testing--ci)
+[![Tests](https://img.shields.io/badge/tests-592%20passing-brightgreen)](#testing--ci)
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange?logo=rust)](rust-toolchain.toml)
 
 Coral compiles your codebase into an interconnected Markdown wiki that an LLM (Claude) maintains as you push code. Each merge updates the wiki incrementally; nightly lint catches contradictions; weekly consolidation prunes redundant pages.
@@ -471,20 +471,20 @@ Methodology, hot paths, and profiling tips in [docs/PERF.md](docs/PERF.md).
 ## Testing & CI
 
 ```bash
-cargo test --workspace                        # 583 tests passing
+cargo test --workspace                        # 592 tests passing
 cargo test --workspace -- --ignored           # 8 ignored (real-claude / real-gemini /
                                               # real-llama / real-voyage / real-openai
-                                              # / real-git smokes)
+                                              # / real-git smokes) + 7 ignored stress tests
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo bench --workspace -- --test             # benchmarks compile + run once
 ```
 
-### Test breakdown (v0.13.0)
+### Test breakdown (v0.14.0)
 
 | Crate / target | Tests |
 |---|---|
-| `coral-core` (lib + benches) | 94 + 2 ignored (real-git smoke) |
+| `coral-core` (lib + benches) | 103 + 2 ignored (real-git smoke) |
 | `coral-lint` (lib + benches) | 47 |
 | `coral-runner` | 47 + 5 ignored (real-claude / real-gemini / real-llama / real-voyage / real-openai smokes) |
 | `coral-stats` | 14 |
@@ -492,7 +492,7 @@ cargo bench --workspace -- --test             # benchmarks compile + run once
 | `coral-cli` (integration: cli_smoke) | 31 + 1 ignored |
 | `coral-cli` (e2e: full_lifecycle, multi_repo, query_cycle) | 9 |
 | `coral-cli` (template_validation) | 14 |
-| **Total** | **583 + 15 ignored** |
+| **Total** | **592 + 15 ignored** |
 
 ### CI pipeline
 

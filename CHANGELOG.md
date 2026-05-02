@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-05-02
+
+14th release this session. Concurrency-safety release — closes the two
+load+modify+save races documented in v0.13's `concurrency.rs` test
+suite without adding any new dependency. **592 tests, 0 failures.**
+
+### Added — features
+
+- **`WikiLog::append_atomic(path, op, summary)`** ([crates/coral-core/src/log.rs](crates/coral-core/src/log.rs)): static method that writes a single log entry to disk atomically using POSIX `O_APPEND` semantics. Single writes ≤ PIPE_BUF (~4 KiB) are atomic per POSIX, and a log entry line is well under that. The first writer also seeds the YAML frontmatter + heading via `OpenOptions::create_new`. Critical detail: **even the first-writer path uses `append(true)`** — without it, a concurrent append-mode writer's bytes get overwritten by the first writer's cursor-linear writes (caught the hard way: 18/20 entries observed without O_APPEND on both sides; 20/20 across 25 stress runs after the fix). Switched `coral ingest`, `coral bootstrap`, and `coral init` to use it. The old `load+append+save` pattern remains as a regression test in `concurrency.rs` to pin that it IS still racey for any code that uses it directly. 4 new tests.
+- **`coral_core::atomic::atomic_write_string(path, content)`** ([crates/coral-core/src/atomic.rs](crates/coral-core/src/atomic.rs)): new module providing temp-file + rename for torn-write safety. `std::fs::write` truncates the target to zero before writing, so concurrent readers can observe a partial or empty file mid-write. The new helper writes to `<filename>.tmp.<pid>.<counter>` and then `rename`s onto the target — POSIX guarantees rename is atomic within a single filesystem. Critical detail: temp filename uses **PID + a process-global AtomicU64 counter** because every thread shares the same PID, so PID alone collides under concurrent writers (caught this race the hard way: stress test failed with "No such file or directory" until the counter was added). Wired into `Page::write`, `WikiLog::save`, `EmbeddingsIndex::save`, and the index-write paths in `coral ingest` / `coral bootstrap` / `coral init`. 5 new tests, including a 50-writer × 50-reader stress test that asserts no reader ever observes a torn write.
+
+### Documentation
+
+- `coral export --format` help text now lists `html` (was missing despite the format being supported).
+
+### Not solved (deferred to v0.15+)
+
+- The **lost-update race** for load+modify+save patterns on `WikiIndex`. Two concurrent writers can both produce a complete `*.tmp` file; the second `rename` clobbers the first writer's data. Fixing this requires true cross-process file locking (a new dep — `fs2` or similar). v0.14 narrows the failure mode from "torn writes + parse errors" to "lost updates", which is the strictly weaker bug.
+
+### Verified
+
+- All 5 v0.14 atomic-write changes verified by stress tests:
+  - WikiLog atomic append: 20 threads × 25 stress runs → 20/20 entries every run.
+  - atomic_write_string: 50 writers + 50 readers → zero torn observations.
+- Test count: 583 (v0.13.0) → 592 (v0.14.0). Net **+9 tests** (4 log + 5 atomic).
+- Clippy + fmt clean across all crates. cargo-audit / cargo-deny clean.
+- Linux CI green (cf. previous v0.13.0 batch which required 5 fix iterations).
+
 ## [0.13.0] - 2026-05-02
 
 13th release this session. Massive batch — 10 items shipped via the
@@ -344,7 +372,8 @@ Test count: 385 (v0.8.0) → 427 (+42).
 - 5 ADRs: Rust CLI architecture, Claude CLI vs API, template via include_dir, multi-agent flow, versioning + sync.
 - Self-hosted `.wiki/` with 14 seed pages (cli/core/lint/runner/stats modules + concepts + entities + flow + decisions + synthesis + operations + sources).
 
-[Unreleased]: https://github.com/agustincbajo/Coral/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/agustincbajo/Coral/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/agustincbajo/Coral/releases/tag/v0.14.0
 [0.13.0]: https://github.com/agustincbajo/Coral/releases/tag/v0.13.0
 [0.12.0]: https://github.com/agustincbajo/Coral/releases/tag/v0.12.0
 [0.11.0]: https://github.com/agustincbajo/Coral/releases/tag/v0.11.0

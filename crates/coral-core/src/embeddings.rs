@@ -74,18 +74,12 @@ impl EmbeddingsIndex {
 
     pub fn save(&self, wiki_root: &Path) -> Result<PathBuf> {
         let path = wiki_root.join(Self::FILENAME);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(|e| CoralError::Io {
-                path: parent.to_path_buf(),
-                source: e,
-            })?;
-        }
         let content = serde_json::to_string_pretty(self)
             .map_err(|e| CoralError::Walk(format!("embeddings serialize error: {e}")))?;
-        fs::write(&path, content).map_err(|e| CoralError::Io {
-            path: path.clone(),
-            source: e,
-        })?;
+        // Atomic write: temp-file + rename so concurrent readers
+        // (e.g. `coral search` running while `coral search --reindex`
+        // is mid-write) never observe a torn JSON file.
+        crate::atomic::atomic_write_string(&path, &content)?;
         Ok(path)
     }
 
