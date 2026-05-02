@@ -12,7 +12,10 @@
     "confidence_min",
     "critical_low_confidence_count",
     "low_confidence_count",
+    "oldest_commit_age_pages",
     "orphan_candidates",
+    "pages_by_confidence_bucket",
+    "pages_without_sources_count",
     "stale_count",
     "total_outbound_links",
     "total_pages"
@@ -61,11 +64,33 @@
       "format": "uint",
       "minimum": 0.0
     },
+    "oldest_commit_age_pages": {
+      "description": "Slugs of the 5 pages with the oldest `last_updated_commit`, sorted ascending by commit string then slug. Useful for spotting long-untouched pages that may have drifted from HEAD. (Future improvement: real timestamp comparison via `git log`.)",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
     "orphan_candidates": {
       "type": "array",
       "items": {
         "type": "string"
       }
+    },
+    "pages_by_confidence_bucket": {
+      "description": "Confidence distribution into 4 buckets. Keys: `\"0.0-0.3\"`, `\"0.3-0.6\"`, `\"0.6-0.8\"`, `\"0.8-1.0\"`. Empty buckets are still listed (with value 0) so the JSON shape is stable.",
+      "type": "object",
+      "additionalProperties": {
+        "type": "integer",
+        "format": "uint",
+        "minimum": 0.0
+      }
+    },
+    "pages_without_sources_count": {
+      "description": "Count of pages where `frontmatter.sources` is empty. A high value means many pages lack verifiable evidence — pair with the lint's `HighConfidenceWithoutSources` check to find the worst offenders.",
+      "type": "integer",
+      "format": "uint",
+      "minimum": 0.0
     },
     "stale_count": {
       "type": "integer",

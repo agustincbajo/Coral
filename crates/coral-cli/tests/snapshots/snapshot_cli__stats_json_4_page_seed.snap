@@ -24,5 +24,18 @@ expression: stdout
   "total_outbound_links": 5,
   "orphan_candidates": [
     "idempotency"
-  ]
+  ],
+  "pages_without_sources_count": 1,
+  "oldest_commit_age_pages": [
+    "checkout-flow",
+    "idempotency",
+    "order",
+    "outbox"
+  ],
+  "pages_by_confidence_bucket": {
+    "0.0-0.3": 0,
+    "0.3-0.6": 1,
+    "0.6-0.8": 1,
+    "0.8-1.0": 2
+  }
 }

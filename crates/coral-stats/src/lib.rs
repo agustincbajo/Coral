@@ -22,6 +22,19 @@ pub struct StatsReport {
     pub archived_count: usize,
     pub total_outbound_links: usize,
     pub orphan_candidates: Vec<String>,
+    /// Count of pages where `frontmatter.sources` is empty. A high value
+    /// means many pages lack verifiable evidence — pair with the lint's
+    /// `HighConfidenceWithoutSources` check to find the worst offenders.
+    pub pages_without_sources_count: usize,
+    /// Slugs of the 5 pages with the oldest `last_updated_commit`,
+    /// sorted ascending by commit string then slug. Useful for spotting
+    /// long-untouched pages that may have drifted from HEAD. (Future
+    /// improvement: real timestamp comparison via `git log`.)
+    pub oldest_commit_age_pages: Vec<String>,
+    /// Confidence distribution into 4 buckets. Keys: `"0.0-0.3"`,
+    /// `"0.3-0.6"`, `"0.6-0.8"`, `"0.8-1.0"`. Empty buckets are still
+    /// listed (with value 0) so the JSON shape is stable.
+    pub pages_by_confidence_bucket: BTreeMap<String, usize>,
 }
 
 impl StatsReport {
@@ -39,6 +52,15 @@ impl StatsReport {
         let mut stale_count = 0usize;
         let mut archived_count = 0usize;
         let mut total_outbound_links = 0usize;
+        let mut pages_without_sources_count = 0usize;
+
+        // Initialize confidence buckets with all 4 keys mapped to 0 so empty
+        // buckets are still represented in the JSON output (stable shape).
+        let mut pages_by_confidence_bucket: BTreeMap<String, usize> = BTreeMap::new();
+        pages_by_confidence_bucket.insert("0.0-0.3".to_string(), 0);
+        pages_by_confidence_bucket.insert("0.3-0.6".to_string(), 0);
+        pages_by_confidence_bucket.insert("0.6-0.8".to_string(), 0);
+        pages_by_confidence_bucket.insert("0.8-1.0".to_string(), 0);
 
         for p in pages {
             *by_type
@@ -70,7 +92,46 @@ impl StatsReport {
             }
 
             total_outbound_links += p.outbound_links().len();
+
+            if p.frontmatter.sources.is_empty() {
+                pages_without_sources_count += 1;
+            }
+
+            // Bucket the confidence value. The top bucket is closed at 1.0
+            // so a perfect-confidence page lands in "0.8-1.0".
+            let bucket_key = if c < 0.3 {
+                "0.0-0.3"
+            } else if c < 0.6 {
+                "0.3-0.6"
+            } else if c < 0.8 {
+                "0.6-0.8"
+            } else {
+                "0.8-1.0"
+            };
+            if let Some(slot) = pages_by_confidence_bucket.get_mut(bucket_key) {
+                *slot += 1;
+            }
         }
+
+        // Collect (commit, slug) pairs and pick the 5 oldest by lexicographic
+        // commit string then slug. Lexicographic ordering on commit hashes
+        // isn't a real timestamp, but it's deterministic and cheap; a future
+        // improvement can swap in `git log` for true age.
+        let mut commit_slug_pairs: Vec<(String, String)> = pages
+            .iter()
+            .map(|p| {
+                (
+                    p.frontmatter.last_updated_commit.clone(),
+                    p.frontmatter.slug.clone(),
+                )
+            })
+            .collect();
+        commit_slug_pairs.sort();
+        let oldest_commit_age_pages: Vec<String> = commit_slug_pairs
+            .into_iter()
+            .take(5)
+            .map(|(_, slug)| slug)
+            .collect();
 
         let confidence_avg = if total_pages == 0 {
             0.0
@@ -120,6 +181,9 @@ impl StatsReport {
             archived_count,
             total_outbound_links,
             orphan_candidates,
+            pages_without_sources_count,
+            oldest_commit_age_pages,
+            pages_by_confidence_bucket,
         }
     }
 
@@ -165,6 +229,25 @@ impl StatsReport {
             "- Total outbound links: {}\n",
             self.total_outbound_links
         ));
+
+        out.push_str(&format!(
+            "- Pages without sources: {}\n",
+            self.pages_without_sources_count
+        ));
+
+        if self.oldest_commit_age_pages.is_empty() {
+            out.push_str("- Oldest commits (top 5): (none)\n");
+        } else {
+            out.push_str("- Oldest commits (top 5):\n");
+            for slug in &self.oldest_commit_age_pages {
+                out.push_str(&format!("  - `{slug}`\n"));
+            }
+        }
+
+        out.push_str("- Confidence distribution:\n");
+        for (k, v) in &self.pages_by_confidence_bucket {
+            out.push_str(&format!("  - {k}: {v}\n"));
+        }
 
         if self.orphan_candidates.is_empty() {
             out.push_str("- Orphan candidates: 0\n");
@@ -580,5 +663,271 @@ mod tests {
         let r = StatsReport::new(&pages);
         assert_eq!(r.stale_count, 2);
         assert_eq!(r.archived_count, 1);
+    }
+
+    /// Helper that mirrors `make_page` but lets the caller override
+    /// `last_updated_commit` and `sources`. Used by the new metric tests.
+    fn make_page_full(slug: &str, confidence: f64, commit: &str, sources: Vec<&str>) -> Page {
+        Page {
+            path: PathBuf::from(format!("test/{slug}.md")),
+            frontmatter: Frontmatter {
+                slug: slug.to_string(),
+                page_type: PageType::Module,
+                last_updated_commit: commit.to_string(),
+                confidence: Confidence::try_new(confidence).unwrap(),
+                sources: sources.into_iter().map(|s| s.to_string()).collect(),
+                backlinks: vec![],
+                status: Status::Draft,
+                generated_at: None,
+                extra: BTreeMap::new(),
+            },
+            body: String::new(),
+        }
+    }
+
+    // ---------- pages_without_sources_count ----------
+
+    #[test]
+    fn stats_pages_without_sources_mixed() {
+        // 5 pages: 2 with sources, 3 without → 3.
+        let pages = vec![
+            make_page_full("a", 0.5, "c1", vec!["src1"]),
+            make_page_full("b", 0.5, "c2", vec![]),
+            make_page_full("c", 0.5, "c3", vec!["src1", "src2"]),
+            make_page_full("d", 0.5, "c4", vec![]),
+            make_page_full("e", 0.5, "c5", vec![]),
+        ];
+        let r = StatsReport::new(&pages);
+        assert_eq!(r.pages_without_sources_count, 3);
+    }
+
+    #[test]
+    fn stats_pages_without_sources_zero_pages() {
+        let r = StatsReport::new(&[]);
+        assert_eq!(r.pages_without_sources_count, 0);
+    }
+
+    #[test]
+    fn stats_pages_without_sources_all_have_sources() {
+        let pages = vec![
+            make_page_full("a", 0.5, "c1", vec!["src1"]),
+            make_page_full("b", 0.5, "c2", vec!["src1"]),
+        ];
+        let r = StatsReport::new(&pages);
+        assert_eq!(r.pages_without_sources_count, 0);
+    }
+
+    // ---------- oldest_commit_age_pages ----------
+
+    #[test]
+    fn stats_oldest_commits_caps_at_five() {
+        // 7 pages with commits ordered descending alphabetically; expect the
+        // 5 oldest (lex-ascending) to appear in ascending order.
+        let pages = vec![
+            make_page_full("a", 0.5, "g", vec![]),
+            make_page_full("b", 0.5, "f", vec![]),
+            make_page_full("c", 0.5, "e", vec![]),
+            make_page_full("d", 0.5, "d", vec![]),
+            make_page_full("e", 0.5, "c", vec![]),
+            make_page_full("f", 0.5, "b", vec![]),
+            make_page_full("g", 0.5, "a", vec![]),
+        ];
+        let r = StatsReport::new(&pages);
+        // Sorted by (commit, slug) asc, take 5: a→g, b→f, c→e, d→d, e→c.
+        assert_eq!(
+            r.oldest_commit_age_pages,
+            vec![
+                "g".to_string(),
+                "f".to_string(),
+                "e".to_string(),
+                "d".to_string(),
+                "c".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn stats_oldest_commits_no_padding_under_five() {
+        let pages = vec![
+            make_page_full("a", 0.5, "c1", vec![]),
+            make_page_full("b", 0.5, "c2", vec![]),
+            make_page_full("c", 0.5, "c3", vec![]),
+        ];
+        let r = StatsReport::new(&pages);
+        // 3 pages → all 3 (sorted by commit asc).
+        assert_eq!(
+            r.oldest_commit_age_pages,
+            vec!["a".to_string(), "b".to_string(), "c".to_string()]
+        );
+    }
+
+    #[test]
+    fn stats_oldest_commits_empty_pages() {
+        let r = StatsReport::new(&[]);
+        assert!(r.oldest_commit_age_pages.is_empty());
+    }
+
+    #[test]
+    fn stats_oldest_commits_tie_break_by_slug() {
+        // Two pages with identical commit strings; expect ascending slug order.
+        let pages = vec![
+            make_page_full("zeta", 0.5, "samecommit", vec![]),
+            make_page_full("alpha", 0.5, "samecommit", vec![]),
+        ];
+        let r = StatsReport::new(&pages);
+        assert_eq!(
+            r.oldest_commit_age_pages,
+            vec!["alpha".to_string(), "zeta".to_string()],
+            "tie should break by slug ascending"
+        );
+    }
+
+    // ---------- pages_by_confidence_bucket ----------
+
+    #[test]
+    fn stats_buckets_distribution() {
+        // 1 at 0.1, 2 at 0.4, 3 at 0.7, 4 at 0.95 → {1, 2, 3, 4}.
+        let mut pages = vec![make_page_full("low", 0.1, "c", vec![])];
+        for i in 0..2 {
+            pages.push(make_page_full(&format!("mid{i}"), 0.4, "c", vec![]));
+        }
+        for i in 0..3 {
+            pages.push(make_page_full(&format!("high{i}"), 0.7, "c", vec![]));
+        }
+        for i in 0..4 {
+            pages.push(make_page_full(&format!("top{i}"), 0.95, "c", vec![]));
+        }
+        let r = StatsReport::new(&pages);
+        assert_eq!(
+            r.pages_by_confidence_bucket.get("0.0-0.3").copied(),
+            Some(1)
+        );
+        assert_eq!(
+            r.pages_by_confidence_bucket.get("0.3-0.6").copied(),
+            Some(2)
+        );
+        assert_eq!(
+            r.pages_by_confidence_bucket.get("0.6-0.8").copied(),
+            Some(3)
+        );
+        assert_eq!(
+            r.pages_by_confidence_bucket.get("0.8-1.0").copied(),
+            Some(4)
+        );
+    }
+
+    #[test]
+    fn stats_buckets_boundary_lower_inclusive() {
+        // 0.3 falls in [0.3, 0.6); 0.6 falls in [0.6, 0.8); 0.8 falls in [0.8, 1.0].
+        let pages = vec![
+            make_page_full("at_03", 0.3, "c", vec![]),
+            make_page_full("at_06", 0.6, "c", vec![]),
+            make_page_full("at_08", 0.8, "c", vec![]),
+        ];
+        let r = StatsReport::new(&pages);
+        assert_eq!(
+            r.pages_by_confidence_bucket.get("0.0-0.3").copied(),
+            Some(0)
+        );
+        assert_eq!(
+            r.pages_by_confidence_bucket.get("0.3-0.6").copied(),
+            Some(1)
+        );
+        assert_eq!(
+            r.pages_by_confidence_bucket.get("0.6-0.8").copied(),
+            Some(1)
+        );
+        assert_eq!(
+            r.pages_by_confidence_bucket.get("0.8-1.0").copied(),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn stats_buckets_boundary_top_closed_at_1() {
+        // 1.0 is included in the top bucket (closed interval).
+        let pages = vec![make_page_full("perfect", 1.0, "c", vec![])];
+        let r = StatsReport::new(&pages);
+        assert_eq!(
+            r.pages_by_confidence_bucket.get("0.8-1.0").copied(),
+            Some(1)
+        );
+        assert_eq!(
+            r.pages_by_confidence_bucket.get("0.6-0.8").copied(),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn stats_buckets_empty_pages_have_all_keys_at_zero() {
+        let r = StatsReport::new(&[]);
+        assert_eq!(r.pages_by_confidence_bucket.len(), 4);
+        for k in ["0.0-0.3", "0.3-0.6", "0.6-0.8", "0.8-1.0"] {
+            assert_eq!(
+                r.pages_by_confidence_bucket.get(k).copied(),
+                Some(0),
+                "bucket {k} should be present at 0"
+            );
+        }
+    }
+
+    #[test]
+    fn stats_buckets_iteration_is_lex_sorted() {
+        // BTreeMap iter order matches lex sort, which happens to match
+        // numeric bucket order here.
+        let r = StatsReport::new(&[]);
+        let keys: Vec<&str> = r
+            .pages_by_confidence_bucket
+            .keys()
+            .map(|s| s.as_str())
+            .collect();
+        assert_eq!(keys, vec!["0.0-0.3", "0.3-0.6", "0.6-0.8", "0.8-1.0"]);
+    }
+
+    // ---------- markdown rendering ----------
+
+    #[test]
+    fn stats_markdown_oldest_commits_none_when_empty() {
+        let md = StatsReport::new(&[]).as_markdown();
+        assert!(
+            md.contains("- Oldest commits (top 5): (none)"),
+            "expected '(none)' line for empty oldest_commit_age_pages: {md}"
+        );
+    }
+
+    #[test]
+    fn stats_markdown_buckets_section_prints_when_all_zero() {
+        // Empty pages → all 4 buckets are 0, but the section still prints
+        // each bucket line.
+        let md = StatsReport::new(&[]).as_markdown();
+        assert!(
+            md.contains("- Confidence distribution:"),
+            "missing header: {md}"
+        );
+        assert!(md.contains("- 0.0-0.3: 0"), "missing 0.0-0.3 line: {md}");
+        assert!(md.contains("- 0.3-0.6: 0"), "missing 0.3-0.6 line: {md}");
+        assert!(md.contains("- 0.6-0.8: 0"), "missing 0.6-0.8 line: {md}");
+        assert!(md.contains("- 0.8-1.0: 0"), "missing 0.8-1.0 line: {md}");
+    }
+
+    // ---------- schema currency ----------
+
+    #[test]
+    fn stats_schema_matches_committed_file() {
+        // Schema in lib must equal the checked-in docs/schemas/stats.schema.json,
+        // byte-for-byte (modulo the trailing newline `println!` adds).
+        let live = StatsReport::json_schema();
+        let on_disk = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../docs/schemas/stats.schema.json"),
+        )
+        .expect("schema file readable");
+        // The committed file has a trailing newline (from println!); strip it.
+        let on_disk_trimmed = on_disk.trim_end_matches('\n');
+        assert_eq!(
+            live.trim_end_matches('\n'),
+            on_disk_trimmed,
+            "stats.schema.json is out of sync with StatsReport. Regenerate via:\n  cargo run -p coral-stats --example print_schema > docs/schemas/stats.schema.json"
+        );
     }
 }

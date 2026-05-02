@@ -19,4 +19,15 @@ expression: stdout
 - Stale pages: 0
 - Archived pages: 0
 - Total outbound links: 5
+- Pages without sources: 1
+- Oldest commits (top 5):
+  - `checkout-flow`
+  - `idempotency`
+  - `order`
+  - `outbox`
+- Confidence distribution:
+  - 0.0-0.3: 0
+  - 0.3-0.6: 1
+  - 0.6-0.8: 1
+  - 0.8-1.0: 2
 - Orphan candidates: 1 (idempotency)
