@@ -1,0 +1,18 @@
+---
+source: crates/coral-cli/tests/snapshot_cli.rs
+expression: stdout
+---
+# Lint report
+
+- 🚨 Critical: 0
+- ⚠️ Warning: 3
+- ℹ️ Info: 0
+
+## ⚠️ Warning
+
+- **SourceNotFound** in `.wiki/concepts/outbox.md`: Source path 'src/outbox/dispatcher.rs' for page 'outbox' not found on disk
+  Context: src/outbox/dispatcher.rs
+- **SourceNotFound** in `.wiki/flows/checkout-flow.md`: Source path 'src/checkout/saga.rs' for page 'checkout-flow' not found on disk
+  Context: src/checkout/saga.rs
+- **SourceNotFound** in `.wiki/modules/order.md`: Source path 'src/order/handler.rs' for page 'order' not found on disk
+  Context: src/order/handler.rs

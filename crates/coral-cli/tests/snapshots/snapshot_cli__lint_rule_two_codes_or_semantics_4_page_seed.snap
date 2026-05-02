@@ -1,0 +1,14 @@
+---
+source: crates/coral-cli/tests/snapshot_cli.rs
+expression: stdout
+---
+# Lint report
+
+- 🚨 Critical: 0
+- ⚠️ Warning: 2
+- ℹ️ Info: 0
+
+## ⚠️ Warning
+
+- **LowConfidence** in `.wiki/concepts/idempotency.md`: Confidence 0.5 below threshold 0.6
+- **OrphanPage** in `.wiki/concepts/idempotency.md`: Page 'idempotency' has no inbound backlinks

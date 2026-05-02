@@ -395,3 +395,33 @@ fn lint_severity_warning_4_page_seed() {
         insta::assert_snapshot!(stdout);
     });
 }
+
+/// Pins `coral lint --rule source-not-found` against the 4-page seed.
+/// Three sources don't exist on disk → exactly 3 SourceNotFound issues
+/// keep through the filter; the LowConfidence + OrphanPage on
+/// `idempotency` get dropped.
+#[test]
+fn lint_rule_source_not_found_4_page_seed() {
+    let tmp = TempDir::new().unwrap();
+    write_seed_wiki(tmp.path());
+    let stdout = run_coral(tmp.path(), &["lint", "--rule", "source-not-found"]);
+    insta::with_settings!({ filters => standard_filters() }, {
+        insta::assert_snapshot!(stdout);
+    });
+}
+
+/// Pins `coral lint --rule low-confidence --rule orphan-page` — OR
+/// semantics: keeps both code types. Matches the 2 issues on
+/// `idempotency` and drops the 3 SourceNotFound entries.
+#[test]
+fn lint_rule_two_codes_or_semantics_4_page_seed() {
+    let tmp = TempDir::new().unwrap();
+    write_seed_wiki(tmp.path());
+    let stdout = run_coral(
+        tmp.path(),
+        &["lint", "--rule", "low-confidence", "--rule", "orphan-page"],
+    );
+    insta::with_settings!({ filters => standard_filters() }, {
+        insta::assert_snapshot!(stdout);
+    });
+}
