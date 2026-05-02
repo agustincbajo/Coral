@@ -232,7 +232,7 @@ fn run_embeddings_json(
         let vectors = provider
             .embed_batch(&texts, Some("document"))
             .map_err(|e| anyhow::anyhow!("embedding pages: {e}"))?;
-        for ((slug, _, mtime), vec) in to_embed.into_iter().zip(vectors.into_iter()) {
+        for ((slug, _, mtime), vec) in to_embed.into_iter().zip(vectors) {
             index.upsert(slug, mtime, vec);
         }
     }
@@ -300,7 +300,7 @@ fn run_embeddings_sqlite(
         let vectors = provider
             .embed_batch(&texts, Some("document"))
             .map_err(|e| anyhow::anyhow!("embedding pages: {e}"))?;
-        for ((slug, _, mtime), vec) in to_embed.into_iter().zip(vectors.into_iter()) {
+        for ((slug, _, mtime), vec) in to_embed.into_iter().zip(vectors) {
             index.upsert(&slug, mtime, vec)?;
         }
     }
