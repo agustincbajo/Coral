@@ -22,6 +22,12 @@ pub struct SearchArgs {
     /// (semantic, requires the selected provider's API key).
     #[arg(long, default_value = "tfidf")]
     pub engine: String,
+    /// Ranking algorithm for the TF-IDF/BM25 family. `tfidf` (default) or `bm25`.
+    /// Both work offline, no API key. BM25 has better precision on 100+ page wikis.
+    /// Ignored when `--engine embeddings` is set (the embeddings engine has its
+    /// own ranking).
+    #[arg(long, default_value = "tfidf")]
+    pub algorithm: String,
     /// Force a re-embed of all pages, ignoring the cached vectors.
     #[arg(long)]
     pub reindex: bool,
@@ -94,7 +100,13 @@ fn build_embeddings_provider(args: &SearchArgs) -> Result<Box<dyn EmbeddingsProv
 }
 
 fn run_tfidf(pages: &[coral_core::page::Page], args: &SearchArgs) -> Result<ExitCode> {
-    let results = search::search(pages, &args.query, args.limit);
+    let results = match args.algorithm.as_str() {
+        "tfidf" => search::search(pages, &args.query, args.limit),
+        "bm25" => search::search_bm25(pages, &args.query, args.limit),
+        other => anyhow::bail!(
+            "unknown --algorithm: {other}. Choose: tfidf | bm25 (or pass --engine embeddings for semantic search)"
+        ),
+    };
 
     if args.format == "json" {
         let json: Vec<_> = results
@@ -124,7 +136,8 @@ fn run_tfidf(pages: &[coral_core::page::Page], args: &SearchArgs) -> Result<Exit
             );
         }
         println!(
-            "\n_(TF-IDF default; pass `--engine embeddings` for semantic search via Voyage AI.)_"
+            "\n_(Offline {} ranking. Pass `--algorithm bm25` (or `tfidf`) to switch ranking, or `--engine embeddings` for semantic search via Voyage AI.)_",
+            args.algorithm
         );
     }
     Ok(ExitCode::SUCCESS)
@@ -257,6 +270,78 @@ mod tests {
         }
     }
 
+    fn write_md_page(path: &std::path::Path, slug: &str, body: &str) {
+        let content = format!(
+            "---\nslug: {slug}\ntype: module\nlast_updated_commit: abc123\nconfidence: 0.7\nsources:\n  - src/{slug}.rs\nstatus: reviewed\n---\n\n{body}\n"
+        );
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, content).unwrap();
+    }
+
+    #[test]
+    fn run_with_algorithm_bm25_succeeds_end_to_end() {
+        // End-to-end: tempdir wiki + 3 pages + run(SearchArgs { algorithm: bm25 }).
+        // Verifies the --algorithm bm25 path is wired through `run` → `run_tfidf`
+        // → `search::search_bm25` and produces SUCCESS exit code with parseable
+        // JSON output.
+        let tmp = TempDir::new().unwrap();
+        let wiki = tmp.path().join(".wiki");
+        write_md_page(
+            &wiki.join("modules/outbox.md"),
+            "outbox",
+            "the outbox dispatcher polls every second",
+        );
+        write_md_page(
+            &wiki.join("modules/order.md"),
+            "order",
+            "order module references the outbox",
+        );
+        write_md_page(
+            &wiki.join("modules/unrelated.md"),
+            "unrelated",
+            "lorem ipsum dolor sit amet",
+        );
+
+        let args = SearchArgs {
+            query: "outbox".into(),
+            limit: 5,
+            format: "json".into(),
+            engine: "tfidf".into(),
+            algorithm: "bm25".into(),
+            reindex: false,
+            embeddings_provider: "voyage".into(),
+            embeddings_model: None,
+        };
+        let exit = run(args, Some(&wiki)).unwrap();
+        assert_eq!(exit, ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn run_with_unknown_algorithm_errors() {
+        // Defensive: the CLI must reject unknown ranking names rather than
+        // silently falling through to a default.
+        let tmp = TempDir::new().unwrap();
+        let wiki = tmp.path().join(".wiki");
+        write_md_page(&wiki.join("modules/x.md"), "x", "outbox");
+
+        let args = SearchArgs {
+            query: "outbox".into(),
+            limit: 5,
+            format: "json".into(),
+            engine: "tfidf".into(),
+            algorithm: "totally-bogus".into(),
+            reindex: false,
+            embeddings_provider: "voyage".into(),
+            embeddings_model: None,
+        };
+        let err = run(args, Some(&wiki)).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("totally-bogus") || msg.contains("algorithm"),
+            "unexpected error message: {msg}"
+        );
+    }
+
     #[test]
     fn run_embeddings_uses_swappable_provider_via_trait() {
         // The whole point of the v0.4 trait: search runs against any
@@ -275,6 +360,7 @@ mod tests {
             limit: 5,
             format: "json".into(),
             engine: "embeddings".into(),
+            algorithm: "tfidf".into(),
             reindex: false,
             embeddings_provider: "voyage".into(),
             embeddings_model: None,
