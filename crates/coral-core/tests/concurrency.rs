@@ -17,6 +17,7 @@
 //! invariant being asserted and how the test responds when the invariant
 //! does NOT hold.
 
+use coral_core::atomic::atomic_write_string;
 use coral_core::embeddings::EmbeddingsIndex;
 use coral_core::frontmatter::{Confidence, Frontmatter, PageType, Status};
 use coral_core::index::{IndexEntry, WikiIndex};
@@ -258,24 +259,25 @@ fn wikilog_append_concurrent_in_memory_preserves_all() {
 /// scans `entries: Vec<IndexEntry>` and either replaces the existing
 /// entry or pushes a new one. There is no disk persistence inside
 /// `upsert`; the realistic pattern (e.g. `coral ingest`) is
-/// load → upsert → save, which has the same lost-update race as
-/// `WikiLog`. Worse, because `fs::write` truncates before writing the
-/// new bytes, another thread that reads the file mid-write sees an
-/// empty file → `WikiIndex::parse` returns `MissingFrontmatter`. So
-/// the realistic on-disk race surfaces both as **lost updates** AND
-/// as **transient parse failures**.
+/// load → upsert → save, which has the lost-update race documented
+/// in v0.13.
 ///
-/// This test runs N threads each doing load → upsert(distinct slug) →
-/// save against the same `index.md`. Threads that hit the
-/// truncated-mid-write window are tolerated (they're documented
-/// fallout, not a test bug). The final on-disk index will likely have
-/// FEWER than N entries.
+/// **The v0.14 fix** is `coral_core::atomic::atomic_write_string` —
+/// temp-file + rename for the SAVE step. With it, concurrent readers
+/// can no longer observe a torn / mid-write file (rename is atomic),
+/// so the "transient parse failures" failure mode this test used to
+/// document is GONE. The `coral ingest` / `coral bootstrap` /
+/// `coral init` callers all switched to that path.
 ///
-/// Test response: same as the WikiLog case — tolerate per-thread
-/// parse/load errors, assert the upper bound on the final entry
-/// count, and log the observations. A future commit that adds file
-/// locking would make this report exactly N AND zero per-thread
-/// errors.
+/// What remains is the lost-update race: two writers can both
+/// produce a complete `*.tmp` file and the second `rename` clobbers
+/// the first writer's data. So the final on-disk index can still
+/// have FEWER than N entries. Fixing that requires true cross-process
+/// file locking (a v0.15+ design item that needs a new dep).
+///
+/// This test uses `atomic_write_string` so we can pin the v0.14
+/// improvement: errors == 0 (the partial-file race is gone), entries
+/// ≤ N (lost-update race remains).
 #[test]
 fn wikiindex_upsert_concurrent() {
     let dir = TempDir::new().expect("tempdir");
@@ -312,28 +314,34 @@ fn wikiindex_upsert_concurrent() {
                 let path = format!("modules/{slug}.md");
                 idx.upsert(index_entry_for(&slug, &path));
                 let new_content = idx.to_string().expect("serialize");
-                if fs::write(&idx_path, new_content).is_err() {
+                if atomic_write_string(&idx_path, &new_content).is_err() {
                     *errors.lock().unwrap() += 1;
                 }
             });
         }
     });
 
-    // Final read may also see a truncated-mid-write window if the OS
-    // is being unkind; loop briefly until the file parses (it'll
-    // settle once all writers have joined and the last save completes).
+    // Atomic-write means the final read NEVER hits a torn write —
+    // rename is atomic. This expect() is now unconditional.
     let final_content = fs::read_to_string(&idx_path).expect("read final");
     let final_idx = WikiIndex::parse(&final_content).expect("parse final");
     let observed_errors = *errors.lock().unwrap();
+    // v0.14 invariant: zero per-thread errors. The torn-write race is
+    // gone; only the lost-update race remains.
+    assert_eq!(
+        observed_errors, 0,
+        "v0.14 atomic_write_string must eliminate transient parse/io errors; \
+         observed {observed_errors} thread(s) with errors"
+    );
     assert!(
         final_idx.entries.len() <= N,
         "index has more entries than threads spawned ({} > {N}); something is very wrong",
         final_idx.entries.len()
     );
     eprintln!(
-        "wikiindex_upsert_concurrent: spawned {N} threads, observed {} entries on disk, \
-         {observed_errors} thread(s) hit transient parse/io errors during the race \
-         (load+upsert+save is NOT atomic — this is a known v0.5 limitation)",
+        "wikiindex_upsert_concurrent (v0.14 atomic_write_string): spawned {N} threads, \
+         observed {} entries on disk, {observed_errors} thread errors. \
+         Lost-update race remains (entries < N is acceptable until v0.15+ adds file locking).",
         final_idx.entries.len()
     );
 }
