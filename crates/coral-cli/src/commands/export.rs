@@ -12,7 +12,7 @@ use std::process::ExitCode;
 
 #[derive(Args, Debug)]
 pub struct ExportArgs {
-    /// Output format. Choose: markdown-bundle | json | notion-json | jsonl.
+    /// Output format. Choose: markdown-bundle | json | notion-json | html | jsonl.
     #[arg(long, default_value = "markdown-bundle")]
     pub format: String,
     /// Optional output file. If absent, prints to stdout.

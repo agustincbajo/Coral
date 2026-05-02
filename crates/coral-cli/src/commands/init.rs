@@ -53,11 +53,14 @@ pub fn run(args: InitArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
     }
 
     // log.md — append-only operation log seeded with the init event.
+    // `--force` truncates first so the seed entry is the only line.
     let log_path = root.join("log.md");
     if !log_path.exists() || args.force {
-        let mut log = WikiLog::new();
-        log.append("init", "wiki initialized");
-        log.save(&log_path)
+        if args.force && log_path.exists() {
+            std::fs::remove_file(&log_path)
+                .with_context(|| format!("removing {} for --force re-init", log_path.display()))?;
+        }
+        WikiLog::append_atomic(&log_path, "init", "wiki initialized")
             .with_context(|| format!("writing {}", log_path.display()))?;
         tracing::info!(path = %log_path.display(), "wrote log.md");
     }

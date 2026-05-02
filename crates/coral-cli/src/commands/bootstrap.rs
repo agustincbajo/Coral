@@ -142,16 +142,14 @@ pub fn run_with_runner(
     index.bump_last_commit(head.clone());
     std::fs::write(&idx_path, index.to_string()?).context("writing .wiki/index.md")?;
 
-    // Log line.
+    // Log line — atomic append, race-free under concurrent invocations (v0.14).
     let log_path = root.join("log.md");
-    let mut log = WikiLog::load(&log_path)?;
     let summary = if skipped.is_empty() {
         format!("{created} pages created")
     } else {
         format!("{created} pages created, skipped: {}", skipped.join(", "))
     };
-    log.append("bootstrap", &summary);
-    log.save(&log_path)?;
+    WikiLog::append_atomic(&log_path, "bootstrap", &summary)?;
 
     println!(
         "Created {created} pages, updated index, appended log entry.{}",

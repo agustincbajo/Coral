@@ -198,10 +198,9 @@ pub fn run_with_runner(
     std::fs::write(&idx_path, index.to_string()?).context("writing .wiki/index.md")?;
 
     let log_path = root.join("log.md");
-    let mut log = WikiLog::load(&log_path)?;
     let summary = format!("range {range}: {created} created, {updated} updated, {retired} retired");
-    log.append("ingest", &summary);
-    log.save(&log_path)?;
+    // Atomic append — race-free under concurrent invocations (v0.14).
+    WikiLog::append_atomic(&log_path, "ingest", &summary)?;
 
     if !warnings.is_empty() {
         for w in &warnings {

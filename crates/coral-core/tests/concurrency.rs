@@ -163,26 +163,27 @@ fn page_write_concurrent_to_same_path_last_wins() {
 
 /// Invariant DOCUMENTED: `WikiLog::append` is in-memory only — it
 /// pushes an entry onto a `Vec<LogEntry>` and never touches disk.
-/// Real callers (e.g. `coral ingest`) use the load → append → save
-/// pattern: read the log file, push a new entry, write the log file
-/// back. That pattern is NOT atomic across threads or processes.
+/// Callers that USE the load → append → save pattern (read the log
+/// file, push a new entry, write the log file back) get a lost-update
+/// race: with N threads doing one load+append+save against the same
+/// `log.md`, the final on-disk log will likely have FEWER than N
+/// entries because reads and writes interleave.
 ///
-/// This test documents the race: with N threads each doing one
-/// load+append+save against the same `log.md`, the final on-disk log
-/// will likely have FEWER than N entries because reads and writes
-/// interleave (the classic lost-update race).
+/// **The v0.14 fix** is `WikiLog::append_atomic(path, op, summary)` —
+/// a static method that uses POSIX `O_APPEND` semantics to write a
+/// single entry line atomically (writes ≤ PIPE_BUF are guaranteed
+/// atomic). Coral's CLI commands (`coral ingest`, `coral bootstrap`,
+/// `coral init`) all switched to that path. This test still exists as
+/// a regression guard for the OLD pattern: it pins that the manual
+/// load+append+save flow is still racey (so anyone writing custom
+/// code against `WikiLog` knows to use `append_atomic` for a single
+/// entry).
 ///
 /// Test response: rather than asserting "exactly N entries on disk"
 /// (which would intermittently fail and give a flaky test), we assert
 /// the **upper bound** — at most N entries — and log the actual count
-/// observed. The interesting empirical signal is whether anything
-/// other than N consistently shows up; if a future commit makes the
-/// op atomic (e.g. with a file lock), we'd expect this to start
-/// reporting exactly N.
-///
-/// What this guarantees today: load+append+save IS NOT thread-safe
-/// without an external lock. Treat that as a known property; a real
-/// fix is a v0.14 design item.
+/// observed. The race-free path has its own unit test:
+/// `coral_core::log::tests::append_atomic_concurrent_preserves_all_entries`.
 ///
 /// Note: `WikiLog::parse` accepts any content (it skips lines that
 /// don't match the regex), so unlike `WikiIndex::parse`, even a
