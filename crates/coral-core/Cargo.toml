@@ -19,6 +19,7 @@ chrono = { workspace = true }
 ahash = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+rusqlite = { version = "0.32", features = ["bundled"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }

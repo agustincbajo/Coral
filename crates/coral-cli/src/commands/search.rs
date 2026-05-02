@@ -143,7 +143,37 @@ fn run_tfidf(pages: &[coral_core::page::Page], args: &SearchArgs) -> Result<Exit
     Ok(ExitCode::SUCCESS)
 }
 
+/// Picks the embeddings storage backend.
+///
+/// Default is the JSON file (`.coral-embeddings.json`); set
+/// `CORAL_EMBEDDINGS_BACKEND=sqlite` to use the SQLite backend
+/// (`.coral-embeddings.db`). The two backends produce identical search
+/// results for identical input vectors — see
+/// `crates/coral-core/tests/embeddings_backends_parity.rs`. The SQLite
+/// backend is opt-in pending the ~5k-page threshold called out in
+/// docs/adr/0006-local-semantic-search-storage.md; before that point the
+/// JSON file is faster and simpler.
+fn use_sqlite_backend() -> bool {
+    std::env::var("CORAL_EMBEDDINGS_BACKEND")
+        .ok()
+        .map(|v| v.eq_ignore_ascii_case("sqlite"))
+        .unwrap_or(false)
+}
+
 pub(crate) fn run_embeddings(
+    pages: &[coral_core::page::Page],
+    args: &SearchArgs,
+    wiki_root: &Path,
+    provider: &dyn EmbeddingsProvider,
+) -> Result<ExitCode> {
+    if use_sqlite_backend() {
+        run_embeddings_sqlite(pages, args, wiki_root, provider)
+    } else {
+        run_embeddings_json(pages, args, wiki_root, provider)
+    }
+}
+
+fn run_embeddings_json(
     pages: &[coral_core::page::Page],
     args: &SearchArgs,
     wiki_root: &Path,
@@ -200,6 +230,88 @@ pub(crate) fn run_embeddings(
         .context("no query vector returned")?;
 
     let scored = index.search(&query_vec, args.limit);
+    print_embedding_results(&scored, pages, args, model, "json");
+    Ok(ExitCode::SUCCESS)
+}
+
+fn run_embeddings_sqlite(
+    pages: &[coral_core::page::Page],
+    args: &SearchArgs,
+    wiki_root: &Path,
+    provider: &dyn EmbeddingsProvider,
+) -> Result<ExitCode> {
+    use coral_core::cache::WalkCache;
+    use coral_core::embeddings_sqlite::SqliteEmbeddingsIndex;
+
+    let model = provider.name();
+
+    // open() seeds defaults on a fresh DB; if the on-disk DB was created with
+    // a different provider/model, drop the file and start fresh. Vectors from
+    // a different provider have a different cosine geometry and cannot be
+    // mixed with the new ones.
+    let mut index = SqliteEmbeddingsIndex::open(wiki_root)?;
+    if index.dim == 0 || index.provider != model {
+        let path = wiki_root.join(coral_core::embeddings_sqlite::SQLITE_FILENAME);
+        let _ = std::fs::remove_file(&path);
+        index = SqliteEmbeddingsIndex::open(wiki_root)?;
+        index.set_provider_dim(model, provider.dim())?;
+    }
+
+    let mut to_embed: Vec<(String, String, i64)> = Vec::new();
+    for p in pages {
+        let mtime = WalkCache::mtime_of(&p.path).unwrap_or(0);
+        let fresh = index.is_fresh(&p.frontmatter.slug, mtime)?;
+        if args.reindex || !fresh {
+            let text = format!(
+                "{}\n{}",
+                p.frontmatter.slug,
+                p.body.chars().take(8000).collect::<String>()
+            );
+            to_embed.push((p.frontmatter.slug.clone(), text, mtime));
+        }
+    }
+
+    if !to_embed.is_empty() {
+        eprintln!("Embedding {} page(s) via {model}…", to_embed.len());
+        let texts: Vec<String> = to_embed.iter().map(|(_, t, _)| t.clone()).collect();
+        let vectors = provider
+            .embed_batch(&texts, Some("document"))
+            .map_err(|e| anyhow::anyhow!("embedding pages: {e}"))?;
+        for ((slug, _, mtime), vec) in to_embed.into_iter().zip(vectors.into_iter()) {
+            index.upsert(&slug, mtime, vec)?;
+        }
+    }
+
+    let live: std::collections::HashSet<String> =
+        pages.iter().map(|p| p.frontmatter.slug.clone()).collect();
+    index.prune(&live)?;
+    index.save(wiki_root).context("saving embeddings index")?;
+
+    let query_vecs = provider
+        .embed_batch(std::slice::from_ref(&args.query), Some("query"))
+        .map_err(|e| anyhow::anyhow!("embedding query: {e}"))?;
+    let query_vec = query_vecs
+        .into_iter()
+        .next()
+        .context("no query vector returned")?;
+
+    let scored = index.search(&query_vec, args.limit)?;
+    print_embedding_results(&scored, pages, args, model, "sqlite");
+    Ok(ExitCode::SUCCESS)
+}
+
+fn print_embedding_results(
+    scored: &[(String, f32)],
+    pages: &[coral_core::page::Page],
+    args: &SearchArgs,
+    model: &str,
+    backend: &str,
+) {
+    let cache_name = if backend == "sqlite" {
+        ".coral-embeddings.db"
+    } else {
+        ".coral-embeddings.json"
+    };
 
     if args.format == "json" {
         let json: Vec<_> = scored
@@ -211,20 +323,18 @@ pub(crate) fn run_embeddings(
                 })
             })
             .collect();
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "engine": "embeddings",
-                "model": model,
-                "results": json,
-            }))?
-        );
+        let payload = serde_json::json!({
+            "engine": "embeddings",
+            "backend": backend,
+            "model": model,
+            "results": json,
+        });
+        println!("{}", serde_json::to_string_pretty(&payload).unwrap());
     } else if scored.is_empty() {
         println!("No results found for: {}", args.query);
     } else {
         println!("# Search results for: {} ({})\n", args.query, model);
-        for (slug, score) in &scored {
-            // Find the page to get a snippet.
+        for (slug, score) in scored {
             let snippet = pages
                 .iter()
                 .find(|p| &p.frontmatter.slug == slug)
@@ -237,11 +347,9 @@ pub(crate) fn run_embeddings(
             );
         }
         println!(
-            "\n_(Embeddings via {model} cached at .coral-embeddings.json. Pass `--engine tfidf` for offline mode.)_"
+            "\n_(Embeddings via {model} cached at {cache_name}. Pass `--engine tfidf` for offline mode.)_"
         );
     }
-
-    Ok(ExitCode::SUCCESS)
 }
 
 #[cfg(test)]
@@ -378,6 +486,42 @@ mod tests {
         assert!(
             cache.contains("\"mock-64\""),
             "cache should record the mock provider name: {cache}"
+        );
+    }
+
+    #[test]
+    fn run_embeddings_sqlite_backend_writes_db_file() {
+        // Direct call to `run_embeddings_sqlite` (bypassing the env var so the
+        // test is isolated from process-global state). Verifies the SQLite
+        // backend writes `.coral-embeddings.db` in the wiki root and that the
+        // file is non-empty after a successful run.
+        let tmp = TempDir::new().unwrap();
+        let wiki = tmp.path();
+        let pages = vec![
+            page("outbox", "the outbox dispatcher polls every second"),
+            page("query", "answers go through the search pipeline"),
+        ];
+        let provider = MockEmbeddingsProvider::new(64);
+        let args = SearchArgs {
+            query: "outbox".into(),
+            limit: 5,
+            format: "json".into(),
+            engine: "embeddings".into(),
+            algorithm: "tfidf".into(),
+            reindex: false,
+            embeddings_provider: "voyage".into(),
+            embeddings_model: None,
+        };
+        let exit = run_embeddings_sqlite(&pages, &args, wiki, &provider).unwrap();
+        assert_eq!(exit, ExitCode::SUCCESS);
+        let db_path = wiki.join(".coral-embeddings.db");
+        assert!(db_path.exists(), "sqlite db file was not written");
+        let meta = std::fs::metadata(&db_path).unwrap();
+        assert!(meta.len() > 0, "sqlite db file is empty");
+        // The JSON cache must NOT have been written when sqlite is selected.
+        assert!(
+            !wiki.join(".coral-embeddings.json").exists(),
+            "json cache should not be written by sqlite backend"
         );
     }
 }

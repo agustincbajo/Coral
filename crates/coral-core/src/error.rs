@@ -35,6 +35,9 @@ pub enum CoralError {
 
     #[error("walk error: {0}")]
     Walk(String),
+
+    #[error("sqlite error: {0}")]
+    Sqlite(String),
 }
 
 pub type Result<T> = std::result::Result<T, CoralError>;

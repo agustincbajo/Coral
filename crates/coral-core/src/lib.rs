@@ -2,6 +2,7 @@
 
 pub mod cache;
 pub mod embeddings;
+pub mod embeddings_sqlite;
 pub mod error;
 pub mod frontmatter;
 pub mod gitdiff;
