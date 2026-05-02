@@ -8,15 +8,17 @@
 //!   between an existing page and its proposed replacement.
 //!
 //! v0.5 ships the **structural** diff: frontmatter delta, sources/backlinks
-//! set arithmetic, wikilink overlap, and body length stats. A future
-//! `--semantic` flag would add an LLM pass to surface contradictions
-//! between the bodies — that's tracked separately and is not in this MVP.
+//! set arithmetic, wikilink overlap, and body length stats. The optional
+//! `--semantic` flag layers an LLM pass on top — it asks the configured
+//! provider to surface contradictions, overlap, and coverage gaps between
+//! the two bodies, then appends the response to the structural output.
 
 use anyhow::{Context, Result};
 use clap::Args;
 use coral_core::page::Page;
 use coral_core::walk;
 use coral_core::wikilinks;
+use coral_runner::{Prompt, Runner};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -30,8 +32,25 @@ pub struct DiffArgs {
     /// Output format: markdown (default) or json.
     #[arg(long, default_value = "markdown")]
     pub format: String,
+    /// Layer an LLM pass on top of the structural diff. Asks the configured
+    /// provider to surface contradictions, overlap, and coverage gaps
+    /// between the two page bodies.
+    #[arg(long)]
+    pub semantic: bool,
+    /// Model id passed to the runner (e.g. `sonnet`, `haiku`, or a full id).
+    /// Only used with `--semantic`; silently ignored otherwise.
+    #[arg(long)]
+    pub model: Option<String>,
+    /// LLM provider used by --semantic: claude (default) | gemini | local.
+    /// Or set CORAL_PROVIDER env. Silently ignored without `--semantic`.
+    #[arg(long)]
+    pub provider: Option<String>,
 }
 
+/// Entry point wired to `Cmd::Diff`. Loads the two pages, runs the
+/// structural diff, and (when `--semantic` is set) builds a runner and
+/// invokes the LLM. Without `--semantic`, no runner is constructed —
+/// `--model` and `--provider` are quietly ignored.
 pub fn run(args: DiffArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
     let root: PathBuf = wiki_root
         .map(Path::to_path_buf)
@@ -50,9 +69,36 @@ pub fn run(args: DiffArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
         .with_context(|| format!("page `{}` not found in {}", args.slug_b, root.display()))?;
 
     let report = compute_diff(a, b);
+
+    let semantic_analysis: Option<String> = if args.semantic {
+        let provider = super::runner_helper::resolve_provider(args.provider.as_deref())
+            .map_err(|e| anyhow::anyhow!(e))?;
+        let runner = super::runner_helper::make_runner(provider);
+        Some(run_semantic_analysis(
+            a,
+            b,
+            runner.as_ref(),
+            args.model.as_deref(),
+        )?)
+    } else {
+        None
+    };
+
+    let model_label = args.model.as_deref().unwrap_or("default");
     match args.format.as_str() {
-        "json" => println!("{}", serde_json::to_string_pretty(&report.as_json())?),
-        _ => println!("{}", report.as_markdown()),
+        "json" => {
+            let semantic_pair = semantic_analysis
+                .as_deref()
+                .map(|analysis| (model_label, analysis));
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&report.as_json_with_semantic(semantic_pair))?
+            );
+        }
+        _ => println!(
+            "{}",
+            report.as_markdown_with_semantic(semantic_analysis.as_deref())
+        ),
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -86,7 +132,20 @@ pub(crate) struct DiffReport {
 }
 
 impl DiffReport {
+    /// Render the structural diff as markdown. Thin delegate to
+    /// [`Self::as_markdown_with_semantic`] with no LLM block. Retained as
+    /// the structural-only entry point for callers (tests, future
+    /// embedders) that don't want the semantic block.
+    #[allow(dead_code)]
     pub fn as_markdown(&self) -> String {
+        self.as_markdown_with_semantic(None)
+    }
+
+    /// Render the structural diff as markdown, optionally appending the
+    /// LLM-produced semantic analysis as a `## Semantic analysis` section.
+    /// An empty `semantic` string is rendered as `_(no semantic findings)_`
+    /// so the section header is still meaningful.
+    pub fn as_markdown_with_semantic(&self, semantic: Option<&str>) -> String {
         let mut out = String::new();
         out.push_str(&format!(
             "# Diff: `{}` ↔ `{}`\n\n",
@@ -143,11 +202,34 @@ impl DiffReport {
             &self.slug_b,
         );
 
+        if let Some(analysis) = semantic {
+            out.push_str("## Semantic analysis\n\n");
+            let trimmed = analysis.trim();
+            if trimmed.is_empty() {
+                out.push_str("_(no semantic findings)_\n");
+            } else {
+                out.push_str(trimmed);
+                out.push('\n');
+            }
+        }
+
         out
     }
 
+    /// Render the structural diff as a JSON value. Thin delegate to
+    /// [`Self::as_json_with_semantic`] without the `semantic` field.
+    /// Retained as the structural-only entry point for callers (tests,
+    /// future embedders) that don't want the semantic block.
+    #[allow(dead_code)]
     pub fn as_json(&self) -> serde_json::Value {
-        serde_json::json!({
+        self.as_json_with_semantic(None)
+    }
+
+    /// Render the structural diff as a JSON value, optionally including a
+    /// top-level `semantic: { model, analysis }` field. When `semantic` is
+    /// `None` the field is omitted entirely.
+    pub fn as_json_with_semantic(&self, semantic: Option<(&str, &str)>) -> serde_json::Value {
+        let mut value = serde_json::json!({
             "slug_a": self.slug_a,
             "slug_b": self.slug_b,
             "type": {
@@ -168,8 +250,87 @@ impl DiffReport {
                 "only_a": self.wikilinks_only_a,
                 "only_b": self.wikilinks_only_b,
             },
-        })
+        });
+        if let Some((model, analysis)) = semantic
+            && let Some(obj) = value.as_object_mut()
+        {
+            obj.insert(
+                "semantic".to_string(),
+                serde_json::json!({ "model": model, "analysis": analysis }),
+            );
+        }
+        value
     }
+}
+
+/// Hardcoded last-resort system prompt for `coral diff --semantic`.
+/// Power users can override with `<cwd>/prompts/diff-semantic.md`, and the
+/// embedded `template/prompts/diff-semantic.md` (when present) takes
+/// priority over this string. See [`crate::commands::prompt_loader`].
+pub(crate) const DIFF_SEMANTIC_FALLBACK: &str = "You are the Coral wiki diff analyzer. Read the two page bodies below and identify:\n\
+1. Contradictions — claims in one page that the other directly contradicts.\n\
+2. Overlap — topics or facts both pages cover, suggesting a merge candidate.\n\
+3. Coverage gaps — claims one makes that the other should but doesn't.\n\
+\n\
+Be terse. Use bullet points. Cite both pages by slug. If pages are clearly distinct\n\
+and have no contradiction or meaningful overlap, say so in one line.";
+
+/// Build the diff-semantic prompt, dispatch it to the supplied runner, and
+/// return the trimmed stdout. The system prompt is loaded via
+/// [`crate::commands::prompt_loader::load_or_fallback`] so user overrides
+/// in `<cwd>/prompts/diff-semantic.md` win over the embedded template,
+/// which in turn wins over [`DIFF_SEMANTIC_FALLBACK`].
+fn run_semantic_analysis(
+    a: &Page,
+    b: &Page,
+    runner: &dyn Runner,
+    model: Option<&str>,
+) -> Result<String> {
+    let prompt_template =
+        super::prompt_loader::load_or_fallback("diff-semantic", DIFF_SEMANTIC_FALLBACK);
+    let user = build_semantic_user_prompt(a, b);
+    let prompt = Prompt {
+        system: Some(prompt_template.content),
+        user,
+        model: model.map(str::to_string),
+        ..Default::default()
+    };
+    let out = runner
+        .run(&prompt)
+        .map_err(|e| anyhow::anyhow!("semantic diff runner failed: {e}"))?;
+    Ok(out.stdout.trim().to_string())
+}
+
+/// Pure builder for the user-prompt string we send to the runner. Split
+/// out so it can be unit-tested without standing up a runner.
+fn build_semantic_user_prompt(a: &Page, b: &Page) -> String {
+    format!(
+        "Page A — slug: {slug_a}\n\
+type: {type_a}, status: {status_a}, confidence: {conf_a:.2}\n\
+\n\
+{body_a}\n\
+\n\
+---\n\
+\n\
+Page B — slug: {slug_b}\n\
+type: {type_b}, status: {status_b}, confidence: {conf_b:.2}\n\
+\n\
+{body_b}\n\
+\n\
+---\n\
+\n\
+Analyze.",
+        slug_a = a.frontmatter.slug,
+        type_a = format!("{:?}", a.frontmatter.page_type).to_lowercase(),
+        status_a = format!("{:?}", a.frontmatter.status).to_lowercase(),
+        conf_a = a.frontmatter.confidence.as_f64(),
+        body_a = a.body,
+        slug_b = b.frontmatter.slug,
+        type_b = format!("{:?}", b.frontmatter.page_type).to_lowercase(),
+        status_b = format!("{:?}", b.frontmatter.status).to_lowercase(),
+        conf_b = b.frontmatter.confidence.as_f64(),
+        body_b = b.body,
+    )
 }
 
 fn section(
@@ -240,6 +401,8 @@ pub(crate) fn compute_diff(a: &Page, b: &Page) -> DiffReport {
 mod tests {
     use super::*;
     use coral_core::frontmatter::{Confidence, Frontmatter, PageType, Status};
+    use coral_runner::MockRunner;
+    use coral_runner::runner::RunnerError;
 
     fn page(
         slug: &str,
@@ -263,6 +426,32 @@ mod tests {
                 extra: Default::default(),
             },
             body: body.to_string(),
+        }
+    }
+
+    /// Minimal `DiffReport` constructor for testing the rendering helpers
+    /// without going through `compute_diff`. Keeps every field at a
+    /// deterministic, trivially-non-empty value so each test only needs
+    /// to assert the bit it cares about (typically the `semantic` block).
+    fn mk_report() -> DiffReport {
+        DiffReport {
+            slug_a: "a".into(),
+            slug_b: "b".into(),
+            same_type: true,
+            type_a: "module".into(),
+            type_b: "module".into(),
+            same_status: true,
+            status_a: "reviewed".into(),
+            status_b: "reviewed".into(),
+            confidence_delta: 0.0,
+            sources_common: BTreeSet::new(),
+            sources_only_a: BTreeSet::new(),
+            sources_only_b: BTreeSet::new(),
+            wikilinks_common: BTreeSet::new(),
+            wikilinks_only_a: BTreeSet::new(),
+            wikilinks_only_b: BTreeSet::new(),
+            body_chars_a: 0,
+            body_chars_b: 0,
         }
     }
 
@@ -359,5 +548,190 @@ mod tests {
 
     fn set(items: &[&str]) -> BTreeSet<String> {
         items.iter().map(|s| s.to_string()).collect()
+    }
+
+    // ---- --semantic flag: markdown rendering --------------------------
+
+    #[test]
+    fn markdown_with_semantic_appends_section_with_analysis() {
+        let r = mk_report();
+        let md = r.as_markdown_with_semantic(Some("**Findings**: pages overlap on outbox."));
+        assert!(
+            md.contains("## Semantic analysis"),
+            "missing semantic section header: {md}"
+        );
+        assert!(
+            md.contains("**Findings**: pages overlap on outbox."),
+            "missing analysis body: {md}"
+        );
+        assert!(
+            !md.contains("_(no semantic findings)_"),
+            "should not show empty placeholder when analysis is present: {md}"
+        );
+    }
+
+    #[test]
+    fn markdown_with_semantic_renders_empty_string_as_placeholder() {
+        let r = mk_report();
+        let md = r.as_markdown_with_semantic(Some(""));
+        assert!(md.contains("## Semantic analysis"));
+        assert!(
+            md.contains("_(no semantic findings)_"),
+            "empty analysis must render placeholder: {md}"
+        );
+    }
+
+    #[test]
+    fn markdown_with_semantic_renders_whitespace_only_as_placeholder() {
+        let r = mk_report();
+        let md = r.as_markdown_with_semantic(Some("   \n  "));
+        assert!(md.contains("## Semantic analysis"));
+        assert!(
+            md.contains("_(no semantic findings)_"),
+            "whitespace-only analysis must render placeholder: {md}"
+        );
+    }
+
+    #[test]
+    fn markdown_with_semantic_none_matches_as_markdown() {
+        let r = mk_report();
+        assert_eq!(
+            r.as_markdown(),
+            r.as_markdown_with_semantic(None),
+            "None semantic must produce identical output to as_markdown()"
+        );
+        assert!(
+            !r.as_markdown_with_semantic(None)
+                .contains("Semantic analysis"),
+            "None semantic must not emit the section header"
+        );
+    }
+
+    // ---- --semantic flag: JSON rendering ------------------------------
+
+    #[test]
+    fn json_with_semantic_includes_model_and_analysis() {
+        let r = mk_report();
+        let v = r.as_json_with_semantic(Some(("haiku", "**done**")));
+        let semantic = v
+            .get("semantic")
+            .expect("semantic field must be present when Some(...) passed");
+        assert_eq!(semantic["model"], "haiku");
+        assert_eq!(semantic["analysis"], "**done**");
+    }
+
+    #[test]
+    fn json_with_semantic_none_omits_field_entirely() {
+        let r = mk_report();
+        let v = r.as_json_with_semantic(None);
+        assert!(
+            v.get("semantic").is_none(),
+            "semantic key must be absent when None is passed; got: {v}"
+        );
+        // And the public delegate matches.
+        assert_eq!(r.as_json(), v);
+    }
+
+    // ---- --semantic flag: user-prompt builder -------------------------
+
+    #[test]
+    fn build_semantic_user_prompt_includes_all_frontmatter_and_bodies() {
+        let a = page(
+            "alpha-slug",
+            PageType::Module,
+            Status::Reviewed,
+            0.80,
+            "ALPHA BODY TEXT",
+            &[],
+        );
+        let b = page(
+            "beta-slug",
+            PageType::Flow,
+            Status::Draft,
+            0.30,
+            "BETA BODY TEXT",
+            &[],
+        );
+        let s = build_semantic_user_prompt(&a, &b);
+
+        // Both slugs.
+        assert!(s.contains("alpha-slug"), "missing slug A: {s}");
+        assert!(s.contains("beta-slug"), "missing slug B: {s}");
+        // Both types (lowercased).
+        assert!(s.contains("module"), "missing type A: {s}");
+        assert!(s.contains("flow"), "missing type B: {s}");
+        // Both statuses (lowercased).
+        assert!(s.contains("reviewed"), "missing status A: {s}");
+        assert!(s.contains("draft"), "missing status B: {s}");
+        // Both confidences, formatted with 2 decimals.
+        assert!(s.contains("0.80"), "missing confidence A (0.80): {s}");
+        assert!(s.contains("0.30"), "missing confidence B (0.30): {s}");
+        // Both bodies verbatim.
+        assert!(s.contains("ALPHA BODY TEXT"), "missing body A: {s}");
+        assert!(s.contains("BETA BODY TEXT"), "missing body B: {s}");
+        // The `---` separator appears at least twice (between A/B and after B).
+        assert!(
+            s.matches("---").count() >= 2,
+            "expected at least 2 `---` separators: {s}"
+        );
+        // Final line directs the LLM to analyze.
+        assert!(
+            s.trim_end().ends_with("Analyze."),
+            "must end with 'Analyze.': {s}"
+        );
+    }
+
+    // ---- --semantic flag: run_semantic_analysis with a mock runner ----
+
+    #[test]
+    fn run_semantic_analysis_dispatches_to_runner_and_trims() {
+        let a = page("a", PageType::Module, Status::Reviewed, 0.7, "body a", &[]);
+        let b = page("b", PageType::Module, Status::Reviewed, 0.7, "body b", &[]);
+        let runner = MockRunner::new();
+        // Surrounding whitespace must be trimmed by run_semantic_analysis.
+        runner.push_ok("\n  **Contradiction**: A says X but B says Y.\n  \n");
+
+        let out = run_semantic_analysis(&a, &b, &runner, Some("haiku"))
+            .expect("mock runner must not fail");
+        assert_eq!(out, "**Contradiction**: A says X but B says Y.");
+
+        // Runner saw exactly one call, with the expected model + system prompt
+        // shape and a user prompt that came from build_semantic_user_prompt.
+        let calls = runner.calls();
+        assert_eq!(calls.len(), 1, "runner must be invoked exactly once");
+        let p = &calls[0];
+        assert_eq!(p.model.as_deref(), Some("haiku"));
+        let system = p.system.as_deref().unwrap_or("");
+        assert!(
+            system.contains("Coral wiki diff analyzer"),
+            "system prompt must come from diff-semantic loader (fallback or override); got: {system}"
+        );
+        // The user prompt must include both slugs from our pages.
+        assert!(
+            p.user.contains("a"),
+            "user prompt missing slug a: {}",
+            p.user
+        );
+        assert!(
+            p.user.contains("b"),
+            "user prompt missing slug b: {}",
+            p.user
+        );
+    }
+
+    #[test]
+    fn run_semantic_analysis_propagates_runner_errors() {
+        let a = page("a", PageType::Module, Status::Reviewed, 0.7, "x", &[]);
+        let b = page("b", PageType::Module, Status::Reviewed, 0.7, "y", &[]);
+        let runner = MockRunner::new();
+        runner.push_err(RunnerError::NotFound);
+
+        let r = run_semantic_analysis(&a, &b, &runner, None);
+        assert!(r.is_err(), "expected runner error to surface as Err");
+        let msg = format!("{}", r.unwrap_err());
+        assert!(
+            msg.contains("semantic diff runner failed"),
+            "error must be wrapped with diff context; got: {msg}"
+        );
     }
 }
