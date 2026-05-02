@@ -19,6 +19,7 @@ Coral compiles your codebase into an interconnected Markdown wiki that an LLM (C
 - [Why Coral](#why-coral)
 - [Install](#install)
 - [Quickstart (5 minutes)](#quickstart-5-minutes)
+- [Tutorial (no LLM auth required)](docs/TUTORIAL.md)
 - [Subcommands at a glance](#subcommands-at-a-glance)
 - [The wiki schema](#the-wiki-schema)
 - [CI integration](#ci-integration)
