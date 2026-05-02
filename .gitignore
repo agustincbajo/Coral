@@ -8,3 +8,7 @@ Cargo.lock.bak
 .coral-cache.json
 **/.coral-cache.json
 .claude/
+# Coral file-locking sidecars (v0.15+) — empty inodes for flock(2)
+**/index.md.lock
+**/log.md.lock
+**/.coral-embeddings.json.lock

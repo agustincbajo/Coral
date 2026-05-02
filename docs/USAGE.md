@@ -465,20 +465,22 @@ hermes-validate:
 
 The action skips validation when fewer than `min_pages_to_validate` (default 5) pages changed — keeps token spend predictable on small PRs. The subagent definition lives at `template/agents/wiki-validator.md` (sync via `coral sync`).
 
-## Concurrency model (v0.14)
+## Concurrency model (v0.15)
 
-Coral commands generally assume a single-process workflow (one `coral` invocation at a time per repo). v0.14 added defenses against the failure modes that DO appear in practice — a `coral status --watch` reading at the same time as a `coral ingest` writing, or two parallel CI workflows touching the same `.wiki/`.
+Coral commands generally assume a single-process workflow (one `coral` invocation at a time per repo). v0.14 + v0.15 added defenses against the failure modes that DO appear in practice — a `coral status --watch` reading at the same time as a `coral ingest` writing, or two parallel CI workflows touching the same `.wiki/`.
 
-**Safe under concurrent access (v0.14):**
-- `Page::write` — atomic temp-file + rename; readers never observe a torn page file.
-- `WikiLog::append_atomic(path, op, summary)` — POSIX `O_APPEND` single-entry append. Race-free under N concurrent writers.
-- `WikiLog::save` — atomic temp-file + rename for full-log overwrites.
-- `EmbeddingsIndex::save` — same atomic-rename pattern; a `coral search` running while `coral search --reindex` is mid-write reads either the OLD or the NEW JSON, never partial.
-- All `coral` CLI writes to `.wiki/index.md` and `.wiki/log.md` — switched to atomic paths.
+**Safe under concurrent access (v0.15):**
+- `Page::write` — atomic temp-file + rename; readers never observe a torn page file. (v0.14)
+- `WikiLog::append_atomic(path, op, summary)` — POSIX `O_APPEND` single-entry append. Race-free under N concurrent writers. (v0.14)
+- `WikiLog::save` — atomic temp-file + rename for full-log overwrites. (v0.14)
+- `EmbeddingsIndex::save` — same atomic-rename pattern. (v0.14)
+- `coral ingest` and `coral bootstrap` writes to `.wiki/index.md` — wrapped in `with_exclusive_lock` (v0.15) so two parallel invocations against the same wiki serialize properly (no lost updates).
 
-**Still racey (deferred to v0.15+):**
-- The **lost-update race** for any load+modify+save flow on `WikiIndex`. Two writers can both produce a complete `*.tmp` file; the second `rename` clobbers the first writer's data. In practice this means: if you run `coral ingest` twice in parallel against the same repo, you may end up with only the second invocation's index updates. Fixing this requires true cross-process file locking (a new dep — `fs2` or similar — held off until v0.15).
+**Still racey (deferred to v0.16+):**
+- The full ingest **plan generation** in `coral ingest` runs OUTSIDE the lock (the lock is acquired only around the index save, after the LLM plan is built). If two `coral ingest` invocations spawn concurrent LLM calls, they each compute a plan against a snapshot of the index that may not be the same. Workaround: use the GitHub Actions composite action which throttles to one ingest per push event.
 
-**Custom code against `WikiLog`:** prefer `WikiLog::append_atomic(path, op, summary)` (the new static method) over the manual load+append+save pattern. The old pattern is still racey and has a regression test in `crates/coral-core/tests/concurrency.rs::wikilog_append_concurrent_preserves_all_entries` to pin that behavior.
+**Custom code against `WikiLog`:** prefer `WikiLog::append_atomic(path, op, summary)` (v0.14 static method) over the manual load+append+save pattern. The old pattern is still racey and has a regression test in `crates/coral-core/tests/concurrency.rs::wikilog_append_concurrent_preserves_all_entries` to pin that behavior.
 
-**Custom code that needs torn-write safety for any file:** use `coral_core::atomic::atomic_write_string(path, content)`. It handles parent dir creation, uses `<filename>.tmp.<pid>.<counter>` to avoid same-process collisions, and renames atomically. Stress-tested with 50 writers + 50 readers — zero torn observations.
+**Custom code that needs torn-write safety for any file:** use `coral_core::atomic::atomic_write_string(path, content)` (v0.14). It handles parent dir creation, uses `<filename>.tmp.<pid>.<counter>` to avoid same-process collisions, and renames atomically. Stress-tested with 50 writers + 50 readers — zero torn observations.
+
+**Custom code that needs cross-process load+modify+save safety:** wrap the load+modify+save in `coral_core::atomic::with_exclusive_lock(path, closure)` (v0.15). Uses `flock(2)` on a sibling `<path>.lock` file. Race-free across both threads-in-one-process AND cooperating processes. Stress-tested 50 threads × shared counter increment, every update lands.

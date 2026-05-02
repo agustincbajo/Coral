@@ -194,9 +194,19 @@ pub fn run_with_runner(
         }
     }
 
+    // The index write happens INSIDE an exclusive flock so concurrent
+    // `coral ingest` invocations against the same wiki serialize
+    // properly (closes the lost-update race documented in v0.14).
+    // Note: the LOAD above (line 118) runs OUTSIDE the lock — it's a
+    // best-effort prefix and the LLM-driven plan was already built
+    // from that snapshot. Future v0.16 work could move the entire
+    // load+plan+save under the lock if multi-process concurrent
+    // ingest becomes a real workload.
     index.bump_last_commit(head.clone());
-    coral_core::atomic::atomic_write_string(&idx_path, &index.to_string()?)
-        .context("writing .wiki/index.md")?;
+    coral_core::atomic::with_exclusive_lock(&idx_path, || {
+        coral_core::atomic::atomic_write_string(&idx_path, &index.to_string()?)
+    })
+    .context("writing .wiki/index.md")?;
 
     let log_path = root.join("log.md");
     let summary = format!("range {range}: {created} created, {updated} updated, {retired} retired");

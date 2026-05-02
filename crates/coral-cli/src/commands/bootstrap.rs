@@ -139,9 +139,12 @@ pub fn run_with_runner(
         created += 1;
     }
 
+    // Lock-protected write — see ingest.rs for rationale.
     index.bump_last_commit(head.clone());
-    coral_core::atomic::atomic_write_string(&idx_path, &index.to_string()?)
-        .context("writing .wiki/index.md")?;
+    coral_core::atomic::with_exclusive_lock(&idx_path, || {
+        coral_core::atomic::atomic_write_string(&idx_path, &index.to_string()?)
+    })
+    .context("writing .wiki/index.md")?;
 
     // Log line — atomic append, race-free under concurrent invocations (v0.14).
     let log_path = root.join("log.md");

@@ -17,7 +17,7 @@
 //! invariant being asserted and how the test responds when the invariant
 //! does NOT hold.
 
-use coral_core::atomic::atomic_write_string;
+use coral_core::atomic::{atomic_write_string, with_exclusive_lock};
 use coral_core::embeddings::EmbeddingsIndex;
 use coral_core::frontmatter::{Confidence, Frontmatter, PageType, Status};
 use coral_core::index::{IndexEntry, WikiIndex};
@@ -259,25 +259,21 @@ fn wikilog_append_concurrent_in_memory_preserves_all() {
 /// scans `entries: Vec<IndexEntry>` and either replaces the existing
 /// entry or pushes a new one. There is no disk persistence inside
 /// `upsert`; the realistic pattern (e.g. `coral ingest`) is
-/// load → upsert → save, which has the lost-update race documented
-/// in v0.13.
+/// load → upsert → save.
 ///
-/// **The v0.14 fix** is `coral_core::atomic::atomic_write_string` —
-/// temp-file + rename for the SAVE step. With it, concurrent readers
-/// can no longer observe a torn / mid-write file (rename is atomic),
-/// so the "transient parse failures" failure mode this test used to
-/// document is GONE. The `coral ingest` / `coral bootstrap` /
-/// `coral init` callers all switched to that path.
+/// **v0.14** added `coral_core::atomic::atomic_write_string` for the
+/// SAVE step (rename is atomic, so readers no longer observe torn
+/// files), eliminating the parse-error failure mode.
 ///
-/// What remains is the lost-update race: two writers can both
-/// produce a complete `*.tmp` file and the second `rename` clobbers
-/// the first writer's data. So the final on-disk index can still
-/// have FEWER than N entries. Fixing that requires true cross-process
-/// file locking (a v0.15+ design item that needs a new dep).
+/// **v0.15** adds `coral_core::atomic::with_exclusive_lock` for the
+/// entire load+modify+save round trip (advisory `flock(2)`), closing
+/// the lost-update race. With both fixes wired through, this test
+/// pins the strongest invariant: under N concurrent
+/// load+upsert+save threads, ALL N entries persist AND ZERO threads
+/// hit transient errors.
 ///
-/// This test uses `atomic_write_string` so we can pin the v0.14
-/// improvement: errors == 0 (the partial-file race is gone), entries
-/// ≤ N (lost-update race remains).
+/// `coral ingest` / `coral bootstrap` use the lock-wrapped path in
+/// production.
 #[test]
 fn wikiindex_upsert_concurrent() {
     let dir = TempDir::new().expect("tempdir");
@@ -293,57 +289,55 @@ fn wikiindex_upsert_concurrent() {
             let idx_path = idx_path.clone();
             let errors = &errors;
             s.spawn(move || {
-                // Tolerate transient empty-file / truncated-mid-write
-                // observations — they're documented fallout of the
-                // race, not the thing under test.
-                let content = match fs::read_to_string(&idx_path) {
-                    Ok(c) => c,
-                    Err(_) => {
-                        *errors.lock().unwrap() += 1;
-                        return;
-                    }
-                };
-                let mut idx = match WikiIndex::parse(&content) {
-                    Ok(i) => i,
-                    Err(_) => {
-                        *errors.lock().unwrap() += 1;
-                        return;
-                    }
-                };
-                let slug = format!("slug-{i}");
-                let path = format!("modules/{slug}.md");
-                idx.upsert(index_entry_for(&slug, &path));
-                let new_content = idx.to_string().expect("serialize");
-                if atomic_write_string(&idx_path, &new_content).is_err() {
+                // The entire load+modify+save round-trip runs under
+                // an exclusive flock (v0.15) — no other writer can
+                // observe a partial state, no lost updates.
+                let outcome = with_exclusive_lock(&idx_path, || {
+                    let content = fs::read_to_string(&idx_path).map_err(|source| {
+                        coral_core::error::CoralError::Io {
+                            path: idx_path.clone(),
+                            source,
+                        }
+                    })?;
+                    let mut idx = WikiIndex::parse(&content)?;
+                    let slug = format!("slug-{i}");
+                    let path = format!("modules/{slug}.md");
+                    idx.upsert(index_entry_for(&slug, &path));
+                    let new_content = idx.to_string()?;
+                    atomic_write_string(&idx_path, &new_content)
+                });
+                if outcome.is_err() {
                     *errors.lock().unwrap() += 1;
                 }
             });
         }
     });
 
-    // Atomic-write means the final read NEVER hits a torn write —
-    // rename is atomic. This expect() is now unconditional.
     let final_content = fs::read_to_string(&idx_path).expect("read final");
     let final_idx = WikiIndex::parse(&final_content).expect("parse final");
     let observed_errors = *errors.lock().unwrap();
-    // v0.14 invariant: zero per-thread errors. The torn-write race is
-    // gone; only the lost-update race remains.
+    // v0.15 invariant: zero per-thread errors AND every slug landed.
     assert_eq!(
         observed_errors, 0,
-        "v0.14 atomic_write_string must eliminate transient parse/io errors; \
+        "v0.15 with_exclusive_lock must eliminate transient parse/io errors; \
          observed {observed_errors} thread(s) with errors"
     );
-    assert!(
-        final_idx.entries.len() <= N,
-        "index has more entries than threads spawned ({} > {N}); something is very wrong",
-        final_idx.entries.len()
+    assert_eq!(
+        final_idx.entries.len(),
+        N,
+        "v0.15 with_exclusive_lock must preserve ALL {N} concurrent upserts; \
+         observed {} entries on disk (lost {} updates)",
+        final_idx.entries.len(),
+        N - final_idx.entries.len()
     );
-    eprintln!(
-        "wikiindex_upsert_concurrent (v0.14 atomic_write_string): spawned {N} threads, \
-         observed {} entries on disk, {observed_errors} thread errors. \
-         Lost-update race remains (entries < N is acceptable until v0.15+ adds file locking).",
-        final_idx.entries.len()
-    );
+    // Verify each slug landed exactly once (no upsert was double-applied).
+    for i in 0..N {
+        let slug = format!("slug-{i}");
+        assert!(
+            final_idx.find(&slug).is_some(),
+            "slug {slug} missing from final index after {N} concurrent upserts"
+        );
+    }
 }
 
 /// Invariant: `WikiIndex::upsert` on a single shared in-memory instance

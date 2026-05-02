@@ -1,21 +1,18 @@
-//! Atomic file writes via the temp-file + rename pattern.
+//! Atomic file writes + cross-process file locking.
 //!
-//! `std::fs::write` opens with `O_TRUNC | O_CREAT`, truncates to zero
-//! bytes immediately, and only then starts writing. A concurrent
-//! reader hitting the file between the truncate and the writes sees a
-//! partial (or empty) file — which corrupts downstream parsing.
+//! `atomic_write_string` writes to a sibling `*.tmp.<pid>.<counter>`
+//! file first, then `rename`s it onto the target path. POSIX `rename`
+//! is atomic within a single filesystem: readers see either the OLD
+//! contents or the NEW contents, never a half-written state. Windows
+//! `MoveFileEx` with `MOVEFILE_REPLACE_EXISTING` provides the same
+//! guarantee.
 //!
-//! `atomic_write_string` writes to a sibling `*.tmp.<pid>` file first,
-//! then `rename`s it onto the target path. POSIX `rename` is atomic
-//! within a single filesystem: readers see either the OLD contents or
-//! the NEW contents, never a half-written state. Windows `MoveFileEx`
-//! with `MOVEFILE_REPLACE_EXISTING` provides the same guarantee.
-//!
-//! This does NOT solve the lost-update race for load+modify+save
-//! patterns — two concurrent writers can both produce a complete
-//! `*.tmp` file and the second `rename` clobbers the first writer's
-//! data. For that, callers need true file locking (a v0.15+ design
-//! item that requires a new dep).
+//! `with_exclusive_lock` (v0.15) wraps a closure in an `flock(2)`
+//! exclusive advisory lock so the load+modify+save pattern is
+//! actually safe under concurrent writers — both threads within one
+//! process AND across multiple cooperating processes (e.g. two
+//! `coral ingest` invocations against the same `.wiki/`). Closes the
+//! lost-update race documented in v0.14.
 
 use crate::error::{CoralError, Result};
 use std::fs;
@@ -102,6 +99,103 @@ pub fn atomic_write_string(path: impl AsRef<Path>, content: &str) -> Result<()> 
     })
 }
 
+/// Runs `f` while holding an exclusive `flock(2)` advisory lock on
+/// `<path>.lock`. Race-free under concurrent writers — both threads
+/// within one process AND cooperating processes that go through this
+/// helper. Blocks until the lock is acquired.
+///
+/// **Use this for any load+modify+save sequence on shared state.** The
+/// canonical pattern:
+///
+/// ```rust,ignore
+/// coral_core::atomic::with_exclusive_lock(&idx_path, || {
+///     let content = std::fs::read_to_string(&idx_path)?;
+///     let mut idx = WikiIndex::parse(&content)?;
+///     idx.upsert(entry);
+///     atomic_write_string(&idx_path, &idx.to_string()?)
+/// })?
+/// ```
+///
+/// Why a sibling `.lock` file (instead of locking the target itself):
+/// `atomic_write_string` `rename`s a fresh inode onto the target path,
+/// so the target's inode changes between writes. `flock` attaches to
+/// inodes, not paths — locking the target file directly would let two
+/// writers each end up with a lock on a DIFFERENT (stale) inode.
+/// Locking a sibling `.lock` file that no one ever renames keeps every
+/// participant attached to the same inode.
+///
+/// The lock file is created on first use (with `OpenOptions::create`)
+/// and is NEVER removed — by design. Removing it would create a TOCTOU
+/// where a process between "open existing lock file" and "lock it"
+/// could see the file disappear and re-create it, ending up locking a
+/// fresh inode that another process isn't holding. Leaving the file in
+/// place (it's empty, ~0 bytes) is the conventional pattern. Add
+/// `*.lock` to `.gitignore` if it shows up in `git status`.
+///
+/// Errors from `f` propagate as-is; lock release is best-effort but
+/// happens automatically on `File` drop even if explicit unlock fails.
+pub fn with_exclusive_lock<F, T>(path: impl AsRef<Path>, f: F) -> Result<T>
+where
+    F: FnOnce() -> Result<T>,
+{
+    let path = path.as_ref();
+    let lock_path = lock_file_path(path);
+
+    if let Some(parent) = lock_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent).map_err(|source| CoralError::Io {
+                path: parent.to_path_buf(),
+                source,
+            })?;
+        }
+    }
+
+    let lock_file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .map_err(|source| CoralError::Io {
+            path: lock_path.clone(),
+            source,
+        })?;
+
+    // Note on UFCS: Rust 1.89 added `File::lock_exclusive` / `unlock`
+    // to stdlib. Calling the methods via the inherent path would
+    // resolve to the stdlib impl, which would push our MSRV to 1.89.
+    // Using fully-qualified syntax `<File as fs4 trait>::method`
+    // pins the call to the fs4 trait, which works on every Rust
+    // version since 1.85 (our MSRV).
+    use fs4::fs_std::FileExt as Fs4Ext;
+    Fs4Ext::lock_exclusive(&lock_file).map_err(|source| CoralError::Io {
+        path: lock_path.clone(),
+        source,
+    })?;
+
+    // Run the user closure under the lock. If it panics, the File
+    // drop releases the lock anyway — we don't poison anything.
+    let result = f();
+
+    // Best-effort explicit unlock. The Drop impl on File will also
+    // release any held flock, so an error here is informational
+    // only — return the user's result regardless.
+    let _ = Fs4Ext::unlock(&lock_file);
+
+    result
+}
+
+/// Returns the conventional lock-file path for a target file.
+/// Pure, no I/O.
+fn lock_file_path(path: &Path) -> std::path::PathBuf {
+    let mut s = path
+        .file_name()
+        .map(std::ffi::OsStr::to_os_string)
+        .unwrap_or_default();
+    s.push(".lock");
+    path.with_file_name(s)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -147,6 +241,89 @@ mod tests {
             entries.len(),
             1,
             "expected exactly target file, got {entries:?}"
+        );
+    }
+
+    // ---- with_exclusive_lock --------------------------------------
+
+    #[test]
+    fn lock_file_path_is_sibling_dot_lock() {
+        assert_eq!(
+            lock_file_path(Path::new("/x/y/z/index.md")),
+            Path::new("/x/y/z/index.md.lock")
+        );
+        assert_eq!(
+            lock_file_path(Path::new("relative/log.md")),
+            Path::new("relative/log.md.lock")
+        );
+    }
+
+    #[test]
+    fn with_exclusive_lock_runs_closure_and_returns_value() {
+        let dir = TempDir::new().expect("tempdir");
+        let target = dir.path().join("target.txt");
+        let value: u32 = with_exclusive_lock(&target, || Ok(42)).expect("lock + closure");
+        assert_eq!(value, 42);
+        // Lock file persists by design (see fn docstring).
+        assert!(dir.path().join("target.txt.lock").exists());
+    }
+
+    #[test]
+    fn with_exclusive_lock_propagates_closure_error() {
+        let dir = TempDir::new().expect("tempdir");
+        let target = dir.path().join("target.txt");
+        let result: Result<()> =
+            with_exclusive_lock(&target, || Err(CoralError::Walk("test error".into())));
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(format!("{err:?}").contains("test error"));
+    }
+
+    /// The flagship invariant: under N concurrent `with_exclusive_lock`
+    /// callers each running a load+modify+save round-trip against the
+    /// same shared file, ALL N updates must persist. This is the test
+    /// that pins the v0.15 fix for the lost-update race documented in
+    /// `crates/coral-core/tests/concurrency.rs`.
+    #[test]
+    fn with_exclusive_lock_serializes_concurrent_load_modify_save() {
+        let dir = TempDir::new().expect("tempdir");
+        let target = dir.path().join("counter.txt");
+        // Seed with "0" so the first reader has a parseable starting
+        // value.
+        atomic_write_string(&target, "0").expect("seed");
+
+        const N: usize = 50;
+        std::thread::scope(|s| {
+            for _ in 0..N {
+                let target = target.clone();
+                s.spawn(move || {
+                    with_exclusive_lock(&target, || {
+                        // Classic load+modify+save: read the counter,
+                        // increment, write back. Without locking this
+                        // loses updates under concurrency.
+                        let current: u32 = fs::read_to_string(&target)
+                            .expect("read")
+                            .trim()
+                            .parse()
+                            .expect("parse");
+                        atomic_write_string(&target, &(current + 1).to_string())
+                    })
+                    .expect("locked closure");
+                });
+            }
+        });
+
+        let final_value: u32 = fs::read_to_string(&target)
+            .expect("read final")
+            .trim()
+            .parse()
+            .expect("parse final");
+        assert_eq!(
+            final_value,
+            N as u32,
+            "v0.15 with_exclusive_lock must serialize all {N} writers; \
+             observed final counter = {final_value} (lost {} updates)",
+            N as u32 - final_value
         );
     }
 
