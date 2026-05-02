@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-05-02
+
+### Added
+
+- **`HttpRunner`** ([crates/coral-runner/src/http.rs](crates/coral-runner/src/http.rs)): fifth `Runner` impl that POSTs to any OpenAI-compatible `/v1/chat/completions` endpoint. Works against vLLM, Ollama (`http://localhost:11434/v1/chat/completions`), OpenAI, Anthropic Messages-via-compat, or any local server speaking the standard chat-completion shape. Same curl shell-out pattern as the rest — keeps the binary lean (no `reqwest`/`tokio` for the sync CLI).
+
+  Body shape: `{model, messages: [system?, user], stream: false}`. Empty/None system prompt is omitted from the messages array (avoids polluting the conversation with an empty turn). Model fallback to literal `"default"` when `prompt.model` is None — strict endpoints reject this with a 4xx that surfaces as `RunnerError::NonZeroExit`.
+
+  Same auth-detection path (`combine_outputs` + `is_auth_failure`) as the other runners — 401-shaped failures → `RunnerError::AuthFailed`.
+- **`--provider http` flag** wired in [crates/coral-cli/src/commands/runner_helper.rs](crates/coral-cli/src/commands/runner_helper.rs). Reads `CORAL_HTTP_ENDPOINT` (required) and `CORAL_HTTP_API_KEY` (optional) at construction time. Unset endpoint exits with code 2 + actionable hint.
+- **13 new unit tests** (11 in http.rs + 2 in runner_helper.rs): `build_payload` shape (model fallback, system message inclusion/omission, stream:false), curl error paths against unreachable loopback, builder chaining, parser/dispatcher round-trips.
+
+### Documentation
+
+- README "Multi-provider LLM support" section: HttpRunner added to the table of 5 Runner impls + Ollama / vLLM / OpenAI examples.
+- USAGE.md: `coral query` flag listing now includes `http` with env var setup.
+
 ## [0.10.0] - 2026-05-02
 
 ### Added
@@ -258,7 +275,8 @@ Test count: 385 (v0.8.0) → 427 (+42).
 - 5 ADRs: Rust CLI architecture, Claude CLI vs API, template via include_dir, multi-agent flow, versioning + sync.
 - Self-hosted `.wiki/` with 14 seed pages (cli/core/lint/runner/stats modules + concepts + entities + flow + decisions + synthesis + operations + sources).
 
-[Unreleased]: https://github.com/agustincbajo/Coral/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/agustincbajo/Coral/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/agustincbajo/Coral/releases/tag/v0.11.0
 [0.10.0]: https://github.com/agustincbajo/Coral/releases/tag/v0.10.0
 [0.9.0]: https://github.com/agustincbajo/Coral/releases/tag/v0.9.0
 [0.8.1]: https://github.com/agustincbajo/Coral/releases/tag/v0.8.1

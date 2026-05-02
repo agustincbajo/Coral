@@ -1,4 +1,9 @@
-use coral_runner::{ClaudeRunner, GeminiRunner, LocalRunner, Runner};
+use coral_runner::{ClaudeRunner, GeminiRunner, HttpRunner, LocalRunner, Runner};
+
+/// Env var holding the chat-completions endpoint URL for `--provider http`.
+const HTTP_ENDPOINT_ENV: &str = "CORAL_HTTP_ENDPOINT";
+/// Env var holding the optional bearer token for `--provider http`.
+const HTTP_API_KEY_ENV: &str = "CORAL_HTTP_API_KEY";
 
 /// Names known by `--provider` flag.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -9,6 +14,10 @@ pub enum ProviderName {
     /// Local llama.cpp via the `llama-cli` binary. Set the model path with
     /// `--model /path/to/model.gguf` (or `prompt.model` programmatically).
     Local,
+    /// Generic OpenAI-compatible HTTP endpoint (vLLM, Ollama, OpenAI,
+    /// any local server). Reads endpoint URL from `CORAL_HTTP_ENDPOINT`
+    /// and optional bearer token from `CORAL_HTTP_API_KEY`.
+    Http,
 }
 
 impl std::str::FromStr for ProviderName {
@@ -18,9 +27,30 @@ impl std::str::FromStr for ProviderName {
             "claude" => Ok(Self::Claude),
             "gemini" => Ok(Self::Gemini),
             "local" | "llama" | "llama.cpp" => Ok(Self::Local),
+            "http" => Ok(Self::Http),
             other => Err(format!(
-                "unknown provider: {other} (valid: claude, gemini, local)"
+                "unknown provider: {other} (valid: claude, gemini, local, http)"
             )),
+        }
+    }
+}
+
+/// Read the HTTP endpoint URL from `CORAL_HTTP_ENDPOINT`. On failure
+/// prints an actionable message to stderr and exits with code 2 — same
+/// disposition as a clap usage error. Construction-time failure (rather
+/// than failing inside [`Runner::run`]) is the right place because the
+/// missing env var is purely a configuration / wiring issue, not a
+/// per-prompt error.
+fn endpoint_from_env() -> String {
+    match std::env::var(HTTP_ENDPOINT_ENV) {
+        Ok(v) if !v.is_empty() => v,
+        _ => {
+            eprintln!(
+                "error: --provider http requires {HTTP_ENDPOINT_ENV} to be set\n\
+                 hint: export {HTTP_ENDPOINT_ENV}=http://localhost:8000/v1/chat/completions\n\
+                 hint: optional auth via {HTTP_API_KEY_ENV}=<bearer-token>"
+            );
+            std::process::exit(2);
         }
     }
 }
@@ -30,6 +60,16 @@ pub fn make_runner(provider: ProviderName) -> Box<dyn Runner> {
         ProviderName::Claude => Box::new(ClaudeRunner::new()),
         ProviderName::Gemini => Box::new(GeminiRunner::new()),
         ProviderName::Local => Box::new(LocalRunner::new()),
+        ProviderName::Http => {
+            let endpoint = endpoint_from_env();
+            let mut runner = HttpRunner::new(endpoint);
+            if let Ok(key) = std::env::var(HTTP_API_KEY_ENV) {
+                if !key.is_empty() {
+                    runner = runner.with_api_key(key);
+                }
+            }
+            Box::new(runner)
+        }
     }
 }
 
@@ -83,10 +123,22 @@ mod tests {
     }
 
     #[test]
+    fn provider_name_parses_http() {
+        assert_eq!("http".parse::<ProviderName>().unwrap(), ProviderName::Http);
+        assert_eq!("HTTP".parse::<ProviderName>().unwrap(), ProviderName::Http);
+    }
+
+    #[test]
     fn provider_name_rejects_unknown() {
         let err = "openai".parse::<ProviderName>().unwrap_err();
         assert!(err.contains("unknown provider"));
         assert!(err.contains("openai"));
+    }
+
+    #[test]
+    fn provider_name_unknown_lists_http_in_valid_set() {
+        let err = "voyage".parse::<ProviderName>().unwrap_err();
+        assert!(err.contains("http"), "valid-set should mention http: {err}");
     }
 
     #[test]

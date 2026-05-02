@@ -7,6 +7,7 @@
 
 pub mod embeddings;
 pub mod gemini;
+pub mod http;
 pub mod local;
 pub mod mock;
 pub mod prompt;
@@ -18,6 +19,7 @@ pub use embeddings::{
     VoyageProvider,
 };
 pub use gemini::GeminiRunner;
+pub use http::HttpRunner;
 pub use local::LocalRunner;
 pub use mock::MockRunner;
 pub use prompt::PromptBuilder;

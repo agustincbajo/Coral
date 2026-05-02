@@ -5,7 +5,7 @@
 [![CI](https://github.com/agustincbajo/Coral/actions/workflows/ci.yml/badge.svg)](https://github.com/agustincbajo/Coral/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/agustincbajo/Coral?display_name=tag)](https://github.com/agustincbajo/Coral/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-463%20passing-brightgreen)](#testing--ci)
+[![Tests](https://img.shields.io/badge/tests-476%20passing-brightgreen)](#testing--ci)
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange?logo=rust)](rust-toolchain.toml)
 
 Coral compiles your codebase into an interconnected Markdown wiki that an LLM (Claude) maintains as you push code. Each merge updates the wiki incrementally; nightly lint catches contradictions; weekly consolidation prunes redundant pages.
@@ -269,17 +269,20 @@ See the dedicated [Auth setup](#auth-setup) section below — it covers local sh
 coral query "..." --provider claude                              # default
 coral query "..." --provider gemini                              # uses GeminiRunner
 coral query "..." --provider local --model /m/llama-3-8b.gguf    # uses LocalRunner (llama.cpp)
+CORAL_HTTP_ENDPOINT=http://localhost:11434/v1/chat/completions \
+  coral query "..." --provider http                              # vLLM/Ollama/OpenAI/any compat
 CORAL_PROVIDER=gemini coral lint --semantic
 ```
 
-`coral-runner` exposes a `Runner` trait with four implementations:
+`coral-runner` exposes a `Runner` trait with five implementations:
 
 - **`ClaudeRunner`** — shells out to `claude --print` (production default).
 - **`GeminiRunner`** — invokes `gemini -p <prompt> -m <model>` (system prompt prepended). Useful for cheap nightly lint.
 - **`LocalRunner`** — invokes `llama-cli -p <prompt> -m <model.gguf> --no-display-prompt`. Truly offline; pair with `--auto-fix` for cheap iterative lint cleanup.
+- **`HttpRunner`** (v0.11) — POSTs to any OpenAI-compatible `/v1/chat/completions` endpoint. Reads `CORAL_HTTP_ENDPOINT` (required) + `CORAL_HTTP_API_KEY` (optional). Works against vLLM, Ollama, OpenAI, and anything else speaking the OpenAI Chat Completions shape.
 - **`MockRunner`** — FIFO scripted responses for tests; captures prompts for assertions.
 
-Future runners (OpenAI Responses, vLLM-served local model, etc.) are one new file in `crates/coral-runner/src/`.
+Future runners (anything not OpenAI-compat — Anthropic Messages-native, Bedrock, etc.) are one new file in `crates/coral-runner/src/`.
 
 The same shape applies to embeddings: `coral-runner` exposes an `EmbeddingsProvider` trait with `VoyageProvider` (production) and `MockEmbeddingsProvider` (tests). Other providers (OpenAI text-embedding-3, Anthropic when shipped) land as one new struct.
 
@@ -467,7 +470,7 @@ Methodology, hot paths, and profiling tips in [docs/PERF.md](docs/PERF.md).
 ## Testing & CI
 
 ```bash
-cargo test --workspace                        # 463 tests passing
+cargo test --workspace                        # 476 tests passing
 cargo test --workspace -- --ignored           # 8 ignored (real-claude / real-gemini /
                                               # real-llama / real-voyage / real-openai
                                               # / real-git smokes)
@@ -476,7 +479,7 @@ cargo fmt --all --check
 cargo bench --workspace -- --test             # benchmarks compile + run once
 ```
 
-### Test breakdown (v0.10.0)
+### Test breakdown (v0.11.0)
 
 | Crate / target | Tests |
 |---|---|
@@ -488,7 +491,7 @@ cargo bench --workspace -- --test             # benchmarks compile + run once
 | `coral-cli` (integration: cli_smoke) | 31 + 1 ignored |
 | `coral-cli` (e2e: full_lifecycle, multi_repo, query_cycle) | 9 |
 | `coral-cli` (template_validation) | 14 |
-| **Total** | **463 + 8 ignored** |
+| **Total** | **476 + 8 ignored** |
 
 ### CI pipeline
 

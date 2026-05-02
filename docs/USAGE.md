@@ -63,14 +63,14 @@ coral ingest [--from <sha>] [--apply] [--model <id>] [--provider claude|gemini|l
 Ask the wiki a question.
 
 ```bash
-coral query "How is an order created?" [--model <id>] [--provider claude|gemini|local]
+coral query "How is an order created?" [--model <id>] [--provider claude|gemini|local|http]
 ```
 
 - Walks `.wiki/`, builds a snapshot context (truncated to 40 pages, 200 chars each).
 - Sends question + context + citation instructions to the LLM.
 - Streams the answer to stdout (cites slugs as `[[wikilink]]`).
 - Telemetry: `RUST_LOG=coral=info coral query "..."` emits `coral query: starting` / `coral query: completed` events with `pages_in_context`, `model`, `duration_ms`, `chunks`, `output_chars`.
-- `--provider` (or `CORAL_PROVIDER` env): `claude` (default) | `gemini` | `local`.
+- `--provider` (or `CORAL_PROVIDER` env): `claude` (default) | `gemini` | `local` | `http` (v0.11). The `http` provider POSTs to an OpenAI-compatible chat-completions endpoint — set `CORAL_HTTP_ENDPOINT` (required) and optionally `CORAL_HTTP_API_KEY`. Works against vLLM, Ollama (`http://localhost:11434/v1/chat/completions`), OpenAI, and any compatible server.
 
 ---
 
