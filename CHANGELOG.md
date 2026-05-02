@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-05-02
+
+12th release this session. Two new subcommands + a new lint flag + property
+test coverage for 4 more core modules + wiremock integration tests for HttpRunner.
+**End-to-end probe: 28/28 deterministic subcommand invocations OK.**
+
+### Added
+
+- **`coral status`** ([crates/coral-cli/src/commands/status.rs](crates/coral-cli/src/commands/status.rs)): daily-use snapshot synthesizing `index.md` `last_commit` + lint counts (fast structural only) + stats one-liner + last N (default 5) log entries reverse-chrono. Markdown ~14 lines; JSON shape `{wiki, last_commit, pages, lint{critical,warning,info}, stats{total_pages,confidence_avg,orphan_candidates}, recent_log[]}`. Always exits 0 (informational). For CI gates use `coral lint --severity critical`.
+- **`coral history <slug>`** ([crates/coral-cli/src/commands/history.rs](crates/coral-cli/src/commands/history.rs)): reverse-chronological log entries that mention a slug (case-sensitive substring match). Capped at N (default 20). Pure helper `pub(crate) fn filter_entries` extracted for testability. Empty-match: friendly markdown line / `entries: []` JSON.
+- **`coral lint --fix [--apply]`** ([crates/coral-cli/src/commands/lint.rs](crates/coral-cli/src/commands/lint.rs)): no-LLM rule auto-fix (counterpart to LLM-driven `--auto-fix`). Mechanical, deterministic: trim frontmatter trailing whitespace, sort `sources`/`backlinks` alphabetically, normalize `[[ slug ]]` → `[[slug]]` (aliases preserved), trim trailing line whitespace. Default dry-run; `--apply` writes via `Page::write()`. Composes with `--auto-fix` when both set.
+
+### Tests
+
+- **5 new test files** for property + integration coverage (D bloque):
+  - `crates/coral-core/tests/proptest_log.rs` (6 tests) — `WikiLog` round-trip + invariants.
+  - `crates/coral-core/tests/proptest_index.rs` (4 tests) — `WikiIndex` round-trip + upsert idempotency.
+  - `crates/coral-core/tests/proptest_page.rs` (4 tests) — `Page::write/read` round-trip via tempdir.
+  - `crates/coral-core/tests/proptest_embeddings_index.rs` (5 tests) — save/load round-trip + prune semantics.
+  - `crates/coral-runner/tests/wiremock_http.rs` (6 tests) — in-process mock server testing `HttpRunner` request/response shape, Authorization header semantics, 4xx → AuthFailed/NonZeroExit routing, system-message inclusion/omission.
+- **3 new snapshot tests** in `crates/coral-cli/tests/snapshot_cli.rs`: `status_4_page_seed`, `history_outbox_4_page_seed`, `lint_fix_dry_run_4_page_seed`. Total snapshots now 22.
+- **31 new unit tests** in coral-cli (status: 4, history: 7, lint --fix: 19, e2e ArgsLit refresh: 1).
+
+### Verified
+
+- End-to-end probe of every deterministic subcommand against a 4-page synthetic seed: **28/28 OK**, 0 failures. Covers init, lint (structural/--severity/--rule/--fix variants), stats, search (TF-IDF + BM25 + JSON), diff, export (5 formats), status, history (3 forms), validate-pin, prompts list, sync, notion-push dry-run, lint --fix --apply.
+
+Test count: 476 (v0.11.0) → 534 (+58). Clippy + fmt clean. cargo audit/deny clean.
+
 ## [0.11.0] - 2026-05-02
 
 ### Added
@@ -275,7 +304,8 @@ Test count: 385 (v0.8.0) → 427 (+42).
 - 5 ADRs: Rust CLI architecture, Claude CLI vs API, template via include_dir, multi-agent flow, versioning + sync.
 - Self-hosted `.wiki/` with 14 seed pages (cli/core/lint/runner/stats modules + concepts + entities + flow + decisions + synthesis + operations + sources).
 
-[Unreleased]: https://github.com/agustincbajo/Coral/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/agustincbajo/Coral/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/agustincbajo/Coral/releases/tag/v0.12.0
 [0.11.0]: https://github.com/agustincbajo/Coral/releases/tag/v0.11.0
 [0.10.0]: https://github.com/agustincbajo/Coral/releases/tag/v0.10.0
 [0.9.0]: https://github.com/agustincbajo/Coral/releases/tag/v0.9.0
