@@ -2,7 +2,7 @@
 
 Estado consolidado del backlog. Cada release tiene su sección con items resueltos.
 
-**Última actualización**: 2026-05-02 — v0.13.0 shipped. 13 releases this session (v0.3.2 → v0.13.0). 583 tests + 15 ignored. Todo lo implementable sin LLM access está en producción.
+**Última actualización**: 2026-05-02 — v0.15.0 shipped. 15 releases this session (v0.3.2 → v0.15.0). 602 tests + 16 ignored. Todo lo implementable sin LLM access está en producción.
 
 ---
 
@@ -13,7 +13,7 @@ Estado consolidado del backlog. Cada release tiene su sección con items resuelt
 | B1 | Dogfooding self-hosted `.wiki/` | **Doble blocker**: (a) el maintainer tiene que correr `claude setup-token` interactivamente — el sandbox NO permite que el agente lo haga porque OAuth flows crean auth state persistente; (b) si el token se pega en chat (intentado en esta sesión), el sandbox bloquea su uso porque embeber tokens chat-leak en env vars de subprocesses es leak surface adicional. La self-hosted wiki sigue en `213ac99` (anterior a v0.1.0). Workaround: maintainer corre `claude setup-token` en su terminal local + corre `coral ingest --apply` ahí. Plan listo en `~/.claude/plans/tuve-que-cancelar-sesiones-rippling-cray.md`. |
 | B2 | `AnthropicEmbeddingsProvider` real | v0.13.0 envió un stub speculative (`AnthropicProvider` con endpoint placeholder + warning). Cuando Anthropic publique el endpoint real basta con cambiar 2 constants y 1 path. |
 | B3 | sqlite-vec migration | v0.13.0 introdujo `SqliteEmbeddingsIndex` opt-in (rusqlite + bundled SQLite, sin C-extension `sqlite-vec`). Cosine similarity es pure-Rust por ahora; al cruzar ~5k pages la migración a `sqlite-vec` será una reemplazo de UDF, no del schema. Diferido en [ADR 0006](adr/0006-local-semantic-search-storage.md). |
-| B4 | Concurrencia WikiLog/Index | `crates/coral-core/tests/concurrency.rs` documenta una race condition: `WikiLog::append` + `WikiIndex::upsert` hacen load+modify+save sin lock. En 10 threads concurrentes sólo persisten ~2/10 entries. Marcado como design item de v0.14: hace falta file-locking (`fs2` o `fcntl`) o switch a SQLite-backed index/log. |
+| B4 | ~~Concurrencia WikiLog/Index~~ | **Cerrado en v0.14 + v0.15**: v0.14 envió `atomic_write_string` (torn-write safety) + `WikiLog::append_atomic` (POSIX O_APPEND single-entry). v0.15 envió `with_exclusive_lock` (cross-process flock) y wireó `coral ingest`/`bootstrap` por dentro. Concurrency tests upgraded para asertar entries == N y errors == 0. Stress 50× threads green. |
 
 ---
 
@@ -150,26 +150,40 @@ timeout.
 | 6 | docs/USAGE.md refresh (--fix, --rule, --suggest-sources, --watch, --multi, sqlite backend) | ✅ |
 | 7 | Flaky `chunked_parallel_actually_uses_multiple_threads` stabilized | ✅ |
 
+### v0.14.0 — atomic file writes (torn-write safety)
+
+| # | Item | Estado |
+|---|---|---|
+| 1 | `WikiLog::append_atomic(path, op, summary)` — POSIX `O_APPEND` race-free single-entry append. Coral CLI commands switched. | ✅ |
+| 2 | `coral_core::atomic::atomic_write_string(path, content)` — temp-file + rename for torn-write safety. Wired into `Page::write`, `WikiLog::save`, `EmbeddingsIndex::save`, all CLI `.wiki/` writers. | ✅ |
+| 3 | 50-writer × 50-reader stress test pinning that no reader ever observes a torn write. | ✅ |
+
+### v0.14.1 — confidence-from-coverage rule
+
+| # | Item | Estado |
+|---|---|---|
+| 1 | `coral lint --fix` `confidence-from-coverage` rule (no-LLM): downgrades confidence by 0.20 (floored at 0.30) when sources don't resolve on disk. Idempotent at floor. | ✅ |
+| 2 | Concurrency-model section in docs/USAGE.md. | ✅ |
+
+### v0.15.0 — cross-process file locking (lost-update safety)
+
+| # | Item | Estado |
+|---|---|---|
+| 1 | `coral_core::atomic::with_exclusive_lock(path, closure)` — `flock(2)` advisory exclusive lock on `<path>.lock`. fs4 dep added. MSRV stays at 1.85 via UFCS. | ✅ |
+| 2 | `coral ingest` and `coral bootstrap` index writes wrapped in the lock. Closes the lost-update race documented in v0.13's concurrency.rs. | ✅ |
+| 3 | Stress: 50 threads × increment-shared-counter, 100% land. | ✅ |
+
 ---
 
-## v0.14+ — speculative
+## v0.16+ — speculative
 
 Items fuera del current scope. Sin commitment hasta que alguien pida
 explícitamente, o hasta que un consumer real demuestre la necesidad.
 
-- **WikiLog/Index file-locking**: documentado en
-  `crates/coral-core/tests/concurrency.rs`. Bajo concurrencia (~10
-  threads), `append`+`upsert` pierde entries por race load+modify+save.
-  Fix: `fs2` advisory locks o switch a SQLite-backed log/index.
+- **`RunnerError` UX bug**: las variantes `NotFound` / `AuthFailed` / `NonZeroExit` / `Timeout` / `Io` hardcodean "claude" en sus mensajes. Cuando el usuario corre `coral query --provider local` y el binario falta, se imprime "claude binary not found" en vez del binario que efectivamente faltó. Fix: parameterizar el binary name por variante (cada Runner attaches su propio nombre antes de propagar). v0.16 candidate.
 - **sqlite-vec C-extension migration**: hoy `SqliteEmbeddingsIndex`
   hace cosine en pure-Rust. Al cruzar ~5k pages la query empieza a
   doler; cambiar UDF a sqlite-vec mantiene el schema.
-- **`coral consolidate --apply` outbound-rewrite**: hoy merge mueve
-  bodies pero deja wikilinks rotos. `--rewrite-links` haría mass-patch.
-- **`coral search --algorithm bm25`**: alternativa a TF-IDF; modest
-  precision improvement en wikis grandes.
-- **Confidence-from-coverage**: si `sources:` cita files que ya no
-  existen, auto-downgrade confidence. Pure rule, no LLM.
 - **`coral init --template <X>`**: starter wikis tailored to project
   type (Rust microservice, React app, ML pipeline, etc.).
 - **Coverage badge en README**: el job `coverage` en `ci.yml` ya corre
@@ -181,6 +195,11 @@ explícitamente, o hasta que un consumer real demuestre la necesidad.
   schedule periódico.
 - **AnthropicProvider real**: cambiar el placeholder a endpoint real
   cuando Anthropic publique el embeddings API.
+- **Cross-process integration test for `with_exclusive_lock`**: hoy
+  el stress test es 50 threads en UN proceso. flock(2) funciona igual
+  cross-process pero un test que spawn N coral subprocesses (vía un
+  hidden test-only subcommand o helper binary) probaría el contrato
+  end-to-end al límite del proceso.
 
 ---
 
@@ -195,8 +214,11 @@ explícitamente, o hasta que un consumer real demuestre la necesidad.
 
 ## Admin pendiente (no son features)
 
-- [x] Verificar que `release.yml` produjo binarios para todas las releases — confirmado v0.3.2 → v0.13.0 (3 tarballs + 3 SHA256 cada una).
+- [x] Verificar que `release.yml` produjo binarios para todas las releases — confirmado v0.3.2 → v0.15.0 (3 tarballs + 3 SHA256 cada una).
 - [x] `examples/orchestra-ingest/` shipped en v0.13.0 (cierra issue #12 con ejemplo dentro del repo en vez de repo separado).
-- [ ] Correr los 15 tests `--ignored` (smokes reales + stress) al menos una vez por release; idealmente parte de `release.yml`. Necesita secrets management para `VOYAGE_API_KEY` / `OPENAI_API_KEY` / `LLAMA_MODEL` / `CLAUDE_CODE_OAUTH_TOKEN`.
-- [ ] Self-hosted dogfooding: maintainer corre `claude setup-token` localmente + `coral ingest --apply` para traer `.wiki/` desde commit `213ac99` hasta HEAD (5 releases worth of catch-up). Plan listo en `~/.claude/plans/tuve-que-cancelar-sesiones-rippling-cray.md`.
+- [x] Confidence-from-coverage rule (v0.7+ speculative item) shipped en v0.14.1.
+- [x] Concurrencia file-locking (v0.14 design item) shipped en v0.14 + v0.15.
+- [ ] Correr los 16 tests `--ignored` (smokes reales + stress + sync) al menos una vez por release; idealmente parte de `release.yml`. Necesita secrets management para `VOYAGE_API_KEY` / `OPENAI_API_KEY` / `LLAMA_MODEL` / `CLAUDE_CODE_OAUTH_TOKEN`.
+- [ ] Self-hosted dogfooding: maintainer corre `claude setup-token` localmente + `coral ingest --apply` para traer `.wiki/` desde commit `213ac99` hasta HEAD (15 releases worth of catch-up). Plan listo en `~/.claude/plans/tuve-que-cancelar-sesiones-rippling-cray.md`.
 - [ ] Publicar Codecov badge (CI ya genera `lcov.info`).
+- [ ] Fix `RunnerError` UX bug — error messages mention "claude" even with `--provider local|gemini|http` (v0.16 candidate).
