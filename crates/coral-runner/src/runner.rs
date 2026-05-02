@@ -337,6 +337,29 @@ impl Runner for ClaudeRunner {
 mod tests {
     use super::*;
 
+    /// Returns a tempfile holding an executable shell script that ignores
+    /// every CLI arg and writes `y\n` forever. Replaces `/usr/bin/yes` for
+    /// timeout tests because GNU coreutils 9.4+ rejects unknown long
+    /// options (the runner adds `--print` which we can't suppress).
+    /// Caller must keep the returned `NamedTempFile` alive for the
+    /// duration of the test (Drop deletes the file).
+    #[cfg(unix)]
+    fn forever_yes_script() -> tempfile::NamedTempFile {
+        use std::io::Write as _;
+        use std::os::unix::fs::PermissionsExt as _;
+        let mut f = tempfile::Builder::new()
+            .prefix("coral-yes-")
+            .suffix(".sh")
+            .tempfile()
+            .expect("tempfile");
+        writeln!(f, "#!/bin/sh\nwhile :; do echo y; done").expect("write script");
+        f.flush().expect("flush");
+        let mut perms = std::fs::metadata(f.path()).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(f.path(), perms).expect("chmod 755");
+        f
+    }
+
     #[test]
     fn claude_runner_uses_echo_substitute() {
         let r = ClaudeRunner::with_binary("/bin/echo");
@@ -377,12 +400,16 @@ mod tests {
     }
 
     /// Non-streaming `run` honors `prompt.timeout` and returns
-    /// `RunnerError::Timeout` when the deadline elapses. /usr/bin/yes is
-    /// the same long-running fixture the streaming-timeout test uses.
+    /// `RunnerError::Timeout` when the deadline elapses. Uses a tempdir
+    /// shell script that ignores all CLI args and writes "y\n" forever
+    /// — equivalent to `yes` but tolerant of `--print` and other flags.
+    /// Plain `/usr/bin/yes` rejects unknown long options on GNU coreutils
+    /// 9.4+ (Ubuntu 24.04).
     #[test]
     fn claude_runner_run_honors_timeout() {
         use std::time::Instant;
-        let r = ClaudeRunner::with_binary("/usr/bin/yes");
+        let _holder = forever_yes_script();
+        let r = ClaudeRunner::with_binary(_holder.path());
         let prompt = Prompt {
             user: "ignored".into(),
             timeout: Some(Duration::from_millis(200)),
@@ -443,13 +470,16 @@ mod tests {
     }
 
     /// Verifies that a streaming run honors `prompt.timeout` and kills the
-    /// child if the deadline elapses. Uses `/usr/bin/yes` which writes "y\n"
-    /// indefinitely to stdout and ignores its CLI args — perfect substitute
-    /// for a long-running streaming process. Available on macOS + Linux.
+    /// child if the deadline elapses. Uses a tempdir shell script that
+    /// writes "y\n" forever — same fixture as `claude_runner_run_honors_timeout`.
+    /// Plain `/usr/bin/yes` no longer works because GNU coreutils 9.4+ rejects
+    /// `--print` as an unknown long option (we can't suppress the runner's
+    /// `--print` flag).
     #[test]
     fn claude_runner_streaming_timeout_kills_child() {
         use std::time::Instant;
-        let r = ClaudeRunner::with_binary("/usr/bin/yes");
+        let _holder = forever_yes_script();
+        let r = ClaudeRunner::with_binary(_holder.path());
         let mut chunks: Vec<String> = Vec::new();
         let prompt = Prompt {
             user: "ignored".into(),

@@ -31,10 +31,10 @@ chrono = { workspace = true }
 walkdir = { workspace = true }
 regex = { workspace = true }
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
-coral-core = { path = "../coral-core" }
-coral-lint = { path = "../coral-lint" }
-coral-runner = { path = "../coral-runner" }
-coral-stats = { path = "../coral-stats" }
+coral-core = { workspace = true }
+coral-lint = { workspace = true }
+coral-runner = { workspace = true }
+coral-stats = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

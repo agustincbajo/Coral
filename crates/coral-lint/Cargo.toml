@@ -9,8 +9,8 @@ repository.workspace = true
 description = "Coral lint: structural + semantic wiki checks."
 
 [dependencies]
-coral-core = { path = "../coral-core" }
-coral-runner = { path = "../coral-runner" }
+coral-core = { workspace = true }
+coral-runner = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

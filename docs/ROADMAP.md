@@ -2,7 +2,7 @@
 
 Estado consolidado del backlog. Cada release tiene su sección con items resueltos.
 
-**Última actualización**: 2026-05-02 — v0.11.0 shipped. 11 releases this session (v0.3.2 → v0.11.0). 476 tests. Todo lo implementable está en producción.
+**Última actualización**: 2026-05-02 — v0.13.0 shipped. 13 releases this session (v0.3.2 → v0.13.0). 583 tests + 15 ignored. Todo lo implementable sin LLM access está en producción.
 
 ---
 
@@ -10,10 +10,10 @@ Estado consolidado del backlog. Cada release tiene su sección con items resuelt
 
 | # | Item | Bloqueador real |
 |---|---|---|
-| B1 | Dogfooding self-hosted `.wiki/` | **Doble blocker**: (a) el maintainer tiene que correr `claude setup-token` interactivamente — el sandbox NO permite que el agente lo haga porque OAuth flows crean auth state persistente; (b) si el token se pega en chat (intentado en esta sesión), el sandbox bloquea su uso porque embeber tokens chat-leak en env vars de subprocesses es leak surface adicional. La self-hosted wiki sigue en `213ac99` (anterior a v0.1.0). Workaround: maintainer corre `claude setup-token` en su terminal local + corre `coral ingest --apply` ahí. |
-| B2 | `AnthropicEmbeddingsProvider` | Anthropic no publicó embeddings API al momento de este commit. Cuando lo haga, agregar es ~80 LOC en `coral-runner::embeddings` (mismo molde que `OpenAIProvider`). Hoy `OpenAIProvider` + `HttpRunner` (vLLM/Ollama) cubren los casos "no Voyage". |
-| B3 | sqlite-vec migration | Diferido en [ADR 0006](adr/0006-local-semantic-search-storage.md) hasta que una wiki cruce ~5k pages y la latencia del JSON in-memory empiece a doler. Premature shipearlo ahora. |
-| B4 | `orchestra-ingest` reference repo | Repo separado, fuera del scope de este repo. Issue #12 cerrado pero el follow-up nunca arrancó. Crear cuando alguien pida una demo end-to-end de Coral en una microservice "real". |
+| B1 | Dogfooding self-hosted `.wiki/` | **Doble blocker**: (a) el maintainer tiene que correr `claude setup-token` interactivamente — el sandbox NO permite que el agente lo haga porque OAuth flows crean auth state persistente; (b) si el token se pega en chat (intentado en esta sesión), el sandbox bloquea su uso porque embeber tokens chat-leak en env vars de subprocesses es leak surface adicional. La self-hosted wiki sigue en `213ac99` (anterior a v0.1.0). Workaround: maintainer corre `claude setup-token` en su terminal local + corre `coral ingest --apply` ahí. Plan listo en `~/.claude/plans/tuve-que-cancelar-sesiones-rippling-cray.md`. |
+| B2 | `AnthropicEmbeddingsProvider` real | v0.13.0 envió un stub speculative (`AnthropicProvider` con endpoint placeholder + warning). Cuando Anthropic publique el endpoint real basta con cambiar 2 constants y 1 path. |
+| B3 | sqlite-vec migration | v0.13.0 introdujo `SqliteEmbeddingsIndex` opt-in (rusqlite + bundled SQLite, sin C-extension `sqlite-vec`). Cosine similarity es pure-Rust por ahora; al cruzar ~5k pages la migración a `sqlite-vec` será una reemplazo de UDF, no del schema. Diferido en [ADR 0006](adr/0006-local-semantic-search-storage.md). |
+| B4 | Concurrencia WikiLog/Index | `crates/coral-core/tests/concurrency.rs` documenta una race condition: `WikiLog::append` + `WikiIndex::upsert` hacen load+modify+save sin lock. En 10 threads concurrentes sólo persisten ~2/10 entries. Marcado como design item de v0.14: hace falta file-locking (`fs2` o `fcntl`) o switch a SQLite-backed index/log. |
 
 ---
 
@@ -127,41 +127,60 @@ timeout.
 | 1 | `HttpRunner` — 5th `Runner` impl, OpenAI-compatible chat-completions endpoint (vLLM, Ollama, OpenAI, etc.) | ✅ |
 | 2 | `--provider http` flag (env vars `CORAL_HTTP_ENDPOINT` + `CORAL_HTTP_API_KEY`) | ✅ |
 
+### v0.12.0 — six-feature batch
+
+| # | Item | Estado |
+|---|---|---|
+| 1 | `coral export html --multi` (per-page HTML + extracted CSS for static hosting) | ✅ |
+| 2 | `coral status --watch` (live dashboard refresh, atomic frame switch, configurable interval) | ✅ |
+| 3 | `coral lint --fix` dedup + EOL normalization (CRLF→LF, trailing whitespace) | ✅ |
+| 4 | Per-rule auto-fix prompt routing (`broken-wikilink`, `low-confidence` → dedicated prompts) | ✅ |
+| 5 | Cross-runner contract test suite (5 tests × every Runner impl) | ✅ |
+| 6 | Concurrency test suite (7 tests; load+modify+save race documented as v0.14 design item) | ✅ |
+
+### v0.13.0 — orchestra-ingest example + storage backend
+
+| # | Item | Estado |
+|---|---|---|
+| 1 | `examples/orchestra-ingest/` reference repo (placeholder microservice + .wiki seed + 3 GH workflow jobs pinned to v0.12.0) | ✅ |
+| 2 | `SqliteEmbeddingsIndex` opt-in backend (`CORAL_EMBEDDINGS_BACKEND=sqlite`, rusqlite + bundled SQLite, pure-Rust cosine) | ✅ |
+| 3 | `AnthropicProvider` speculative stub (placeholder endpoint, dim 1024, ready when Anthropic ships embeddings API) | ✅ |
+| 4 | `coral lint --suggest-sources` LLM-driven source proposal pass | ✅ |
+| 5 | 7 `#[ignore]` stress tests against synthetic 200-page wiki | ✅ |
+| 6 | docs/USAGE.md refresh (--fix, --rule, --suggest-sources, --watch, --multi, sqlite backend) | ✅ |
+| 7 | Flaky `chunked_parallel_actually_uses_multiple_threads` stabilized | ✅ |
+
 ---
 
-## v0.7+ — speculative
+## v0.14+ — speculative
 
-Lista para no perder ideas. Todos sin commitment hasta que alguien pida
+Items fuera del current scope. Sin commitment hasta que alguien pida
 explícitamente, o hasta que un consumer real demuestre la necesidad.
 
-- **`coral lint --fix` (no-LLM)**: pure-rule auto-fix for things that
-  don't need judgment — trim whitespace, normalize wikilink syntax,
-  fix YAML key ordering. Could ship as `coral fmt`.
-- **`coral consolidate --apply` outbound-rewrite**: today merge moves
-  bodies but leaves wikilinks pointing at retired sources broken
-  (relies on lint to surface). A `--rewrite-links` flag would mass-
-  patch every page that linked to a source.
-- **`coral search --algorithm bm25`**: BM25 alternative to TF-IDF;
-  modest precision improvement on 100+ page wikis.
-- **Per-rule lint policies**: today every issue feeds the same
-  `lint-auto-fix` prompt. Route `BrokenWikilink` to a wikilink-specific
-  prompt that has access to the full slug list, etc.
-- **Source-suggestion pass**: a separate LLM call that proposes
-  `sources:` paths from `git ls-files` output (higher-risk than the
-  current capped auto-fix scope; needs its own prompt + tests).
-- **Confidence-from-coverage**: if `sources:` cite files that no
-  longer exist, auto-downgrade confidence by a fixed step. Pure rule,
-  no LLM.
+- **WikiLog/Index file-locking**: documentado en
+  `crates/coral-core/tests/concurrency.rs`. Bajo concurrencia (~10
+  threads), `append`+`upsert` pierde entries por race load+modify+save.
+  Fix: `fs2` advisory locks o switch a SQLite-backed log/index.
+- **sqlite-vec C-extension migration**: hoy `SqliteEmbeddingsIndex`
+  hace cosine en pure-Rust. Al cruzar ~5k pages la query empieza a
+  doler; cambiar UDF a sqlite-vec mantiene el schema.
+- **`coral consolidate --apply` outbound-rewrite**: hoy merge mueve
+  bodies pero deja wikilinks rotos. `--rewrite-links` haría mass-patch.
+- **`coral search --algorithm bm25`**: alternativa a TF-IDF; modest
+  precision improvement en wikis grandes.
+- **Confidence-from-coverage**: si `sources:` cita files que ya no
+  existen, auto-downgrade confidence. Pure rule, no LLM.
 - **`coral init --template <X>`**: starter wikis tailored to project
   type (Rust microservice, React app, ML pipeline, etc.).
-- **Coverage in CI** (`cargo-llvm-cov` + Codecov badge).
-- **`coral lint --json` schema** versioned at `docs/schemas/lint.schema.json`
-  (mirrors what stats already does).
-- **Real-API smoke test orchestration in CI**: secrets management for
-  `VOYAGE_API_KEY`, `OPENAI_API_KEY`, `LLAMA_MODEL`, `CLAUDE_CODE_OAUTH_TOKEN`
-  so the 8 `--ignored` tests run on a periodic schedule.
-- **HTTP-based runners** (vLLM, Ollama HTTP, OpenAI Responses): the
-  Runner trait shape supports them; just no impl yet.
+- **Coverage badge en README**: el job `coverage` en `ci.yml` ya corre
+  `cargo-llvm-cov` y sube `lcov.info` como artifact. Falta sólo
+  publicar a Codecov + agregar badge.
+- **Real-API smoke test orchestration en CI**: secrets management para
+  `VOYAGE_API_KEY`, `OPENAI_API_KEY`, `LLAMA_MODEL`,
+  `CLAUDE_CODE_OAUTH_TOKEN`, así los 15 `--ignored` tests corren en
+  schedule periódico.
+- **AnthropicProvider real**: cambiar el placeholder a endpoint real
+  cuando Anthropic publique el embeddings API.
 
 ---
 
@@ -176,6 +195,8 @@ explícitamente, o hasta que un consumer real demuestre la necesidad.
 
 ## Admin pendiente (no son features)
 
-- [x] Verificar que `release.yml` produjo binarios para todas las releases — confirmado en v0.3.2 verification (3 tarballs + 3 SHA256 por release).
-- [ ] Correr los 8 tests `--ignored` (smokes reales) al menos una vez por release; idealmente parte de `release.yml`. Necesita secrets management.
-- [ ] Reabrir GH issue #12 (orchestra-ingest) o crear v0.7+ milestone si volvemos a priorizarlo.
+- [x] Verificar que `release.yml` produjo binarios para todas las releases — confirmado v0.3.2 → v0.13.0 (3 tarballs + 3 SHA256 cada una).
+- [x] `examples/orchestra-ingest/` shipped en v0.13.0 (cierra issue #12 con ejemplo dentro del repo en vez de repo separado).
+- [ ] Correr los 15 tests `--ignored` (smokes reales + stress) al menos una vez por release; idealmente parte de `release.yml`. Necesita secrets management para `VOYAGE_API_KEY` / `OPENAI_API_KEY` / `LLAMA_MODEL` / `CLAUDE_CODE_OAUTH_TOKEN`.
+- [ ] Self-hosted dogfooding: maintainer corre `claude setup-token` localmente + `coral ingest --apply` para traer `.wiki/` desde commit `213ac99` hasta HEAD (5 releases worth of catch-up). Plan listo en `~/.claude/plans/tuve-que-cancelar-sesiones-rippling-cray.md`.
+- [ ] Publicar Codecov badge (CI ya genera `lcov.info`).
