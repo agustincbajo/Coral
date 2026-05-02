@@ -185,6 +185,144 @@ fn is_auth_failure(text: &str) -> bool {
         || lower.contains("authentication")
 }
 
+// --- OpenAI ------------------------------------------------------------------
+
+pub const DEFAULT_OPENAI_MODEL: &str = "text-embedding-3-small";
+pub const DEFAULT_OPENAI_DIM: usize = 1536;
+const OPENAI_ENDPOINT: &str = "https://api.openai.com/v1/embeddings";
+// OpenAI's embeddings API accepts up to 2048 inputs per call. We cap a bit
+// lower to leave headroom for token-count limits per request (~8k tokens).
+const OPENAI_MAX_BATCH: usize = 256;
+
+#[derive(Serialize)]
+struct OpenAIRequest<'a> {
+    input: Vec<&'a str>,
+    model: &'a str,
+    encoding_format: &'a str,
+}
+
+#[derive(Deserialize)]
+struct OpenAIResponse {
+    data: Vec<OpenAIItem>,
+}
+
+#[derive(Deserialize)]
+struct OpenAIItem {
+    embedding: Vec<f32>,
+    index: usize,
+}
+
+/// OpenAI embeddings provider. Same curl shell-out pattern as VoyageProvider.
+/// Supports `text-embedding-3-small` (1536-dim, default), `text-embedding-3-large`
+/// (3072-dim), and `text-embedding-ada-002` (1536-dim, legacy).
+pub struct OpenAIProvider {
+    api_key: String,
+    model: String,
+    dim: usize,
+}
+
+impl OpenAIProvider {
+    /// Build an OpenAI provider with an explicit model + dimensionality.
+    pub fn new(api_key: impl Into<String>, model: impl Into<String>, dim: usize) -> Self {
+        Self {
+            api_key: api_key.into(),
+            model: model.into(),
+            dim,
+        }
+    }
+
+    /// Convenience for `text-embedding-3-small` (1536-dim, the cost-effective default).
+    pub fn text_embedding_3_small(api_key: impl Into<String>) -> Self {
+        Self::new(api_key, DEFAULT_OPENAI_MODEL, DEFAULT_OPENAI_DIM)
+    }
+
+    /// Convenience for `text-embedding-3-large` (3072-dim, higher quality).
+    pub fn text_embedding_3_large(api_key: impl Into<String>) -> Self {
+        Self::new(api_key, "text-embedding-3-large", 3072)
+    }
+}
+
+impl EmbeddingsProvider for OpenAIProvider {
+    fn name(&self) -> &str {
+        &self.model
+    }
+
+    fn dim(&self) -> usize {
+        self.dim
+    }
+
+    fn embed_batch(
+        &self,
+        texts: &[String],
+        _input_type: Option<&str>, // OpenAI doesn't distinguish query vs document
+    ) -> EmbedResult<Vec<Vec<f32>>> {
+        if texts.is_empty() {
+            return Ok(vec![]);
+        }
+        let mut out: Vec<Vec<f32>> = Vec::with_capacity(texts.len());
+        for chunk in texts.chunks(OPENAI_MAX_BATCH) {
+            let req = OpenAIRequest {
+                input: chunk.iter().map(String::as_str).collect(),
+                model: &self.model,
+                encoding_format: "float",
+            };
+            let body = serde_json::to_string(&req)
+                .map_err(|e| EmbeddingsError::Parse(format!("serializing request: {e}")))?;
+            let output = Command::new("curl")
+                .args([
+                    "-s",
+                    "--fail-with-body",
+                    "-X",
+                    "POST",
+                    OPENAI_ENDPOINT,
+                    "-H",
+                    &format!("Authorization: Bearer {}", self.api_key),
+                    "-H",
+                    "Content-Type: application/json",
+                    "-d",
+                    &body,
+                ])
+                .output()?;
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                let combined = match (stderr.is_empty(), stdout.is_empty()) {
+                    (true, true) => String::new(),
+                    (true, false) => stdout,
+                    (false, true) => stderr,
+                    (false, false) => format!("{stderr}\n{stdout}"),
+                };
+                if is_auth_failure(&combined) {
+                    return Err(EmbeddingsError::AuthFailed(combined));
+                }
+                return Err(EmbeddingsError::ProviderCall {
+                    code: output.status.code(),
+                    detail: combined,
+                });
+            }
+            let parsed: OpenAIResponse = serde_json::from_slice(&output.stdout).map_err(|e| {
+                EmbeddingsError::Parse(format!(
+                    "openai response: {e}; body={}",
+                    String::from_utf8_lossy(&output.stdout)
+                ))
+            })?;
+            let mut by_index: Vec<Option<Vec<f32>>> = vec![None; chunk.len()];
+            for item in parsed.data {
+                if item.index < by_index.len() {
+                    by_index[item.index] = Some(item.embedding);
+                }
+            }
+            for (i, slot) in by_index.into_iter().enumerate() {
+                let v = slot.ok_or_else(|| {
+                    EmbeddingsError::Parse(format!("openai missing embedding at index {i}"))
+                })?;
+                out.push(v);
+            }
+        }
+        Ok(out)
+    }
+}
+
 // --- MockEmbeddingsProvider --------------------------------------------------
 
 /// Deterministic in-memory provider for tests. Returns one-hot-ish vectors
@@ -316,6 +454,53 @@ mod tests {
         assert!(is_auth_failure("authentication failed"));
         assert!(!is_auth_failure("rate limit exceeded"));
         assert!(!is_auth_failure("model overloaded"));
+    }
+
+    #[test]
+    fn openai_provider_empty_input_returns_empty_without_curl() {
+        // No curl invocation when input is empty; safe to run without API key.
+        let p = OpenAIProvider::text_embedding_3_small("fake-key");
+        let result = p.embed_batch(&[], None).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn openai_provider_advertises_model_and_dim() {
+        let p = OpenAIProvider::text_embedding_3_small("k");
+        assert_eq!(p.name(), "text-embedding-3-small");
+        assert_eq!(p.dim(), 1536);
+
+        let p2 = OpenAIProvider::text_embedding_3_large("k");
+        assert_eq!(p2.name(), "text-embedding-3-large");
+        assert_eq!(p2.dim(), 3072);
+
+        let p3 = OpenAIProvider::new("k", "text-embedding-ada-002", 1536);
+        assert_eq!(p3.name(), "text-embedding-ada-002");
+    }
+
+    #[test]
+    fn openai_request_serializes_with_float_format() {
+        let req = OpenAIRequest {
+            input: vec!["hello", "world"],
+            model: "text-embedding-3-small",
+            encoding_format: "float",
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("\"input\":[\"hello\",\"world\"]"));
+        assert!(json.contains("\"model\":\"text-embedding-3-small\""));
+        assert!(json.contains("\"encoding_format\":\"float\""));
+    }
+
+    /// Real API integration test (requires OPENAI_API_KEY).
+    #[test]
+    #[ignore]
+    fn openai_provider_real_smoke() {
+        let key =
+            std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY required for this ignored test");
+        let p = OpenAIProvider::text_embedding_3_small(key);
+        let v = p.embed_batch(&["hello world".to_string()], None).unwrap();
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].len(), DEFAULT_OPENAI_DIM);
     }
 
     /// Real API integration test (requires VOYAGE_API_KEY).

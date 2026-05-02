@@ -2,7 +2,7 @@
 
 Un solo lugar para ver qué viene. Cada item tiene **prioridad**, **tamaño**, y un **estado** (✅ shipped, ⏸️ blocked, pendiente). Items sin gate no se considerarán "done".
 
-**Última actualización**: 2026-05-01 — v0.4 P0 #1 + #4 entregados, P1 #6 + #8 entregados. Ver CHANGELOG `[Unreleased]`.
+**Última actualización**: 2026-05-01 — todos los P0 entregados (#1, #2, #3, #4); P1 #6, #7, #8 entregados; #5 (dogfooding) bloqueado en `claude setup-token`. v0.4 listo para release. Ver CHANGELOG `[Unreleased]`.
 
 ## v0.4.0 — multi-provider runners
 
@@ -13,8 +13,8 @@ Honra lo prometido en docs (multi-provider) y ataca la deuda real del stub de Ge
 | # | Título | Tamaño | Estado |
 |---|---|---|---|
 | 1 | **`EmbeddingsProvider` trait** + reorganización de `voyage` como una impl | M | ✅ shipped en commit `998fbfb` |
-| 2 | **`AnthropicEmbeddingsProvider`** (cuando Anthropic publique la API) o **`OpenAIEmbeddingsProvider`** como segunda impl real | M | ⏸️ bloqueado en credenciales / API real — pendiente |
-| 3 | **`GeminiRunner` real** (no stub) — usar el `gemini` CLI real con flags propios o caer a Vertex AI API | L | ⏸️ bloqueado en `gemini` CLI instalado para smoke real — pendiente |
+| 2 | **`OpenAIProvider`** como segunda impl real (Anthropic embeddings se difiere a v0.5 hasta que Anthropic publique la API) | M | ✅ shipped — `coral search --embeddings-provider openai`, smoke real `#[ignore]` |
+| 3 | **`GeminiRunner` real** (no stub) — argv propio (`-p`, `-m`, system prepended) en vez de wrappear ClaudeRunner | L | ✅ shipped — 7 tests sobre la argv real, smoke real `#[ignore]` |
 | 4 | **Documentación de auth para CI / Claude Code** | S | ✅ shipped en README "Auth setup" section |
 
 ### P1 — quality of life

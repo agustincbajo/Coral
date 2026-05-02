@@ -1,7 +1,10 @@
 use anyhow::{Context, Result};
 use clap::Args;
 use coral_core::{search, walk};
-use coral_runner::{DEFAULT_VOYAGE_DIM, DEFAULT_VOYAGE_MODEL, EmbeddingsProvider, VoyageProvider};
+use coral_runner::{
+    DEFAULT_OPENAI_DIM, DEFAULT_OPENAI_MODEL, DEFAULT_VOYAGE_DIM, DEFAULT_VOYAGE_MODEL,
+    EmbeddingsProvider, OpenAIProvider, VoyageProvider,
+};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -16,13 +19,18 @@ pub struct SearchArgs {
     #[arg(long, default_value = "markdown")]
     pub format: String,
     /// Search engine: `tfidf` (default; offline, no API key) or `embeddings`
-    /// (semantic, requires VOYAGE_API_KEY).
+    /// (semantic, requires the selected provider's API key).
     #[arg(long, default_value = "tfidf")]
     pub engine: String,
     /// Force a re-embed of all pages, ignoring the cached vectors.
     #[arg(long)]
     pub reindex: bool,
-    /// Optional embeddings model override (default: voyage-3).
+    /// Embeddings provider when `--engine embeddings`: `voyage` (default,
+    /// requires VOYAGE_API_KEY) or `openai` (requires OPENAI_API_KEY).
+    #[arg(long, default_value = "voyage")]
+    pub embeddings_provider: String,
+    /// Optional embeddings model override. Default depends on provider:
+    /// `voyage-3` (voyage) or `text-embedding-3-small` (openai).
     #[arg(long)]
     pub embeddings_model: Option<String>,
 }
@@ -43,19 +51,45 @@ pub fn run(args: SearchArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
     match args.engine.as_str() {
         "tfidf" => run_tfidf(&pages, &args),
         "embeddings" => {
-            let api_key = std::env::var("VOYAGE_API_KEY").context(
-                "VOYAGE_API_KEY required for --engine embeddings (or use --engine tfidf)",
-            )?;
-            let model = args
-                .embeddings_model
-                .as_deref()
-                .unwrap_or(DEFAULT_VOYAGE_MODEL)
-                .to_string();
-            let provider: Box<dyn EmbeddingsProvider> =
-                Box::new(VoyageProvider::new(api_key, model, DEFAULT_VOYAGE_DIM));
+            let provider = build_embeddings_provider(&args)?;
             run_embeddings(&pages, &args, &root, provider.as_ref())
         }
         other => anyhow::bail!("unknown engine: {other}. Choose: tfidf | embeddings"),
+    }
+}
+
+fn build_embeddings_provider(args: &SearchArgs) -> Result<Box<dyn EmbeddingsProvider>> {
+    match args.embeddings_provider.as_str() {
+        "voyage" => {
+            let api_key = std::env::var("VOYAGE_API_KEY").context(
+                "VOYAGE_API_KEY required for --embeddings-provider voyage (or use --engine tfidf)",
+            )?;
+            let model = args
+                .embeddings_model
+                .clone()
+                .unwrap_or_else(|| DEFAULT_VOYAGE_MODEL.into());
+            Ok(Box::new(VoyageProvider::new(
+                api_key,
+                model,
+                DEFAULT_VOYAGE_DIM,
+            )))
+        }
+        "openai" => {
+            let api_key = std::env::var("OPENAI_API_KEY")
+                .context("OPENAI_API_KEY required for --embeddings-provider openai")?;
+            let model = args
+                .embeddings_model
+                .clone()
+                .unwrap_or_else(|| DEFAULT_OPENAI_MODEL.into());
+            // text-embedding-3-large is 3072-dim; everything else defaults to 1536.
+            let dim = if model == "text-embedding-3-large" {
+                3072
+            } else {
+                DEFAULT_OPENAI_DIM
+            };
+            Ok(Box::new(OpenAIProvider::new(api_key, model, dim)))
+        }
+        other => anyhow::bail!("unknown --embeddings-provider: {other}. Choose: voyage | openai"),
     }
 }
 
@@ -242,6 +276,7 @@ mod tests {
             format: "json".into(),
             engine: "embeddings".into(),
             reindex: false,
+            embeddings_provider: "voyage".into(),
             embeddings_model: None,
         };
         let exit = run_embeddings(&pages, &args, wiki, &provider).unwrap();

@@ -12,8 +12,9 @@ pub mod prompt;
 pub mod runner;
 
 pub use embeddings::{
-    DEFAULT_VOYAGE_DIM, DEFAULT_VOYAGE_MODEL, EmbedResult, EmbeddingsError, EmbeddingsProvider,
-    MockEmbeddingsProvider, VoyageProvider,
+    DEFAULT_OPENAI_DIM, DEFAULT_OPENAI_MODEL, DEFAULT_VOYAGE_DIM, DEFAULT_VOYAGE_MODEL,
+    EmbedResult, EmbeddingsError, EmbeddingsProvider, MockEmbeddingsProvider, OpenAIProvider,
+    VoyageProvider,
 };
 pub use gemini::GeminiRunner;
 pub use mock::MockRunner;
