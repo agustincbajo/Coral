@@ -7,9 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.1] - 2026-05-02
+
+Patch release — ships the post-v0.14.0 polish that landed on main.
+
 ### Added
 
-- **`coral lint --fix` confidence-from-coverage rule**: pure-rule (no-LLM) auto-fix that downgrades a page's `confidence` by 0.20 (floored at 0.30) when ANY entry in `frontmatter.sources` no longer resolves to a file/dir under the repo root. Mirrors the filter logic of the existing `SourceNotFound` lint check (HTTP/HTTPS sources skipped, no-source pages untouched). Idempotent at the floor — repeated runs without remediation never push a page below `0.30`. Exposed as `confidence-from-coverage` in the no-LLM fix report. 6 new tests covering: no-sources skip, all-sources-exist skip, normal step-down, floor enforcement, idempotent-at-floor, http-skip.
+- **`coral lint --fix` confidence-from-coverage rule**: pure-rule (no-LLM) auto-fix that downgrades a page's `confidence` by 0.20 (floored at 0.30) when ANY entry in `frontmatter.sources` no longer resolves to a file/dir under the repo root. Mirrors the filter logic of the existing `SourceNotFound` lint check (HTTP/HTTPS sources skipped, no-source pages untouched). Idempotent at the floor — repeated runs without remediation never push a page below `0.30`. Exposed as `confidence-from-coverage` in the no-LLM fix report. Closes the long-standing speculative item from `docs/ROADMAP.md`. 6 new tests.
+
+### Changed
+
+- `wikiindex_upsert_concurrent` (test) — upgraded the assertion from "errors tolerated" to "errors == 0" now that the v0.14 `atomic_write_string` infrastructure eliminates the torn-write race. Stress-tested 15× clean. The lost-update race remains documented as a v0.15+ design item.
+
+### Documentation
+
+- `docs/USAGE.md` — new "Concurrency model (v0.14)" section documenting what's safe under concurrent access, what remains racey (lost-update on `WikiIndex`), and how custom code should use the new helpers.
+
+### Verified
+
+- 598 tests pass (was 592). +6 (confidence-from-coverage).
 
 ## [0.14.0] - 2026-05-02
 
@@ -376,7 +392,8 @@ Test count: 385 (v0.8.0) → 427 (+42).
 - 5 ADRs: Rust CLI architecture, Claude CLI vs API, template via include_dir, multi-agent flow, versioning + sync.
 - Self-hosted `.wiki/` with 14 seed pages (cli/core/lint/runner/stats modules + concepts + entities + flow + decisions + synthesis + operations + sources).
 
-[Unreleased]: https://github.com/agustincbajo/Coral/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/agustincbajo/Coral/compare/v0.14.1...HEAD
+[0.14.1]: https://github.com/agustincbajo/Coral/releases/tag/v0.14.1
 [0.14.0]: https://github.com/agustincbajo/Coral/releases/tag/v0.14.0
 [0.13.0]: https://github.com/agustincbajo/Coral/releases/tag/v0.13.0
 [0.12.0]: https://github.com/agustincbajo/Coral/releases/tag/v0.12.0
