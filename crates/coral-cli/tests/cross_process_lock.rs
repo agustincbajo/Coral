@@ -63,7 +63,8 @@ fn cross_process_lock_serializes_n_subprocess_increments() {
         .expect("parse final counter");
 
     assert_eq!(
-        final_value, N_PROCESSES as u64,
+        final_value,
+        N_PROCESSES as u64,
         "v0.15 with_exclusive_lock must serialize all {N_PROCESSES} subprocess writers; \
          observed final counter = {final_value} (lost {} updates). \
          Lock failure means cross-process file locking is broken — every concurrent \
