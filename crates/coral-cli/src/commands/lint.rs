@@ -79,6 +79,15 @@ pub struct LintArgs {
     /// `--apply` to write them. Useful for users without LLM auth.
     #[arg(long)]
     pub fix: bool,
+    /// LLM-driven source suggestion: for every page that triggers a
+    /// `HighConfidenceWithoutSources` issue, ask the runner to pick
+    /// 1-3 plausible source paths from `git ls-files`. Default:
+    /// dry-run prints the proposals. Pass `--apply` to append the
+    /// suggested paths to each page's `frontmatter.sources` (deduped).
+    /// Independent of `--auto-fix` and `--fix` — all three can run in
+    /// the same invocation.
+    #[arg(long)]
+    pub suggest_sources: bool,
 }
 
 pub fn run(args: LintArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
@@ -151,6 +160,18 @@ pub fn run_with_runner(
 
     if args.auto_fix && !full_report.issues.is_empty() {
         run_auto_fix(&pages, &full_report, runner, args.apply, &root)?;
+    }
+
+    // Source suggestion runs on the full report too (so the LLM sees
+    // every `HighConfidenceWithoutSources` issue, regardless of any
+    // active --rule / --severity filters used to gate CI noise).
+    if args.suggest_sources && !full_report.issues.is_empty() {
+        let repo_root: PathBuf = root
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
+        let report = run_source_suggestion(&pages, &full_report, runner, args.apply, &repo_root)?;
+        println!("{}", render_source_suggestion_report(&report));
     }
 
     // Apply the rule + severity filters AFTER auto-fix (so the LLM sees
@@ -897,6 +918,303 @@ pub(crate) fn render_fix_report(report: &NoLlmFixReport) -> String {
         format!(
             "\n{} page(s) would change. Pass `--apply` to write.\n",
             report.total_changed
+        )
+    };
+    out.push_str(&footer);
+    out
+}
+
+// =============================================================
+// Source suggestion (`coral lint --suggest-sources`)
+//
+// For every page that triggers the `HighConfidenceWithoutSources`
+// rule, ask the runner to propose 1-3 plausible workspace paths
+// from a `git ls-files` listing. Default is dry-run (prints the
+// proposals); `--apply` appends the suggestions to the page's
+// `frontmatter.sources` (deduped against any pre-existing entries).
+// =============================================================
+
+/// Generic system fallback used when neither the local override nor
+/// the embedded `lint-suggest-sources.md` template is available.
+/// Kept short — the embedded template is the real reference.
+const SOURCE_SUGGESTION_SYSTEM_FALLBACK: &str = "You are the Coral wiki linter in source-suggestion mode. \
+For the page below (slug + body excerpt), pick 1-3 paths from the workspace's \
+`git ls-files` listing that are most plausibly the source-of-truth this page documents. \
+Do NOT invent paths that aren't in the listing. Prefer specific files over directories. \
+Output ONLY a YAML document of the form:\n\
+```yaml\n\
+slug: <the slug>\n\
+suggested_sources:\n\
+  - <path>\n\
+  - <path>\n\
+```\n\
+If nothing in the listing plausibly matches, return an empty list.";
+
+/// One LLM proposal: the slug it was asked about + the paths it
+/// returned. Parsed from the YAML the runner produces.
+#[derive(Debug, Clone, serde::Deserialize, PartialEq)]
+pub(crate) struct SourceSuggestion {
+    pub slug: String,
+    #[serde(default)]
+    pub suggested_sources: Vec<String>,
+}
+
+/// Per-page record collected during a source-suggestion run. The
+/// `path` field is the page's on-disk path so the renderer can show
+/// it relative to cwd.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct SourceSuggestionEntry {
+    pub slug: String,
+    pub path: PathBuf,
+    /// Paths the LLM returned that were not already in the page's
+    /// `frontmatter.sources`. Already-present paths are deduped here
+    /// (not at write time) so the dry-run report is accurate.
+    pub new_sources: Vec<String>,
+}
+
+/// Aggregate report for the source-suggestion run. Mirrors
+/// [`NoLlmFixReport`]'s shape so the renderer can branch on
+/// `applied`.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct SourceSuggestionReport {
+    pub entries: Vec<SourceSuggestionEntry>,
+    /// Number of pages with at least one *new* source proposal.
+    /// Pages where every suggested path already existed in
+    /// `frontmatter.sources` don't count.
+    pub total_pages: usize,
+    /// Whether `--apply` was passed (controls "would gain" vs
+    /// "wrote" wording in the rendered report).
+    pub applied: bool,
+}
+
+/// Parse a YAML document of the shape produced by the
+/// `lint-suggest-sources` prompt. Tolerates ```` ```yaml ```` and
+/// ```` ``` ```` fences for parity with `parse_auto_fix_plan`.
+///
+/// Returns the LLM-proposed sources verbatim — the caller is
+/// responsible for deduping against the page's existing
+/// `frontmatter.sources` and for any path-validation policy.
+pub(crate) fn parse_source_suggestion(stdout: &str) -> Result<Vec<String>> {
+    let trimmed = strip_yaml_fence(stdout);
+    let parsed: SourceSuggestion = serde_yaml_ng::from_str(trimmed)?;
+    Ok(parsed.suggested_sources)
+}
+
+/// Shell out to `git ls-files` in `repo_root` and return the listing
+/// as a `Vec<String>` of one path per line. Errors with an actionable
+/// message if git isn't installed or the directory isn't a repo —
+/// callers can surface that to the user.
+pub(crate) fn get_git_ls_files(repo_root: &Path) -> Result<Vec<String>> {
+    let output = std::process::Command::new("git")
+        .args(["ls-files"])
+        .current_dir(repo_root)
+        .output()
+        .context("invoking `git ls-files` (is git installed and is this a repo?)")?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "`git ls-files` failed (exit {:?}): {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(stdout
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect())
+}
+
+/// Filter `report.issues` down to the `HighConfidenceWithoutSources`
+/// subset and resolve each to its `(slug, &Page)` pair. Pages whose
+/// path doesn't match any loaded `Page` are dropped (defensive: the
+/// rule shouldn't ever produce one). Pure for testability.
+pub(crate) fn collect_high_confidence_without_sources<'a>(
+    report: &LintReport,
+    pages: &'a [coral_core::page::Page],
+) -> Vec<(String, &'a coral_core::page::Page)> {
+    let mut out: Vec<(String, &coral_core::page::Page)> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    for issue in &report.issues {
+        if issue.code != LintCode::HighConfidenceWithoutSources {
+            continue;
+        }
+        let Some(path) = issue.page.as_ref() else {
+            continue;
+        };
+        let Some(page) = pages.iter().find(|p| p.path.as_path() == path.as_path()) else {
+            continue;
+        };
+        let slug = page.frontmatter.slug.clone();
+        if seen.insert(slug.clone()) {
+            out.push((slug, page));
+        }
+    }
+    out
+}
+
+/// Cap the `git ls-files` listing the LLM sees to the first
+/// [`MAX_LS_FILES_LINES`] lines. Keeps the prompt size predictable on
+/// large repos.
+const MAX_LS_FILES_LINES: usize = 200;
+
+/// Render up to [`MAX_LS_FILES_LINES`] lines of the workspace listing
+/// as a single newline-joined string ready to embed in the user
+/// prompt.
+fn render_ls_files_for_prompt(files: &[String]) -> String {
+    files
+        .iter()
+        .take(MAX_LS_FILES_LINES)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Take the first 800 chars of the body, collapsing newlines, so the
+/// prompt stays compact. A bit longer than `render_pages_for_prompt`'s
+/// 200-char excerpt because suggestion accuracy depends on having
+/// real prose to anchor against.
+fn body_excerpt_for_suggestion(body: &str) -> String {
+    body.chars()
+        .take(800)
+        .collect::<String>()
+        .replace('\n', " ")
+}
+
+/// Run the source-suggestion pipeline. Sequential: one runner call
+/// per affected page (per the v1 spec — parallelization is a future
+/// optimization). Returns a [`SourceSuggestionReport`] with the
+/// accumulated proposals; the caller renders + exits.
+fn run_source_suggestion(
+    pages: &[coral_core::page::Page],
+    report: &LintReport,
+    runner: &dyn Runner,
+    apply: bool,
+    repo_root: &Path,
+) -> Result<SourceSuggestionReport> {
+    use coral_runner::Prompt;
+
+    let affected = collect_high_confidence_without_sources(report, pages);
+    if affected.is_empty() {
+        return Ok(SourceSuggestionReport {
+            entries: Vec::new(),
+            total_pages: 0,
+            applied: apply,
+        });
+    }
+
+    let ls_files = get_git_ls_files(repo_root)?;
+    let ls_listing = render_ls_files_for_prompt(&ls_files);
+
+    let prompt_template = super::prompt_loader::load_or_fallback(
+        "lint-suggest-sources",
+        SOURCE_SUGGESTION_SYSTEM_FALLBACK,
+    );
+
+    let mut entries: Vec<SourceSuggestionEntry> = Vec::new();
+
+    for (slug, page) in &affected {
+        let body_excerpt = body_excerpt_for_suggestion(&page.body);
+        let prompt = Prompt {
+            system: Some(prompt_template.content.clone()),
+            user: format!(
+                "Page slug: {slug}\n\nBody excerpt:\n{body_excerpt}\n\n\
+                 Workspace files (`git ls-files`, first {MAX_LS_FILES_LINES} lines):\n\
+                 {ls_listing}\n\nPropose sources."
+            ),
+            ..Default::default()
+        };
+
+        let out = runner
+            .run(&prompt)
+            .map_err(|e| anyhow::anyhow!("source-suggestion runner failed: {e}"))?;
+        let suggested = parse_source_suggestion(&out.stdout)
+            .with_context(|| format!("parsing source suggestion for `{slug}`"))?;
+
+        // Dedup against the page's existing sources so the report
+        // and the apply path don't double-list paths already on disk.
+        let existing: HashSet<String> = page.frontmatter.sources.iter().cloned().collect();
+        let new_sources: Vec<String> = suggested
+            .into_iter()
+            .filter(|s| !existing.contains(s))
+            .collect();
+
+        entries.push(SourceSuggestionEntry {
+            slug: slug.clone(),
+            path: page.path.clone(),
+            new_sources,
+        });
+    }
+
+    if apply {
+        for entry in &entries {
+            if entry.new_sources.is_empty() {
+                continue;
+            }
+            let Some(page) = pages.iter().find(|p| p.frontmatter.slug == entry.slug) else {
+                continue;
+            };
+            let mut new_page = page.clone();
+            // Append-then-dedup-preserving-order: matches the
+            // semantics of the no-LLM `dedup_sources` rule.
+            for src in &entry.new_sources {
+                new_page.frontmatter.sources.push(src.clone());
+            }
+            let mut seen = HashSet::new();
+            new_page
+                .frontmatter
+                .sources
+                .retain(|s| seen.insert(s.clone()));
+            new_page
+                .write()
+                .with_context(|| format!("writing page `{}` with new sources", entry.slug))?;
+        }
+    }
+
+    let total_pages = entries.iter().filter(|e| !e.new_sources.is_empty()).count();
+    Ok(SourceSuggestionReport {
+        entries,
+        total_pages,
+        applied: apply,
+    })
+}
+
+/// Render a [`SourceSuggestionReport`] as the Markdown shown to the
+/// user. Pure — no I/O, deterministic ordering. Mirrors
+/// [`render_fix_report`].
+pub(crate) fn render_source_suggestion_report(report: &SourceSuggestionReport) -> String {
+    if report.total_pages == 0 {
+        return "\n# Source suggestions\n\nNo pages need new sources.\n".to_string();
+    }
+    let header = if report.applied {
+        "\n# Source suggestions (applied)\n\n"
+    } else {
+        "\n# Source suggestions (dry-run)\n\n"
+    };
+    let mut out = String::from(header);
+    for entry in &report.entries {
+        if entry.new_sources.is_empty() {
+            continue;
+        }
+        let path_display = std::env::current_dir()
+            .ok()
+            .and_then(|cwd| entry.path.strip_prefix(&cwd).ok().map(Path::to_path_buf))
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| entry.path.display().to_string());
+        out.push_str(&format!(
+            "- `{}` ({}): suggested {}\n",
+            entry.slug,
+            path_display,
+            entry.new_sources.join(", ")
+        ));
+    }
+    let footer = if report.applied {
+        format!("\nWrote {} page(s).\n", report.total_pages)
+    } else {
+        format!(
+            "\n{} page(s) would gain sources. Pass `--apply` to write.\n",
+            report.total_pages
         )
     };
     out.push_str(&footer);
@@ -2097,5 +2415,262 @@ mod tests {
                 "kebab form for {code:?} must match the --rule flag form"
             );
         }
+    }
+
+    // -------------------------------------------------------------
+    // Source suggestion (`coral lint --suggest-sources`).
+    //
+    // Covers:
+    //   - high-conf-without-sources filtering (mixed issue input
+    //     should yield only the relevant subset).
+    //   - one-call-per-affected-page dispatch accounting.
+    //   - --apply writing new sources to disk + dedup against
+    //     existing sources.
+    //   - dry-run leaves disk untouched.
+    //   - YAML parser tolerates ```yaml fences and dedups against
+    //     pre-existing sources at the orchestrator level.
+    // -------------------------------------------------------------
+
+    /// Build a [`coral_core::page::Page`] in `wiki_root` with the given
+    /// slug, sources, body. Returns the in-memory `Page` so tests can
+    /// pass it straight into `run_source_suggestion`.
+    fn write_page_for_suggestion(
+        wiki_root: &Path,
+        slug: &str,
+        sources: Vec<String>,
+        body: &str,
+    ) -> coral_core::page::Page {
+        use coral_core::page::Page;
+        let modules = wiki_root.join("modules");
+        std::fs::create_dir_all(&modules).unwrap();
+        let path = modules.join(format!("{slug}.md"));
+        let page = Page {
+            path: path.clone(),
+            frontmatter: fixture_frontmatter(slug, sources, vec![]),
+            body: body.into(),
+        };
+        page.write().unwrap();
+        page
+    }
+
+    /// Build a `LintIssue` with the given code anchored to a page path
+    /// the orchestrator can match. Mirrors `issue_for` but takes the
+    /// *page path* directly so we can point at on-disk pages produced
+    /// by `write_page_for_suggestion`.
+    fn issue_at_path(code: LintCode, path: &Path) -> LintIssue {
+        LintIssue {
+            code,
+            severity: LintSeverity::Warning,
+            page: Some(path.to_path_buf()),
+            message: "x".into(),
+            context: None,
+        }
+    }
+
+    #[test]
+    fn source_suggestion_collects_high_conf_without_sources_only() {
+        // Mixed input: HighConfidenceWithoutSources + BrokenWikilink +
+        // OrphanPage. Only the first should bubble through.
+        use tempfile::TempDir;
+        let tmp = TempDir::new().unwrap();
+        let wiki = tmp.path().join(".wiki");
+        let p_a = write_page_for_suggestion(&wiki, "a", vec![], "body a");
+        let p_b = write_page_for_suggestion(&wiki, "b", vec![], "body b");
+        let p_c = write_page_for_suggestion(&wiki, "c", vec![], "body c");
+        let pages = vec![p_a.clone(), p_b.clone(), p_c.clone()];
+        let report = LintReport {
+            issues: vec![
+                issue_at_path(LintCode::HighConfidenceWithoutSources, &p_a.path),
+                issue_at_path(LintCode::BrokenWikilink, &p_b.path),
+                issue_at_path(LintCode::OrphanPage, &p_c.path),
+            ],
+        };
+        let collected = collect_high_confidence_without_sources(&report, &pages);
+        assert_eq!(collected.len(), 1);
+        assert_eq!(collected[0].0, "a");
+    }
+
+    #[test]
+    fn source_suggestion_dispatches_one_call_per_affected_page() {
+        // Two pages, both flagged → exactly two runner calls (sequential
+        // by spec: one prompt per page).
+        use coral_runner::MockRunner;
+        use tempfile::TempDir;
+        let tmp = TempDir::new().unwrap();
+        let wiki = tmp.path().join(".wiki");
+        // Init a temporary repo so `git ls-files` succeeds.
+        init_temp_git_repo(tmp.path());
+
+        let p_a = write_page_for_suggestion(&wiki, "alpha", vec![], "alpha body");
+        let p_b = write_page_for_suggestion(&wiki, "beta", vec![], "beta body");
+        let pages = vec![p_a.clone(), p_b.clone()];
+        let report = LintReport {
+            issues: vec![
+                issue_at_path(LintCode::HighConfidenceWithoutSources, &p_a.path),
+                issue_at_path(LintCode::HighConfidenceWithoutSources, &p_b.path),
+            ],
+        };
+
+        let runner = MockRunner::new();
+        runner.push_ok("slug: alpha\nsuggested_sources:\n  - src/alpha.rs\n");
+        runner.push_ok("slug: beta\nsuggested_sources:\n  - src/beta.rs\n");
+
+        let out = run_source_suggestion(&pages, &report, &runner, false, tmp.path()).unwrap();
+        let calls = runner.calls();
+        assert_eq!(
+            calls.len(),
+            2,
+            "expected one runner call per affected page, got {}",
+            calls.len()
+        );
+        // Each prompt must include its own slug + a `git ls-files`
+        // section so the LLM has the right context.
+        for call in &calls {
+            assert!(call.user.contains("Page slug:"), "missing slug header");
+            assert!(
+                call.user.contains("git ls-files"),
+                "missing ls-files section"
+            );
+        }
+        assert_eq!(out.entries.len(), 2);
+        assert_eq!(out.total_pages, 2);
+        assert!(!out.applied);
+    }
+
+    #[test]
+    fn source_suggestion_apply_writes_sources() {
+        use coral_runner::MockRunner;
+        use tempfile::TempDir;
+        let tmp = TempDir::new().unwrap();
+        let wiki = tmp.path().join(".wiki");
+        init_temp_git_repo(tmp.path());
+
+        let page = write_page_for_suggestion(&wiki, "x", vec![], "x body");
+        let pages = vec![page.clone()];
+        let report = LintReport {
+            issues: vec![issue_at_path(
+                LintCode::HighConfidenceWithoutSources,
+                &page.path,
+            )],
+        };
+        let runner = MockRunner::new();
+        runner.push_ok("slug: x\nsuggested_sources:\n  - src/a.rs\n  - src/b.rs\n");
+
+        let report_out = run_source_suggestion(&pages, &report, &runner, true, tmp.path()).unwrap();
+        assert!(report_out.applied);
+        assert_eq!(report_out.total_pages, 1);
+        let on_disk = std::fs::read_to_string(&page.path).unwrap();
+        assert!(
+            on_disk.contains("src/a.rs"),
+            "first source missing on disk: {on_disk}"
+        );
+        assert!(
+            on_disk.contains("src/b.rs"),
+            "second source missing on disk: {on_disk}"
+        );
+    }
+
+    #[test]
+    fn source_suggestion_dry_run_does_not_write() {
+        use coral_runner::MockRunner;
+        use tempfile::TempDir;
+        let tmp = TempDir::new().unwrap();
+        let wiki = tmp.path().join(".wiki");
+        init_temp_git_repo(tmp.path());
+
+        let page = write_page_for_suggestion(&wiki, "y", vec![], "y body");
+        let pages = vec![page.clone()];
+        let on_disk_before = std::fs::read_to_string(&page.path).unwrap();
+        let report = LintReport {
+            issues: vec![issue_at_path(
+                LintCode::HighConfidenceWithoutSources,
+                &page.path,
+            )],
+        };
+        let runner = MockRunner::new();
+        runner.push_ok("slug: y\nsuggested_sources:\n  - src/y.rs\n");
+
+        let report_out =
+            run_source_suggestion(&pages, &report, &runner, false, tmp.path()).unwrap();
+        assert!(!report_out.applied);
+        let on_disk_after = std::fs::read_to_string(&page.path).unwrap();
+        assert_eq!(
+            on_disk_before, on_disk_after,
+            "dry-run must not modify disk"
+        );
+    }
+
+    #[test]
+    fn parse_source_suggestion_handles_yaml_with_fences() {
+        // Tolerate ```yaml fences for parity with `parse_auto_fix_plan`.
+        let stdout = "```yaml\nslug: x\nsuggested_sources:\n  - a.rs\n```";
+        let got = parse_source_suggestion(stdout).unwrap();
+        assert_eq!(got, vec!["a.rs".to_string()]);
+    }
+
+    #[test]
+    fn source_suggestion_dedup_existing_sources() {
+        // The page already has `src/a.rs` listed. The LLM proposes BOTH
+        // `src/a.rs` (duplicate) and `src/b.rs` (new). Only `src/b.rs`
+        // should land in `entry.new_sources` so the report is accurate
+        // and the applied page doesn't double-list `src/a.rs`.
+        use coral_runner::MockRunner;
+        use tempfile::TempDir;
+        let tmp = TempDir::new().unwrap();
+        let wiki = tmp.path().join(".wiki");
+        init_temp_git_repo(tmp.path());
+
+        let page = write_page_for_suggestion(&wiki, "z", vec!["src/a.rs".into()], "z body");
+        let pages = vec![page.clone()];
+        let report = LintReport {
+            issues: vec![issue_at_path(
+                LintCode::HighConfidenceWithoutSources,
+                &page.path,
+            )],
+        };
+        let runner = MockRunner::new();
+        runner.push_ok("slug: z\nsuggested_sources:\n  - src/a.rs\n  - src/b.rs\n");
+
+        let out = run_source_suggestion(&pages, &report, &runner, true, tmp.path()).unwrap();
+        // Only the NEW source should appear in entries.new_sources.
+        assert_eq!(out.entries.len(), 1);
+        assert_eq!(out.entries[0].new_sources, vec!["src/b.rs".to_string()]);
+
+        // On-disk: `src/a.rs` appears exactly once (no duplicate),
+        // `src/b.rs` is appended once.
+        let on_disk = std::fs::read_to_string(&page.path).unwrap();
+        let count_a = on_disk.matches("src/a.rs").count();
+        let count_b = on_disk.matches("src/b.rs").count();
+        assert_eq!(count_a, 1, "src/a.rs duplicated on disk: {on_disk}");
+        assert_eq!(count_b, 1, "src/b.rs missing or duplicated: {on_disk}");
+    }
+
+    /// Init a minimal git repo at `dir` and stage a placeholder file so
+    /// `git ls-files` returns at least one line. Tests that exercise
+    /// `run_source_suggestion` need this because the orchestrator
+    /// shells out to `git ls-files` once, before iterating pages.
+    fn init_temp_git_repo(dir: &Path) {
+        use std::process::Command;
+        let env_clean = [
+            ("GIT_AUTHOR_NAME", "test"),
+            ("GIT_AUTHOR_EMAIL", "t@t"),
+            ("GIT_COMMITTER_NAME", "test"),
+            ("GIT_COMMITTER_EMAIL", "t@t"),
+            ("GIT_CONFIG_GLOBAL", "/dev/null"),
+            ("GIT_CONFIG_SYSTEM", "/dev/null"),
+        ];
+        let mut cmd = Command::new("git");
+        cmd.current_dir(dir).args(["init", "-q"]);
+        for (k, v) in env_clean {
+            cmd.env(k, v);
+        }
+        cmd.status().expect("git init");
+        std::fs::write(dir.join("placeholder.txt"), "x").unwrap();
+        let mut cmd = Command::new("git");
+        cmd.current_dir(dir).args(["add", "placeholder.txt"]);
+        for (k, v) in env_clean {
+            cmd.env(k, v);
+        }
+        cmd.status().expect("git add");
     }
 }

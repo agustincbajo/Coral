@@ -17,3 +17,4 @@ expression: stdout
 | lint-auto-fix-broken-wikilink | embedded (lint-auto-fix-broken-wikilink.md) |
 | lint-auto-fix-low-confidence | embedded (lint-auto-fix-low-confidence.md) |
 | diff-semantic | embedded (diff-semantic.md) |
+| lint-suggest-sources | embedded (lint-suggest-sources.md) |

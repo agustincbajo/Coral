@@ -96,6 +96,10 @@ pub const KNOWN_PROMPTS: &[&str] = &[
     "lint-auto-fix-low-confidence",
     // v0.6 — added LLM-driven contradiction analysis in `coral diff --semantic`.
     "diff-semantic",
+    // v0.6+ — per-page source suggestion for the
+    // `high_confidence_without_sources` rule, surfaced via
+    // `coral lint --suggest-sources`.
+    "lint-suggest-sources",
 ];
 
 /// Lists all known prompt names with their resolved source. The `content`
