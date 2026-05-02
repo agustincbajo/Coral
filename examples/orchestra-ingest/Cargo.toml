@@ -1,0 +1,15 @@
+[package]
+name = "orchestra-ingest"
+version = "0.1.0"
+edition = "2024"
+description = "Reference Coral consumer — placeholder microservice"
+
+[dependencies]
+# Real microservice would have axum/tokio/etc. here. This skeleton is
+# intentionally empty so `cargo check` works on a fresh clone but no
+# actual server is built.
+
+# Standalone manifest — NOT part of the parent Coral workspace. This empty
+# `[workspace]` table tells cargo this is its own workspace root, so the
+# example can be copied/cloned independently.
+[workspace]

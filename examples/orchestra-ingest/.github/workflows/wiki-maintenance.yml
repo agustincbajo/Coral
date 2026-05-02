@@ -1,0 +1,52 @@
+name: Wiki maintenance
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '0 3 * * *'      # 03:00 UTC nightly — lint
+    - cron: '0 4 * * 1'      # 04:00 UTC Monday — consolidate
+
+jobs:
+  ingest:
+    name: Auto-ingest on push to main
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: agustincbajo/Coral/.github/actions/ingest@v0.12.0
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+
+  lint:
+    name: Nightly lint
+    if: github.event.schedule == '0 3 * * *'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: agustincbajo/Coral/.github/actions/lint@v0.12.0
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+
+  consolidate:
+    name: Weekly consolidate
+    if: github.event.schedule == '0 4 * * 1'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: agustincbajo/Coral/.github/actions/consolidate@v0.12.0
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}

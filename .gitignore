@@ -1,6 +1,9 @@
 /target
+examples/*/target
 **/*.rs.bk
 Cargo.lock.bak
 .DS_Store
 .idea/
 .vscode/
+.coral-cache.json
+**/.coral-cache.json

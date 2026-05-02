@@ -1,0 +1,7 @@
+# Pin Coral version. Bump as new Coral releases ship.
+# Run `coral validate-pin` after editing to confirm the tag exists.
+default = "v0.12.0"
+
+# Per-file overrides (rare). Example:
+# [pins]
+# "agents/wiki-bibliotecario" = "v0.13.0"
