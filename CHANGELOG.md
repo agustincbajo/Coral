@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-05-02
+
+### Added
+
+- **3 new `StatsReport` metrics** ([crates/coral-stats/src/lib.rs](crates/coral-stats/src/lib.rs)):
+  - `pages_without_sources_count: usize` — count of pages with empty `frontmatter.sources`. Pair with the `HighConfidenceWithoutSources` lint to find the worst offenders.
+  - `oldest_commit_age_pages: Vec<String>` — top 5 slugs by lexicographic commit-string ordering. Useful for spotting long-untouched pages. Future work: real timestamp comparison via `git log`.
+  - `pages_by_confidence_bucket: BTreeMap<String, usize>` — confidence distribution into 4 buckets (`"0.0-0.3"`, `"0.3-0.6"`, `"0.6-0.8"`, `"0.8-1.0"`). All 4 keys present even when empty so the JSON shape stays stable.
+
+  Markdown rendering picks up 3 new lines after `Total outbound links`. JSON schema regenerated; `docs/schemas/stats.schema.json` now lists 15 required fields (was 12). **15 new unit tests** + 2 refreshed snapshot files.
+
+- **3 more snapshot tests** ([crates/coral-cli/tests/snapshot_cli.rs](crates/coral-cli/tests/snapshot_cli.rs)): `validate_pin_no_pins_file`, `lint_severity_critical_json_4_page_seed`, `lint_severity_warning_4_page_seed`. Total snapshots now 14.
+
 ## [0.8.1] - 2026-05-02
 
 Test + docs only (no behavior change). All 4 of these are quality-of-
@@ -228,7 +241,8 @@ Test count: 385 (v0.8.0) → 427 (+42).
 - 5 ADRs: Rust CLI architecture, Claude CLI vs API, template via include_dir, multi-agent flow, versioning + sync.
 - Self-hosted `.wiki/` with 14 seed pages (cli/core/lint/runner/stats modules + concepts + entities + flow + decisions + synthesis + operations + sources).
 
-[Unreleased]: https://github.com/agustincbajo/Coral/compare/v0.8.1...HEAD
+[Unreleased]: https://github.com/agustincbajo/Coral/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/agustincbajo/Coral/releases/tag/v0.9.0
 [0.8.1]: https://github.com/agustincbajo/Coral/releases/tag/v0.8.1
 [0.8.0]: https://github.com/agustincbajo/Coral/releases/tag/v0.8.0
 [0.7.0]: https://github.com/agustincbajo/Coral/releases/tag/v0.7.0
