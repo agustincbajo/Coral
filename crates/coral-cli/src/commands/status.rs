@@ -35,14 +35,32 @@ pub struct StatusArgs {
     /// Output format: markdown (default) or json.
     #[arg(long, default_value = "markdown")]
     pub format: String,
+    /// Re-run status every `--interval` seconds and clear the screen between
+    /// iterations. Loops until the user kills the process (Ctrl+C). Useful as
+    /// a poor-man's dashboard while editing the wiki.
+    #[arg(long)]
+    pub watch: bool,
+    /// Seconds between iterations when `--watch` is set. Min 1, default 5.
+    #[arg(long, default_value_t = DEFAULT_INTERVAL)]
+    pub interval: u64,
 }
 
 /// Default value for `--limit` when no flag is passed. Used by tests and
 /// keeps the magic number out of the body.
 pub const DEFAULT_LIMIT: usize = 5;
 
+/// Default value for `--interval` when `--watch` is set without `--interval`.
+/// 5s is a reasonable cadence for a wiki snapshot — tight enough to feel
+/// live, loose enough not to thrash on a slow disk.
+pub const DEFAULT_INTERVAL: u64 = 5;
+
 /// Entry point wired to `Cmd::Status`. Loads the wiki, runs the structural
 /// lint + stats, slices the log, and prints either Markdown or JSON.
+///
+/// When `--watch` is set, the snapshot is re-rendered every `--interval`
+/// seconds (min 1) with the screen cleared between iterations. The loop is
+/// terminated by the user pressing Ctrl+C; we don't install a signal handler
+/// because the OS-level SIGINT default behaviour is exactly what we want.
 pub fn run(args: StatusArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
     let root: PathBuf = wiki_root
         .map(Path::to_path_buf)
@@ -54,13 +72,48 @@ pub fn run(args: StatusArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
         );
     }
 
-    let pages = walk::read_pages(&root)
-        .with_context(|| format!("reading pages from {}", root.display()))?;
+    if args.watch {
+        run_watch(&args, &root)
+    } else {
+        render_once(&args, &root)?;
+        Ok(ExitCode::SUCCESS)
+    }
+}
+
+/// Watch loop. Clears the screen with the standard ANSI sequence on TTYs and
+/// prints without clearing when stdout is not a TTY (so piping into a file
+/// still produces something parseable).
+///
+/// This is intentionally NOT unit-tested: it's a long-running terminal-bound
+/// mode and exercising it would require either a fake clock + cancel token
+/// (overkill for a status command) or actually sleeping in the test (slow
+/// and racy). The flag-parsing test below covers the contract that matters.
+fn run_watch(args: &StatusArgs, root: &Path) -> Result<ExitCode> {
+    let interval = std::time::Duration::from_secs(args.interval.max(1));
+    // Probe TTY once at startup; if stdout is piped we skip the clear so the
+    // output stays grep-able / log-friendly.
+    let is_tty = std::io::IsTerminal::is_terminal(&std::io::stdout());
+    loop {
+        if is_tty {
+            // ANSI: 2J = clear screen, H = move cursor home.
+            print!("\x1b[2J\x1b[H");
+        }
+        render_once(args, root)?;
+        std::thread::sleep(interval);
+    }
+}
+
+/// Build the snapshot (pages, lint, stats, log) and print it once in the
+/// requested format. Factored out of `run` so the watch loop can call it
+/// repeatedly without duplicating the I/O dance.
+fn render_once(args: &StatusArgs, root: &Path) -> Result<()> {
+    let pages =
+        walk::read_pages(root).with_context(|| format!("reading pages from {}", root.display()))?;
 
     // Load the index for `last_commit`. Missing index is non-fatal —
     // surface it as `<unknown>` so brand-new wikis still print a useful
     // status header.
-    let last_commit = load_last_commit(&root);
+    let last_commit = load_last_commit(root);
 
     // Lint counts via the FAST structural pass — no semantic LLM call.
     // Repo root = parent of `.wiki/` (matches `coral lint`'s convention).
@@ -84,14 +137,14 @@ pub fn run(args: StatusArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
     match args.format.as_str() {
         "json" => println!(
             "{}",
-            render_json(&root, &last_commit, &lint_report, &stats, &recent,)?
+            render_json(root, &last_commit, &lint_report, &stats, &recent,)?
         ),
         _ => println!(
             "{}",
-            render_markdown(&root, &last_commit, &lint_report, &stats, &recent,)
+            render_markdown(root, &last_commit, &lint_report, &stats, &recent,)
         ),
     }
-    Ok(ExitCode::SUCCESS)
+    Ok(())
 }
 
 /// Best-effort read of `index.md`'s `last_commit`. Returns `<unknown>`
@@ -341,5 +394,37 @@ type: log\n\
     #[test]
     fn default_limit_is_five() {
         assert_eq!(DEFAULT_LIMIT, 5);
+    }
+
+    /// Verify the `--watch` and `--interval` flags are recognised by the
+    /// top-level `coral` parser. We don't actually run the loop — that's a
+    /// long-running terminal-bound mode, see the docstring on `run_watch`.
+    /// Instead we use clap's `try_parse_from` via the binary's `--help`
+    /// surface to confirm the flags appear in the help text. If clap
+    /// rejected the flag, `--help` would fail with exit code != 0.
+    #[test]
+    fn status_with_watch_flag_present() {
+        let assert = Command::cargo_bin("coral")
+            .unwrap()
+            .args(["status", "--help"])
+            .assert()
+            .success();
+        let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+        assert!(
+            stdout.contains("--watch"),
+            "--watch flag missing from `coral status --help`:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("--interval"),
+            "--interval flag missing from `coral status --help`:\n{stdout}"
+        );
+    }
+
+    /// Pin the default interval so the docstring on `--interval` and the
+    /// constant can't drift apart silently — symmetric with
+    /// `default_limit_is_five`.
+    #[test]
+    fn default_interval_is_five() {
+        assert_eq!(DEFAULT_INTERVAL, 5);
     }
 }

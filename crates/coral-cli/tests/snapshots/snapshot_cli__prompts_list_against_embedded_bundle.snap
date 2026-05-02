@@ -14,4 +14,6 @@ expression: stdout
 | onboard | fallback (in code) |
 | qa-pairs | embedded (qa-pairs.md) |
 | lint-auto-fix | embedded (lint-auto-fix.md) |
+| lint-auto-fix-broken-wikilink | embedded (lint-auto-fix-broken-wikilink.md) |
+| lint-auto-fix-low-confidence | embedded (lint-auto-fix-low-confidence.md) |
 | diff-semantic | embedded (diff-semantic.md) |

@@ -31,6 +31,11 @@ pub struct ExportArgs {
     /// LLM provider used by --qa: claude (default) | gemini. Or set CORAL_PROVIDER env.
     #[arg(long)]
     pub provider: Option<String>,
+    /// HTML only: split output into multiple files (index.html + per-page
+    /// `<type>/<slug>.html` + extracted `style.css`). Requires --out to be a
+    /// directory. Designed for hosting on GitHub Pages or any static host.
+    #[arg(long)]
+    pub multi: bool,
 }
 
 pub fn run(args: ExportArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
@@ -80,6 +85,21 @@ pub fn run_with_runner(
             .filter(|p| allow.contains(page_type_name(&p.frontmatter)))
             .collect()
     };
+
+    // --multi is HTML-only and writes a directory tree, so it short-circuits
+    // the single-string render+write path used by every other format.
+    if args.multi {
+        if args.format != "html" {
+            anyhow::bail!("--multi is only valid with --format html");
+        }
+        let out_dir = args
+            .out
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("--multi requires --out <directory>"))?;
+        let written = render_html_multi(&pages, out_dir)?;
+        eprintln!("Wrote {written} files to {}.", out_dir.display());
+        return Ok(ExitCode::SUCCESS);
+    }
 
     let output = match args.format.as_str() {
         "markdown-bundle" => render_markdown_bundle(&pages),
@@ -263,6 +283,193 @@ fn render_html(pages: &[Page]) -> String {
         toc = toc,
         sections = sections,
     )
+}
+
+/// Translate `[[slug]]`, `[[slug|alias]]`, `[[slug#anchor]]` wikilinks into
+/// CommonMark links to *other files* in the multi-page export. Each target
+/// page lives at `<type>/<slug>.html` relative to the output root, so a
+/// link from one page to another resolves via `../<type>/<slug>.html`.
+///
+/// Pages whose slug is unknown to the index fall back to the in-page anchor
+/// form (`#slug`) so we still produce valid markup; a stale wikilink is
+/// preferable to an export error.
+fn translate_wikilinks_to_multi(
+    body: &str,
+    slug_to_type: &std::collections::HashMap<String, String>,
+) -> String {
+    use std::sync::OnceLock;
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    let re =
+        RE.get_or_init(|| regex::Regex::new(r"\[\[([^\]\n]+)\]\]").expect("valid wikilink regex"));
+    re.replace_all(body, |caps: &regex::Captures| {
+        let inner = &caps[1];
+        let (slug, label) = if let Some((s, a)) = inner.split_once('|') {
+            (s.trim(), a.trim().to_string())
+        } else {
+            let s = inner
+                .split_once('#')
+                .map(|(s, _)| s)
+                .unwrap_or(inner)
+                .trim();
+            (s, inner.trim().to_string())
+        };
+        match slug_to_type.get(slug) {
+            Some(ty) => format!("[{label}](../{ty}/{slug}.html)"),
+            None => format!("[{label}](#{slug})"),
+        }
+    })
+    .into_owned()
+}
+
+/// Render the wiki as a directory tree of HTML files for static hosting.
+///
+/// Layout written under `out_dir`:
+///
+/// ```text
+/// out_dir/
+///   index.html                 — TOC of all pages, grouped by type
+///   style.css                  — shared CSS (pulled out of the template)
+///   <type>/<slug>.html         — one file per page
+/// ```
+///
+/// Per-page files link to siblings via `../<type>/<slug>.html` and back to
+/// the TOC via `../index.html`. Returns the number of files written
+/// (`index.html` + `style.css` + N pages).
+pub(crate) fn render_html_multi(pages: &[Page], out_dir: &Path) -> Result<usize> {
+    use pulldown_cmark::{Options, Parser, html};
+
+    // Reject `--out path/to/file.html`. We require a directory because we
+    // create a tree under it and a stray file at that path would block the
+    // tree creation later anyway — better to fail loud and early.
+    if out_dir.exists() && !out_dir.is_dir() {
+        anyhow::bail!(
+            "--multi requires --out to be a directory; {} is a file",
+            out_dir.display()
+        );
+    }
+    std::fs::create_dir_all(out_dir)
+        .with_context(|| format!("creating output directory {}", out_dir.display()))?;
+
+    let mut opts = Options::empty();
+    opts.insert(Options::ENABLE_TABLES);
+    opts.insert(Options::ENABLE_FOOTNOTES);
+    opts.insert(Options::ENABLE_STRIKETHROUGH);
+    opts.insert(Options::ENABLE_TASKLISTS);
+
+    // Build a slug -> type lookup so wikilinks resolve to the correct
+    // `<type>/<slug>.html` file across pages.
+    let mut slug_to_type: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    for p in pages {
+        slug_to_type.insert(
+            p.frontmatter.slug.clone(),
+            page_type_name(&p.frontmatter).to_string(),
+        );
+    }
+
+    // Group pages by type for the TOC.
+    let mut by_type: std::collections::BTreeMap<&str, Vec<&Page>> =
+        std::collections::BTreeMap::new();
+    for p in pages {
+        by_type
+            .entry(page_type_name(&p.frontmatter))
+            .or_default()
+            .push(p);
+    }
+
+    let mut files_written = 0usize;
+
+    // 1) shared style.css
+    let css_path = out_dir.join("style.css");
+    std::fs::write(&css_path, HTML_CSS)
+        .with_context(|| format!("writing {}", css_path.display()))?;
+    files_written += 1;
+
+    // 2) index.html (TOC)
+    let mut toc_html = String::new();
+    toc_html.push_str("<nav class=\"toc\">\n<h2>Pages</h2>\n");
+    for (ty, ps) in &by_type {
+        toc_html.push_str(&format!(
+            "<details open><summary>{ty} ({})</summary>\n<ul>\n",
+            ps.len()
+        ));
+        for p in ps {
+            let slug = &p.frontmatter.slug;
+            toc_html.push_str(&format!(
+                "<li><a href=\"{ty}/{slug}.html\">{slug_esc}</a></li>\n",
+                ty = ty,
+                slug = slug,
+                slug_esc = html_escape(slug),
+            ));
+        }
+        toc_html.push_str("</ul>\n</details>\n");
+    }
+    toc_html.push_str("</nav>\n");
+
+    let index_html = format!(
+        "<!doctype html>\n\
+<html lang=\"en\">\n\
+<head>\n\
+  <meta charset=\"utf-8\">\n\
+  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
+  <title>Coral wiki</title>\n\
+  <link rel=\"stylesheet\" href=\"style.css\">\n\
+</head>\n\
+<body>\n\
+  <header class=\"site-header\"><h1>Coral wiki</h1>\n  <p>{count} pages · generated by <code>coral export --format html --multi</code></p></header>\n\
+  <main>\n{toc}    <article>\n      <p>Browse pages in the sidebar.</p>\n    </article>\n  </main>\n\
+</body>\n\
+</html>\n",
+        count = pages.len(),
+        toc = toc_html,
+    );
+    let index_path = out_dir.join("index.html");
+    std::fs::write(&index_path, index_html)
+        .with_context(|| format!("writing {}", index_path.display()))?;
+    files_written += 1;
+
+    // 3) one file per page under <type>/<slug>.html
+    for p in pages {
+        let ty = page_type_name(&p.frontmatter);
+        let slug = &p.frontmatter.slug;
+        let type_dir = out_dir.join(ty);
+        std::fs::create_dir_all(&type_dir)
+            .with_context(|| format!("creating {}", type_dir.display()))?;
+
+        let translated = translate_wikilinks_to_multi(&p.body, &slug_to_type);
+        let mut html_body = String::new();
+        let parser = Parser::new_ext(&translated, opts);
+        html::push_html(&mut html_body, parser);
+
+        let page_html = format!(
+            "<!doctype html>\n\
+<html lang=\"en\">\n\
+<head>\n\
+  <meta charset=\"utf-8\">\n\
+  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
+  <title>{slug_esc} · Coral wiki</title>\n\
+  <link rel=\"stylesheet\" href=\"../style.css\">\n\
+</head>\n\
+<body>\n\
+  <header class=\"site-header\"><h1>{slug_esc}</h1>\n  <p class=\"meta\">type: <code>{ty}</code> · status: <code>{status}</code> · confidence: <code>{conf:.2}</code> · last_commit: <code>{commit}</code></p>\n  <p><a href=\"../index.html\">&larr; back to index</a></p></header>\n\
+  <main><article class=\"body\">{html_body}</article></main>\n\
+</body>\n\
+</html>\n",
+            slug_esc = html_escape(slug),
+            ty = ty,
+            status = status_name(&p.frontmatter),
+            conf = p.frontmatter.confidence.as_f64(),
+            commit = html_escape(&p.frontmatter.last_updated_commit),
+            html_body = html_body,
+        );
+
+        let page_path = type_dir.join(format!("{slug}.html"));
+        std::fs::write(&page_path, page_html)
+            .with_context(|| format!("writing {}", page_path.display()))?;
+        files_written += 1;
+    }
+
+    Ok(files_written)
 }
 
 fn html_escape(s: &str) -> String {
@@ -622,6 +829,74 @@ mod tests {
         assert!(
             !html.contains(">a&b<"),
             "raw ampersand in slug must be escaped"
+        );
+    }
+
+    #[test]
+    fn export_html_multi_writes_index_and_per_page_files() {
+        // 4 seed pages across 3 types -> we should get index.html, style.css,
+        // and one file per page under <type>/<slug>.html.
+        let pages = vec![
+            page("order", PageType::Module, "# Order\n\nbody"),
+            page("invoice", PageType::Module, "# Invoice\n\nbody"),
+            page("idempotency", PageType::Concept, "# Idempotency\n\nbody"),
+            page("retry", PageType::Decision, "# Retry\n\nbody"),
+        ];
+        let tmp = tempfile::TempDir::new().unwrap();
+        let out_dir = tmp.path().join("public");
+        let written = render_html_multi(&pages, &out_dir).unwrap();
+        // 4 pages + index.html + style.css = 6 files.
+        assert_eq!(written, 6, "should write 4 pages + index + css");
+        assert!(out_dir.join("index.html").exists(), "index.html missing");
+        assert!(out_dir.join("style.css").exists(), "style.css missing");
+        assert!(out_dir.join("module/order.html").exists());
+        assert!(out_dir.join("module/invoice.html").exists());
+        assert!(out_dir.join("concept/idempotency.html").exists());
+        assert!(out_dir.join("decision/retry.html").exists());
+
+        // index.html links to each page via its <type>/<slug>.html path.
+        let idx = std::fs::read_to_string(out_dir.join("index.html")).unwrap();
+        assert!(idx.contains("href=\"module/order.html\""));
+        assert!(idx.contains("href=\"concept/idempotency.html\""));
+        // Per-page files reference the shared stylesheet via ../style.css.
+        let order_html = std::fs::read_to_string(out_dir.join("module/order.html")).unwrap();
+        assert!(order_html.contains("href=\"../style.css\""));
+        assert!(order_html.contains("href=\"../index.html\""));
+    }
+
+    #[test]
+    fn export_html_multi_requires_directory_out() {
+        // Pre-create a regular file at the --out path: render_html_multi must
+        // refuse to clobber it / write a tree underneath it.
+        let pages = vec![page("a", PageType::Module, "body")];
+        let tmp = tempfile::TempDir::new().unwrap();
+        let bogus = tmp.path().join("file.html");
+        std::fs::write(&bogus, "not a dir").unwrap();
+        let err = render_html_multi(&pages, &bogus).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("directory") && msg.contains("file"),
+            "error should mention directory requirement: {msg}"
+        );
+    }
+
+    #[test]
+    fn export_html_multi_links_resolve() {
+        // A wikilink `[[outbox]]` from a module page must rewrite to
+        // ../<type>/<slug>.html where the linked page lives.
+        let pages = vec![
+            page("order", PageType::Module, "See [[outbox]] for details."),
+            page("outbox", PageType::Concept, "# Outbox\n\nA pattern."),
+        ];
+        let tmp = tempfile::TempDir::new().unwrap();
+        let out_dir = tmp.path().join("public");
+        render_html_multi(&pages, &out_dir).unwrap();
+
+        let order_html = std::fs::read_to_string(out_dir.join("module/order.html")).unwrap();
+        // outbox is a concept page, so the link target is ../concept/outbox.html.
+        assert!(
+            order_html.contains("href=\"../concept/outbox.html\""),
+            "wikilink should rewrite to ../concept/outbox.html: {order_html}"
         );
     }
 

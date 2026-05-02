@@ -267,6 +267,15 @@ fn parse_severity_filter(s: &str) -> Result<Option<LintSeverity>> {
     }
 }
 
+/// Generic system fallback used when neither a per-rule template nor the
+/// generic embedded `lint-auto-fix.md` is available for a given issue.
+///
+/// Per-rule overrides exist: when an issue's `LintCode` has a matching
+/// `template/prompts/lint-auto-fix-<code-kebab>.md` (or local override
+/// at `<cwd>/prompts/lint-auto-fix-<code-kebab>.md`), the orchestrator
+/// uses that instead. Currently shipped specialized templates:
+/// - `lint-auto-fix-broken-wikilink` (BrokenWikilink)
+/// - `lint-auto-fix-low-confidence` (LowConfidence)
 const AUTO_FIX_SYSTEM_FALLBACK: &str = "You are the Coral wiki linter in auto-fix mode. \
 For each lint issue listed below, propose the smallest semantic fix on the affected page: \
 downgrade `confidence`, set `status` to `draft` or `stale`, append a `_(stale because …)_` \
@@ -284,6 +293,52 @@ fixes:\n\
 ```\n\
 Skip with action=skip + rationale when the issue needs human judgment.";
 
+/// Map a `LintCode` to its kebab-case form for prompt-name lookup.
+/// The output mirrors the `serde(rename_all = "snake_case")` form
+/// with underscores replaced by hyphens — same as the
+/// `--rule` CLI flag accepts.
+pub(crate) fn lint_code_to_kebab(code: LintCode) -> &'static str {
+    match code {
+        LintCode::BrokenWikilink => "broken-wikilink",
+        LintCode::OrphanPage => "orphan-page",
+        LintCode::LowConfidence => "low-confidence",
+        LintCode::HighConfidenceWithoutSources => "high-confidence-without-sources",
+        LintCode::StaleStatus => "stale-status",
+        LintCode::CommitNotInGit => "commit-not-in-git",
+        LintCode::SourceNotFound => "source-not-found",
+        LintCode::ArchivedPageLinked => "archived-page-linked",
+        LintCode::UnknownExtraField => "unknown-extra-field",
+        LintCode::Contradiction => "contradiction",
+        LintCode::ObsoleteClaim => "obsolete-claim",
+    }
+}
+
+/// Group lint issues by their `LintCode`. Returns a `Vec` (not a `HashMap`)
+/// so iteration order is stable across runs — the outer order is the order
+/// `code` first appears in `report.issues`. Within a group, issues stay in
+/// their original order, so the LLM sees them in the same order the user
+/// sees them in `coral lint --format markdown`.
+pub(crate) fn group_issues_by_code(
+    issues: &[coral_lint::LintIssue],
+) -> Vec<(LintCode, Vec<coral_lint::LintIssue>)> {
+    let mut order: Vec<LintCode> = Vec::new();
+    let mut groups: std::collections::HashMap<LintCode, Vec<coral_lint::LintIssue>> =
+        std::collections::HashMap::new();
+    for issue in issues {
+        if !groups.contains_key(&issue.code) {
+            order.push(issue.code);
+        }
+        groups.entry(issue.code).or_default().push(issue.clone());
+    }
+    order
+        .into_iter()
+        .map(|code| {
+            let v = groups.remove(&code).unwrap_or_default();
+            (code, v)
+        })
+        .collect()
+}
+
 fn run_auto_fix(
     pages: &[coral_core::page::Page],
     report: &LintReport,
@@ -293,31 +348,65 @@ fn run_auto_fix(
 ) -> Result<()> {
     use coral_runner::Prompt;
 
-    let issues_summary = render_issues_for_prompt(report);
-    let pages_summary = render_pages_for_prompt(pages, &affected_slugs(report, pages));
-    let prompt_template =
-        super::prompt_loader::load_or_fallback("lint-auto-fix", AUTO_FIX_SYSTEM_FALLBACK);
-    let prompt = Prompt {
-        system: Some(prompt_template.content),
-        user: format!(
-            "Lint issues:\n{issues_summary}\n\nAffected pages (slug, type, status, confidence, body excerpt):\n{pages_summary}\n\nPropose fixes."
-        ),
-        ..Default::default()
-    };
+    // Group issues by code so each `LintCode` gets at most one runner
+    // call. For codes with a specialized prompt (e.g. broken-wikilink),
+    // the LLM gets a tighter system prompt; for everything else the
+    // generic `lint-auto-fix` template applies. Concatenating the
+    // per-group plans gives one combined `AutoFixPlan` for the rest of
+    // the pipeline.
+    let groups = group_issues_by_code(&report.issues);
 
-    let out = runner
-        .run(&prompt)
-        .map_err(|e| anyhow::anyhow!("auto-fix runner failed: {e}"))?;
-    let plan = parse_auto_fix_plan(&out.stdout).context("parsing auto-fix YAML plan")?;
+    let pages_summary = render_pages_for_prompt(pages, &affected_slugs(report, pages));
+
+    let mut combined = AutoFixPlan { fixes: Vec::new() };
+    let mut combined_stdout = String::new();
+
+    for (code, issues) in groups {
+        let group_report = LintReport {
+            issues: issues.clone(),
+        };
+        let issues_summary = render_issues_for_prompt(&group_report);
+
+        // Resolution chain: prefer the per-code template, fall back to
+        // the generic `lint-auto-fix` template, and ultimately the
+        // hardcoded `AUTO_FIX_SYSTEM_FALLBACK` const.
+        let specialized_name = format!("lint-auto-fix-{}", lint_code_to_kebab(code));
+        let specialized = super::prompt_loader::load_or_fallback(&specialized_name, "");
+        let prompt_template = match specialized.source {
+            super::prompt_loader::PromptSource::Fallback => {
+                // No specialized template → generic.
+                super::prompt_loader::load_or_fallback("lint-auto-fix", AUTO_FIX_SYSTEM_FALLBACK)
+            }
+            _ => specialized,
+        };
+
+        let prompt = Prompt {
+            system: Some(prompt_template.content),
+            user: format!(
+                "Lint issues:\n{issues_summary}\n\nAffected pages (slug, type, status, confidence, body excerpt):\n{pages_summary}\n\nPropose fixes."
+            ),
+            ..Default::default()
+        };
+
+        let out = runner
+            .run(&prompt)
+            .map_err(|e| anyhow::anyhow!("auto-fix runner failed: {e}"))?;
+        let plan = parse_auto_fix_plan(&out.stdout).context("parsing auto-fix YAML plan")?;
+        combined.fixes.extend(plan.fixes);
+        if !combined_stdout.is_empty() {
+            combined_stdout.push_str("\n---\n");
+        }
+        combined_stdout.push_str(out.stdout.trim());
+    }
 
     if !apply {
         println!("\n## Auto-fix proposal (dry-run)\n");
-        println!("```yaml\n{}\n```", out.stdout.trim());
-        println!("Pass `--apply` to write {} fix(es).", plan.fixes.len());
+        println!("```yaml\n{}\n```", combined_stdout.trim());
+        println!("Pass `--apply` to write {} fix(es).", combined.fixes.len());
         return Ok(());
     }
 
-    let written = apply_auto_fix_plan(&plan, pages, wiki_root)?;
+    let written = apply_auto_fix_plan(&combined, pages, wiki_root)?;
     println!("\n## Auto-fix applied\n");
     println!("Updated {written} page(s).");
     Ok(())
@@ -596,6 +685,40 @@ pub(crate) fn sort_backlinks(fm: &mut coral_core::frontmatter::Frontmatter) -> b
     }
 }
 
+/// Deduplicate the `sources` Vec while preserving its current order.
+/// Returns `true` if any duplicates were removed. Pure — caller decides
+/// whether to persist. Order preservation is important: the rule runs
+/// AFTER `sort_sources`, so it sees an already-sorted list and the
+/// preserved order is just the de-duped sorted form.
+pub(crate) fn dedup_sources(fm: &mut coral_core::frontmatter::Frontmatter) -> bool {
+    let mut seen = std::collections::HashSet::new();
+    let original_len = fm.sources.len();
+    fm.sources.retain(|s| seen.insert(s.clone()));
+    fm.sources.len() != original_len
+}
+
+/// Deduplicate the `backlinks` Vec while preserving its current order.
+/// Returns `true` if any duplicates were removed. Pure — caller decides
+/// whether to persist. Same ordering note as `dedup_sources`.
+pub(crate) fn dedup_backlinks(fm: &mut coral_core::frontmatter::Frontmatter) -> bool {
+    let mut seen = std::collections::HashSet::new();
+    let original_len = fm.backlinks.len();
+    fm.backlinks.retain(|s| seen.insert(s.clone()));
+    fm.backlinks.len() != original_len
+}
+
+/// Convert CRLF line endings (`\r\n`) to LF (`\n`) in `body`. Returns
+/// `Some(new_body)` if any line had `\r\n`, else `None`. Pure. Useful
+/// for cross-platform consistency (Windows-authored pages, files
+/// crossing the network with bad line-ending negotiation).
+pub(crate) fn normalize_eol(body: &str) -> Option<String> {
+    if body.contains("\r\n") {
+        Some(body.replace("\r\n", "\n"))
+    } else {
+        None
+    }
+}
+
 /// Normalize wikilink spacing in the body: `[[ slug ]]` → `[[slug]]`.
 /// Returns `Some(new_body)` if anything changed, else `None`. Pure.
 ///
@@ -670,8 +793,11 @@ pub(crate) fn trim_trailing_line_whitespace(body: &str) -> Option<String> {
 /// 1. `trim_frontmatter_strings`
 /// 2. `sort_sources`
 /// 3. `sort_backlinks`
-/// 4. `normalize_wikilink_spacing`
-/// 5. `trim_trailing_line_whitespace`
+/// 4. `dedup_sources`
+/// 5. `dedup_backlinks`
+/// 6. `normalize_wikilink_spacing`
+/// 7. `trim_trailing_line_whitespace`
+/// 8. `normalize_eol`
 fn run_no_llm_fix(
     pages: &[coral_core::page::Page],
     apply: bool,
@@ -692,6 +818,12 @@ fn run_no_llm_fix(
         if sort_backlinks(&mut new_page.frontmatter) {
             rules_fired.push("sort-backlinks");
         }
+        if dedup_sources(&mut new_page.frontmatter) {
+            rules_fired.push("dedup-sources");
+        }
+        if dedup_backlinks(&mut new_page.frontmatter) {
+            rules_fired.push("dedup-backlinks");
+        }
         if let Some(b) = normalize_wikilink_spacing(&new_page.body) {
             new_page.body = b;
             rules_fired.push("normalize-wikilinks");
@@ -699,6 +831,10 @@ fn run_no_llm_fix(
         if let Some(b) = trim_trailing_line_whitespace(&new_page.body) {
             new_page.body = b;
             rules_fired.push("trim-trailing-whitespace");
+        }
+        if let Some(b) = normalize_eol(&new_page.body) {
+            new_page.body = b;
+            rules_fired.push("normalize-eol");
         }
 
         if !rules_fired.is_empty() {
@@ -1439,6 +1575,61 @@ mod tests {
         assert_eq!(fm.backlinks, vec!["a".to_string(), "a".into(), "b".into()]);
     }
 
+    // ---- dedup_sources ------------------------------------------
+
+    #[test]
+    fn dedup_sources_removes_duplicates_preserves_order() {
+        // First-occurrence-wins ordering: the second `"a"` is dropped
+        // and `"b"` keeps its original slot relative to the first
+        // `"a"`.
+        let mut fm = fixture_frontmatter(
+            "order",
+            vec!["a".into(), "b".into(), "a".into(), "c".into()],
+            vec![],
+        );
+        assert!(dedup_sources(&mut fm));
+        assert_eq!(fm.sources, vec!["a".to_string(), "b".into(), "c".into()]);
+    }
+
+    #[test]
+    fn dedup_sources_no_duplicates_returns_false() {
+        // Already unique → no-op → must return false so the
+        // orchestrator doesn't add a no-op rule to the rules-fired
+        // list.
+        let mut fm = fixture_frontmatter("order", vec!["a".into(), "b".into(), "c".into()], vec![]);
+        assert!(!dedup_sources(&mut fm));
+        assert_eq!(fm.sources, vec!["a".to_string(), "b".into(), "c".into()]);
+    }
+
+    // ---- dedup_backlinks ----------------------------------------
+
+    #[test]
+    fn dedup_backlinks_removes_duplicates() {
+        let mut fm = fixture_frontmatter(
+            "order",
+            vec![],
+            vec!["x".into(), "y".into(), "x".into(), "z".into(), "y".into()],
+        );
+        assert!(dedup_backlinks(&mut fm));
+        assert_eq!(fm.backlinks, vec!["x".to_string(), "y".into(), "z".into()]);
+    }
+
+    // ---- normalize_eol ------------------------------------------
+
+    #[test]
+    fn normalize_eol_converts_crlf_to_lf() {
+        let body = "line1\r\nline2\r\n";
+        assert_eq!(normalize_eol(body), Some("line1\nline2\n".into()));
+    }
+
+    #[test]
+    fn normalize_eol_no_crlf_returns_none() {
+        // Already-LF body must report `None` so the orchestrator
+        // doesn't mark the body as "changed".
+        let body = "line1\nline2\n";
+        assert_eq!(normalize_eol(body), None);
+    }
+
     // ---- normalize_wikilink_spacing -----------------------------
 
     #[test]
@@ -1675,5 +1866,236 @@ mod tests {
             out.contains("normalize-wikilinks, trim-trailing-whitespace"),
             "rule list missing: {out}"
         );
+    }
+
+    // -------------------------------------------------------------
+    // Per-rule auto-fix prompt routing (Task I).
+    //
+    // The orchestrator groups issues by `LintCode` and dispatches one
+    // prompt per group, preferring `lint-auto-fix-<code-kebab>` over
+    // the generic `lint-auto-fix` template. The block below covers
+    // the routing decisions and the per-group call accounting.
+    // -------------------------------------------------------------
+
+    /// Helper: build a `Page` whose slug matches an issue under test
+    /// so the auto-fix orchestrator can render its summary block.
+    fn auto_fix_fixture_page(slug: &str) -> coral_core::page::Page {
+        use coral_core::page::Page;
+        Page {
+            path: PathBuf::from(format!("/repo/.wiki/modules/{slug}.md")),
+            frontmatter: fixture_frontmatter(slug, vec![], vec![]),
+            body: "stub body".into(),
+        }
+    }
+
+    /// Helper: build a `LintIssue` with a chosen code/message, anchored
+    /// to a stub page path the orchestrator can match against the page
+    /// fixture above.
+    fn issue_for(code: LintCode, message: &str, slug: &str) -> coral_lint::LintIssue {
+        coral_lint::LintIssue {
+            code,
+            severity: LintSeverity::Critical,
+            page: Some(PathBuf::from(format!("/repo/.wiki/modules/{slug}.md"))),
+            message: message.into(),
+            context: None,
+        }
+    }
+
+    #[test]
+    fn group_issues_by_code_groups_and_preserves_first_seen_order() {
+        // Outer order = first appearance of each code in the input
+        // (broken-wikilink first, low-confidence second). Within a
+        // group, original order is preserved.
+        let issues = vec![
+            issue_for(LintCode::BrokenWikilink, "bw1", "a"),
+            issue_for(LintCode::LowConfidence, "lc1", "b"),
+            issue_for(LintCode::BrokenWikilink, "bw2", "a"),
+        ];
+        let groups = group_issues_by_code(&issues);
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].0, LintCode::BrokenWikilink);
+        assert_eq!(groups[0].1.len(), 2);
+        assert_eq!(groups[0].1[0].message, "bw1");
+        assert_eq!(groups[0].1[1].message, "bw2");
+        assert_eq!(groups[1].0, LintCode::LowConfidence);
+        assert_eq!(groups[1].1.len(), 1);
+        assert_eq!(groups[1].1[0].message, "lc1");
+    }
+
+    #[test]
+    fn auto_fix_routes_broken_wikilinks_to_specialized_prompt() {
+        use coral_runner::MockRunner;
+        use tempfile::TempDir;
+
+        let runner = MockRunner::new();
+        // Two issues, two distinct codes → two runner calls.
+        runner.push_ok("fixes:\n  - slug: a\n    action: skip\n    rationale: ok\n");
+        runner.push_ok("fixes:\n  - slug: b\n    action: skip\n    rationale: ok\n");
+
+        let pages = vec![auto_fix_fixture_page("a"), auto_fix_fixture_page("b")];
+        let report = LintReport {
+            issues: vec![
+                issue_for(LintCode::BrokenWikilink, "bw", "a"),
+                issue_for(LintCode::LowConfidence, "lc", "b"),
+            ],
+        };
+
+        let tmp = TempDir::new().unwrap();
+        let wiki_root = tmp.path().join(".wiki");
+        std::fs::create_dir_all(&wiki_root).unwrap();
+        run_auto_fix(&pages, &report, &runner, false, &wiki_root).unwrap();
+
+        let calls = runner.calls();
+        assert_eq!(
+            calls.len(),
+            2,
+            "expected one call per LintCode group, got {}",
+            calls.len()
+        );
+
+        // Either ordering of code groups is acceptable as long as each
+        // code's specialized template was loaded exactly once. The
+        // shipped templates contain a header that names the rule;
+        // assert against that header's distinguishing token to avoid
+        // coupling to the precise wording.
+        let systems: Vec<String> = calls.iter().filter_map(|p| p.system.clone()).collect();
+        assert_eq!(systems.len(), 2);
+        let any_bw = systems
+            .iter()
+            .any(|s| s.contains("broken_wikilink") || s.contains("broken wikilinks"));
+        let any_lc = systems
+            .iter()
+            .any(|s| s.contains("low_confidence") || s.contains("low confidence"));
+        assert!(
+            any_bw,
+            "broken-wikilink specialized template not used: {systems:?}"
+        );
+        assert!(
+            any_lc,
+            "low-confidence specialized template not used: {systems:?}"
+        );
+    }
+
+    #[test]
+    fn auto_fix_falls_back_to_generic_when_specialized_missing() {
+        use coral_runner::MockRunner;
+        use tempfile::TempDir;
+
+        let runner = MockRunner::new();
+        runner.push_ok("fixes:\n  - slug: a\n    action: skip\n    rationale: ok\n");
+
+        // StaleStatus has NO specialized template shipped under
+        // `template/prompts/lint-auto-fix-stale-status.md`, so the
+        // orchestrator must fall through to the generic
+        // `lint-auto-fix` template.
+        let pages = vec![auto_fix_fixture_page("a")];
+        let report = LintReport {
+            issues: vec![issue_for(LintCode::StaleStatus, "ss", "a")],
+        };
+
+        let tmp = TempDir::new().unwrap();
+        let wiki_root = tmp.path().join(".wiki");
+        std::fs::create_dir_all(&wiki_root).unwrap();
+        run_auto_fix(&pages, &report, &runner, false, &wiki_root).unwrap();
+
+        let calls = runner.calls();
+        assert_eq!(calls.len(), 1);
+        let system = calls[0]
+            .system
+            .as_ref()
+            .expect("auto-fix prompt must have a system block");
+        // The generic `lint-auto-fix.md` template begins with the
+        // shared "Lint auto-fix prompt template" header — distinct
+        // from the per-rule templates' "specialized for" wording.
+        assert!(
+            system.contains("Lint auto-fix prompt template"),
+            "generic template not used: {system}"
+        );
+        assert!(
+            !system.contains("specialized for the"),
+            "specialized template leaked into generic-fallback path: {system}"
+        );
+    }
+
+    #[test]
+    fn auto_fix_groups_multiple_issues_of_same_code_into_one_call() {
+        use coral_runner::MockRunner;
+        use tempfile::TempDir;
+
+        let runner = MockRunner::new();
+        runner.push_ok("fixes:\n  - slug: a\n    action: skip\n    rationale: ok\n");
+
+        // Three BrokenWikilink issues all share the same code → ONE
+        // grouped call (not three).
+        let pages = vec![
+            auto_fix_fixture_page("a"),
+            auto_fix_fixture_page("b"),
+            auto_fix_fixture_page("c"),
+        ];
+        let report = LintReport {
+            issues: vec![
+                issue_for(LintCode::BrokenWikilink, "first-bw-msg", "a"),
+                issue_for(LintCode::BrokenWikilink, "second-bw-msg", "b"),
+                issue_for(LintCode::BrokenWikilink, "third-bw-msg", "c"),
+            ],
+        };
+
+        let tmp = TempDir::new().unwrap();
+        let wiki_root = tmp.path().join(".wiki");
+        std::fs::create_dir_all(&wiki_root).unwrap();
+        run_auto_fix(&pages, &report, &runner, false, &wiki_root).unwrap();
+
+        let calls = runner.calls();
+        assert_eq!(
+            calls.len(),
+            1,
+            "3 same-code issues must collapse to 1 grouped call"
+        );
+
+        // The single user-prompt must include all 3 issues so the LLM
+        // can reason over them together.
+        let user = &calls[0].user;
+        assert!(
+            user.contains("first-bw-msg"),
+            "issue 1 missing from grouped prompt: {user}"
+        );
+        assert!(
+            user.contains("second-bw-msg"),
+            "issue 2 missing from grouped prompt: {user}"
+        );
+        assert!(
+            user.contains("third-bw-msg"),
+            "issue 3 missing from grouped prompt: {user}"
+        );
+    }
+
+    #[test]
+    fn lint_code_to_kebab_covers_every_variant() {
+        // Drift guard: if a new LintCode variant is added, this match
+        // must be extended too. Mirrors `parse_rule_filters` to keep
+        // the set in lockstep.
+        let pairs = [
+            (LintCode::BrokenWikilink, "broken-wikilink"),
+            (LintCode::OrphanPage, "orphan-page"),
+            (LintCode::LowConfidence, "low-confidence"),
+            (
+                LintCode::HighConfidenceWithoutSources,
+                "high-confidence-without-sources",
+            ),
+            (LintCode::StaleStatus, "stale-status"),
+            (LintCode::CommitNotInGit, "commit-not-in-git"),
+            (LintCode::SourceNotFound, "source-not-found"),
+            (LintCode::ArchivedPageLinked, "archived-page-linked"),
+            (LintCode::UnknownExtraField, "unknown-extra-field"),
+            (LintCode::Contradiction, "contradiction"),
+            (LintCode::ObsoleteClaim, "obsolete-claim"),
+        ];
+        for (code, expected) in pairs {
+            assert_eq!(
+                lint_code_to_kebab(code),
+                expected,
+                "kebab form for {code:?} must match the --rule flag form"
+            );
+        }
     }
 }

@@ -89,6 +89,11 @@ pub const KNOWN_PROMPTS: &[&str] = &[
     "qa-pairs",
     // v0.5 — added LLM-driven auto-fix in `coral lint --auto-fix`.
     "lint-auto-fix",
+    // v0.5+ — per-rule auto-fix overrides: when present, the orchestrator
+    // routes issues of a given `LintCode` to a specialized prompt
+    // before falling back to the generic `lint-auto-fix` template.
+    "lint-auto-fix-broken-wikilink",
+    "lint-auto-fix-low-confidence",
     // v0.6 — added LLM-driven contradiction analysis in `coral diff --semantic`.
     "diff-semantic",
 ];
