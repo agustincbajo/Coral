@@ -63,6 +63,9 @@ use coral_runner::{
 };
 use std::time::Duration;
 
+mod common;
+use common::forever_yes_script;
+
 /// Shared assertion 1: empty / default `Prompt` does not panic.
 /// The invariant is "no panic", not "returns Ok" — substitute binaries
 /// will likely surface Err for an empty argv. Either is acceptable.
@@ -134,9 +137,11 @@ fn claude_runner_honors_contract() {
     assert_streaming_emits_chunk_on_ok(&r, &ok_prompt);
 
     // (5) timeout: Some(0) — must surface as Timeout quickly against
-    // a long-running command. Using /usr/bin/yes, which writes "y\n"
-    // forever and ignores its argv.
-    let timeout_runner = ClaudeRunner::with_binary("/usr/bin/yes");
+    // a long-running command. Using a tempdir shell script that ignores
+    // every CLI arg and writes "y\n" forever; see `common::forever_yes_script`
+    // for why /usr/bin/yes itself doesn't work on Linux.
+    let (_dir, script) = forever_yes_script();
+    let timeout_runner = ClaudeRunner::with_binary(&script);
     let timeout_prompt = Prompt {
         user: "ignored".into(),
         timeout: Some(Duration::from_millis(0)),
@@ -187,7 +192,8 @@ fn gemini_runner_honors_contract() {
     };
     assert_streaming_emits_chunk_on_ok(&r, &ok_prompt);
 
-    let timeout_runner = GeminiRunner::with_binary("/usr/bin/yes");
+    let (_dir, script) = forever_yes_script();
+    let timeout_runner = GeminiRunner::with_binary(&script);
     let timeout_prompt = Prompt {
         user: "ignored".into(),
         timeout: Some(Duration::from_millis(0)),
@@ -238,7 +244,8 @@ fn local_runner_honors_contract() {
     };
     assert_streaming_emits_chunk_on_ok(&r, &ok_prompt);
 
-    let timeout_runner = LocalRunner::with_binary("/usr/bin/yes");
+    let (_dir, script) = forever_yes_script();
+    let timeout_runner = LocalRunner::with_binary(&script);
     let timeout_prompt = Prompt {
         user: "ignored".into(),
         timeout: Some(Duration::from_millis(0)),
