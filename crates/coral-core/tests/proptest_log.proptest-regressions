@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc d9614b68dcac53f05956fede27a46eab869f39d6c9dcacbbe7ec9c5834b9b769 # shrinks to entries = [LogEntry { timestamp: 2026-01-01T00:00:00Z, op: "a", summary: " " }]
