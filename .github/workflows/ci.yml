@@ -39,3 +39,30 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: cargo test
         run: cargo test --workspace --all-features
+
+  audit:
+    name: Security audit (cargo-audit)
+    runs-on: ubuntu-latest
+    # Don't fail PRs on transitive advisories, but surface them. Production
+    # advisories on Coral itself are caught by `deny` below.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-audit
+        run: cargo install --locked cargo-audit
+      - name: cargo audit
+        run: cargo audit --deny warnings
+
+  deny:
+    name: Licenses + duplicate versions (cargo-deny)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-deny
+        run: cargo install --locked cargo-deny
+      - name: cargo deny check
+        run: cargo deny --all-features check --hide-inclusion-graph
