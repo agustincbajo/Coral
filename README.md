@@ -23,6 +23,7 @@ Coral compiles your codebase into an interconnected Markdown wiki that an LLM (C
 - [The wiki schema](#the-wiki-schema)
 - [CI integration](#ci-integration)
 - [Multi-provider LLM support](#multi-provider-llm-support)
+- [Auth setup](#auth-setup)
 - [Configuration](#configuration)
 - [Architecture](#architecture)
 - [Performance](#performance)
@@ -241,13 +242,7 @@ A separate LLM (default `opus`) independently validates that every claim in chan
 
 ### OAuth token setup (once)
 
-```bash
-claude setup-token             # generates an OAuth token tied to your subscription
-# Paste the token at:
-# GitHub → Org → Settings → Secrets → CLAUDE_CODE_OAUTH_TOKEN
-```
-
-All consumer repos in the org inherit the token. No `ANTHROPIC_API_KEY` required.
+See the dedicated [Auth setup](#auth-setup) section below — it covers local shells, CI, and the gotcha when running `coral` from inside Claude Code.
 
 ---
 
@@ -266,6 +261,52 @@ CORAL_PROVIDER=gemini coral lint --semantic
 - **`MockRunner`** — FIFO scripted responses for tests; captures prompts for assertions.
 
 Future runners (OpenAI, local llama.cpp, etc.) are one new file in `crates/coral-runner/src/`.
+
+The same shape applies to embeddings: `coral-runner` exposes an `EmbeddingsProvider` trait with `VoyageProvider` (production) and `MockEmbeddingsProvider` (tests). Other providers (OpenAI text-embedding-3, Anthropic when shipped) land as one new struct.
+
+---
+
+## Auth setup
+
+Coral's LLM-driven subcommands (`bootstrap`, `ingest`, `query`, `lint --semantic`, `consolidate`, `onboard`, `export --qa`) shell out to the `claude` CLI in `--print` mode. The `claude` subprocess needs its own auth — Coral does **not** pass anything through, and the parent shell's `ANTHROPIC_API_KEY` may not be valid in the subprocess (see "Running from inside Claude Code" below).
+
+### Local shell (recommended)
+
+```bash
+claude setup-token   # one-time; generates an OAuth token tied to your Anthropic subscription
+```
+
+`claude` stores the token in its own keychain entry. Once set, every `coral` invocation in any shell uses it. To verify:
+
+```bash
+echo "ping" | claude --print
+# → should print a short reply, exit 0
+```
+
+If you see `Failed to authenticate. API Error: 401 …` here, `coral`'s LLM commands will fail with `RunnerError::AuthFailed` (since v0.3.2). Fix it at this layer first.
+
+### CI (GitHub Actions)
+
+```bash
+claude setup-token   # locally
+# Paste the token at:
+# GitHub → Org → Settings → Secrets → CLAUDE_CODE_OAUTH_TOKEN
+```
+
+All consumer repos in the org inherit the secret via the composite actions. No `ANTHROPIC_API_KEY` required.
+
+### Running `coral` from inside Claude Code (gotcha)
+
+If you're invoking `coral` from a Claude Code session, the parent process exports `ANTHROPIC_API_KEY` and `ANTHROPIC_BASE_URL` pointing at the host-managed proxy. **The `claude --print` subprocess cannot use those credentials** — it gets 401. Two workarounds:
+
+- **Run `claude setup-token` once** in a normal shell; the resulting OAuth token is independent of Claude Code's env vars and works from any subprocess.
+- **Or export a real `ANTHROPIC_API_KEY`** (your own, not the proxy's) in the shell that runs `coral`.
+
+Since v0.3.2, `coral` detects this case and prints an actionable hint (`Run \`claude setup-token\` or export ANTHROPIC_API_KEY in this shell.`) instead of a silent `exit 1`.
+
+### Embeddings provider auth
+
+`coral search --engine embeddings` needs `VOYAGE_API_KEY` set in the shell. Without it, the command exits with a clear error pointing at the env var. The default `--engine tfidf` path needs no API key and works offline.
 
 ---
 
