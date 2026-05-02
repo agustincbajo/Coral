@@ -265,18 +265,20 @@ See the dedicated [Auth setup](#auth-setup) section below — it covers local sh
 ## Multi-provider LLM support
 
 ```bash
-coral query "..." --provider claude        # default
-coral query "..." --provider gemini        # uses GeminiRunner
+coral query "..." --provider claude                              # default
+coral query "..." --provider gemini                              # uses GeminiRunner
+coral query "..." --provider local --model /m/llama-3-8b.gguf    # uses LocalRunner (llama.cpp)
 CORAL_PROVIDER=gemini coral lint --semantic
 ```
 
-`coral-runner` exposes a `Runner` trait with three implementations:
+`coral-runner` exposes a `Runner` trait with four implementations:
 
 - **`ClaudeRunner`** — shells out to `claude --print` (production default).
-- **`GeminiRunner`** — wraps `ClaudeRunner::with_binary("gemini")` with the same flag conventions; useful for cheap nightly lint over high-volume operations.
+- **`GeminiRunner`** — invokes `gemini -p <prompt> -m <model>` (system prompt prepended). Useful for cheap nightly lint.
+- **`LocalRunner`** — invokes `llama-cli -p <prompt> -m <model.gguf> --no-display-prompt`. Truly offline; pair with `--auto-fix` for cheap iterative lint cleanup.
 - **`MockRunner`** — FIFO scripted responses for tests; captures prompts for assertions.
 
-Future runners (OpenAI, local llama.cpp, etc.) are one new file in `crates/coral-runner/src/`.
+Future runners (OpenAI Responses, vLLM-served local model, etc.) are one new file in `crates/coral-runner/src/`.
 
 The same shape applies to embeddings: `coral-runner` exposes an `EmbeddingsProvider` trait with `VoyageProvider` (production) and `MockEmbeddingsProvider` (tests). Other providers (OpenAI text-embedding-3, Anthropic when shipped) land as one new struct.
 

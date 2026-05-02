@@ -2,7 +2,14 @@
 
 Un solo lugar para ver qué viene. Cada item tiene **prioridad**, **tamaño**, y un **estado** (✅ shipped, ⏸️ blocked, pendiente). Items sin gate no se considerarán "done".
 
-**Última actualización**: 2026-05-01 — v0.4.0 shipped. `[Unreleased]` ya acumula 5 ítems del backlog v0.5: `validate-pin`, `lint --staged`, `embeddings-cache` action, `coral diff`, `coral export --format html`. Quedan ideas tentativas: local llama.cpp runner, `lint --auto-fix`. P1 #5 (dogfooding) sigue bloqueado en `claude setup-token`.
+**Última actualización**: 2026-05-01 — v0.4.0 shipped. `[Unreleased]` acumula 7 ítems del backlog v0.5+: `validate-pin`, `lint --staged`, `embeddings-cache` action, `coral diff`, `coral export --format html`, `LocalRunner`, `coral lint --auto-fix`. Backlog tentativo agotado salvo items genuinamente bloqueados (ver "Items bloqueados").
+
+## Items bloqueados / fuera de alcance
+
+- **P1 #5 dogfooding `.wiki/`** — bloqueado en que el usuario corra `claude setup-token` para que el subprocess autentique. Es 1 acción manual; hasta que pase, la wiki self-hosted sigue en `213ac99` (~5 releases atrás).
+- **P0 #2 Anthropic embeddings provider** — bloqueado en que Anthropic publique la API. Hoy hay `OpenAIProvider` cubriendo el caso "no Voyage". Cuando Anthropic publique, agregar es ~80 líneas en `coral-runner::embeddings`.
+- **P2 #9 sqlite-vec migration** — explícitamente diferido en ADR 0006 hasta que una wiki cruce ~5k pages y la latencia del JSON in-memory empiece a doler. Premature shippearlo ahora.
+- **P2 #10 `orchestra-ingest` reference repo** — repo separado, fuera del alcance de este repo. Se trackea en GH issue #12 (cerrado pero el follow-up nunca arrancó). Crear cuando alguien pida una demo end-to-end.
 
 ## v0.4.0 — multi-provider runners
 
@@ -37,9 +44,9 @@ Honra lo prometido en docs (multi-provider) y ataca la deuda real del stub de Ge
 
 Lista para no perder ideas que no entran ahora. **Items entregados anticipadamente** se marcan ✅ y caen del backlog.
 
-- **Local llama.cpp runner** — `LocalRunner` que use un binario `llama-cli`. Útil para offline / ahorrar costos en lint nocturno.
+- ✅ **Local llama.cpp runner** — `LocalRunner` con argv `llama-cli -p <prompt> -m <model.gguf> --no-display-prompt`. `--provider local` (alias `llama`/`llama.cpp`). Shipped en `[Unreleased]`.
 - ✅ **`coral diff <pageA> <pageB>`** — diff estructural (frontmatter, sources, wikilinks, body stats). Shipped en `[Unreleased]`. Future: `--semantic` para contradicciones via LLM.
-- **`coral lint --auto-fix`** — el LLM bumpea `confidence`, mueve a `_archive/`, completa `sources` automáticamente para issues sencillos.
+- ✅ **`coral lint --auto-fix`** — LLM-driven structural fixes (downgrade confidence, mark stale, append italic note). Dry-run por default, `--apply` escribe. Shipped en `[Unreleased]`.
 - ✅ **Hooks pre-commit** — `coral lint --staged` corre lint completo pero filtra issues a los `.wiki/**/*.md` staged. Shipped en `[Unreleased]`.
 - ✅ **`coral export --format html`** — sitio estático single-file con TOC, dark mode, wikilinks anchor-linkeados. Shipped en `[Unreleased]`.
 - ✅ **Embeddings caching en CI** — composite action `embeddings-cache` con `actions/cache@v4`, key branch-scoped. Shipped en `[Unreleased]`.

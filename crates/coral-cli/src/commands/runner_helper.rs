@@ -1,4 +1,4 @@
-use coral_runner::{ClaudeRunner, GeminiRunner, Runner};
+use coral_runner::{ClaudeRunner, GeminiRunner, LocalRunner, Runner};
 
 /// Names known by `--provider` flag.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -6,6 +6,9 @@ pub enum ProviderName {
     #[default]
     Claude,
     Gemini,
+    /// Local llama.cpp via the `llama-cli` binary. Set the model path with
+    /// `--model /path/to/model.gguf` (or `prompt.model` programmatically).
+    Local,
 }
 
 impl std::str::FromStr for ProviderName {
@@ -14,7 +17,10 @@ impl std::str::FromStr for ProviderName {
         match s.to_lowercase().as_str() {
             "claude" => Ok(Self::Claude),
             "gemini" => Ok(Self::Gemini),
-            other => Err(format!("unknown provider: {other} (valid: claude, gemini)")),
+            "local" | "llama" | "llama.cpp" => Ok(Self::Local),
+            other => Err(format!(
+                "unknown provider: {other} (valid: claude, gemini, local)"
+            )),
         }
     }
 }
@@ -23,6 +29,7 @@ pub fn make_runner(provider: ProviderName) -> Box<dyn Runner> {
     match provider {
         ProviderName::Claude => Box::new(ClaudeRunner::new()),
         ProviderName::Gemini => Box::new(GeminiRunner::new()),
+        ProviderName::Local => Box::new(LocalRunner::new()),
     }
 }
 
@@ -66,6 +73,13 @@ mod tests {
             "gemini".parse::<ProviderName>().unwrap(),
             ProviderName::Gemini
         );
+    }
+
+    #[test]
+    fn provider_name_parses_local_aliases() {
+        for s in ["local", "llama", "llama.cpp", "Local", "LLAMA"] {
+            assert_eq!(s.parse::<ProviderName>().unwrap(), ProviderName::Local);
+        }
     }
 
     #[test]

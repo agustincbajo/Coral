@@ -34,6 +34,17 @@ pub struct LintArgs {
     /// touches a staged file.
     #[arg(long)]
     pub staged: bool,
+    /// LLM-driven auto-fix: after structural lint runs, ask the runner to
+    /// propose fixes (downgrade confidence, mark stale, add `_archive_`
+    /// note, suggest source paths). Default: dry-run prints the YAML plan.
+    /// Pass `--apply` to write changes back. Requires LLM auth.
+    #[arg(long)]
+    pub auto_fix: bool,
+    /// With `--auto-fix`, write the proposed plan back to the wiki. Without
+    /// this, `--auto-fix` is a preview only (matches `bootstrap` /
+    /// `ingest` semantics).
+    #[arg(long)]
+    pub apply: bool,
 }
 
 pub fn run(args: LintArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
@@ -97,11 +108,235 @@ pub fn run_with_runner(
         _ => println!("{}", report.as_markdown()),
     }
 
+    if args.auto_fix && !report.issues.is_empty() {
+        run_auto_fix(&pages, &report, runner, args.apply, &root)?;
+    }
+
     if report.critical_count() > 0 {
         Ok(ExitCode::from(1))
     } else {
         Ok(ExitCode::SUCCESS)
     }
+}
+
+const AUTO_FIX_SYSTEM_FALLBACK: &str = "You are the Coral wiki linter in auto-fix mode. \
+For each lint issue listed below, propose the smallest semantic fix on the affected page: \
+downgrade `confidence`, set `status` to `draft` or `stale`, append a `_(stale because …)_` \
+italic note to the body, or suggest concrete `sources:` paths from the workspace. \
+Do NOT rewrite whole bodies. Do NOT invent sources. Output ONLY a YAML document of the form:\n\
+```yaml\n\
+fixes:\n\
+  - slug: <existing slug>\n\
+    action: update | retire | skip\n\
+    confidence: 0.5         # optional, only when changed\n\
+    status: draft           # optional, only when changed\n\
+    body_append: |          # optional; appended verbatim with two leading newlines\n\
+      _Stale: …_\n\
+    rationale: <one short sentence>\n\
+```\n\
+Skip with action=skip + rationale when the issue needs human judgment.";
+
+fn run_auto_fix(
+    pages: &[coral_core::page::Page],
+    report: &LintReport,
+    runner: &dyn Runner,
+    apply: bool,
+    wiki_root: &Path,
+) -> Result<()> {
+    use coral_runner::Prompt;
+
+    let issues_summary = render_issues_for_prompt(report);
+    let pages_summary = render_pages_for_prompt(pages, &affected_slugs(report, pages));
+    let prompt_template =
+        super::prompt_loader::load_or_fallback("lint-auto-fix", AUTO_FIX_SYSTEM_FALLBACK);
+    let prompt = Prompt {
+        system: Some(prompt_template.content),
+        user: format!(
+            "Lint issues:\n{issues_summary}\n\nAffected pages (slug, type, status, confidence, body excerpt):\n{pages_summary}\n\nPropose fixes."
+        ),
+        ..Default::default()
+    };
+
+    let out = runner
+        .run(&prompt)
+        .map_err(|e| anyhow::anyhow!("auto-fix runner failed: {e}"))?;
+    let plan = parse_auto_fix_plan(&out.stdout).context("parsing auto-fix YAML plan")?;
+
+    if !apply {
+        println!("\n## Auto-fix proposal (dry-run)\n");
+        println!("```yaml\n{}\n```", out.stdout.trim());
+        println!("Pass `--apply` to write {} fix(es).", plan.fixes.len());
+        return Ok(());
+    }
+
+    let written = apply_auto_fix_plan(&plan, pages, wiki_root)?;
+    println!("\n## Auto-fix applied\n");
+    println!("Updated {written} page(s).");
+    Ok(())
+}
+
+#[derive(Debug, Clone, serde::Deserialize, PartialEq)]
+pub(crate) struct AutoFixPlan {
+    #[serde(default)]
+    pub fixes: Vec<AutoFixEntry>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, PartialEq)]
+pub(crate) struct AutoFixEntry {
+    pub slug: String,
+    #[serde(default = "default_action")]
+    pub action: AutoFixAction,
+    pub confidence: Option<f64>,
+    pub status: Option<String>,
+    pub body_append: Option<String>,
+    #[serde(default)]
+    pub rationale: String,
+}
+
+#[derive(Debug, Clone, Copy, serde::Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum AutoFixAction {
+    Update,
+    Retire,
+    Skip,
+}
+
+fn default_action() -> AutoFixAction {
+    AutoFixAction::Skip
+}
+
+pub(crate) fn parse_auto_fix_plan(stdout: &str) -> Result<AutoFixPlan> {
+    let trimmed = strip_yaml_fence(stdout);
+    Ok(serde_yaml_ng::from_str(trimmed)?)
+}
+
+fn strip_yaml_fence(s: &str) -> &str {
+    let s = s.trim();
+    if let Some(rest) = s
+        .strip_prefix("```yaml\n")
+        .or_else(|| s.strip_prefix("```\n"))
+    {
+        if let Some(end) = rest.rfind("```") {
+            return rest[..end].trim_end();
+        }
+        return rest;
+    }
+    s
+}
+
+pub(crate) fn apply_auto_fix_plan(
+    plan: &AutoFixPlan,
+    pages: &[coral_core::page::Page],
+    _wiki_root: &Path,
+) -> Result<usize> {
+    use coral_core::frontmatter::{Confidence, Status};
+    use coral_core::page::Page;
+
+    let mut written = 0usize;
+    for entry in &plan.fixes {
+        if entry.action == AutoFixAction::Skip {
+            continue;
+        }
+        let Some(page) = pages.iter().find(|p| p.frontmatter.slug == entry.slug) else {
+            tracing::warn!(slug = %entry.slug, "auto-fix: skipping unknown slug");
+            continue;
+        };
+        let mut new_page = Page {
+            path: page.path.clone(),
+            frontmatter: page.frontmatter.clone(),
+            body: page.body.clone(),
+        };
+        if entry.action == AutoFixAction::Retire {
+            new_page.frontmatter.status = Status::Stale;
+        }
+        if let Some(c) = entry.confidence {
+            new_page.frontmatter.confidence = Confidence::try_new(c)?;
+        }
+        if let Some(s) = &entry.status {
+            new_page.frontmatter.status = parse_status(s)?;
+        }
+        if let Some(append) = &entry.body_append {
+            if !new_page.body.ends_with('\n') {
+                new_page.body.push('\n');
+            }
+            new_page.body.push('\n');
+            new_page.body.push_str(append);
+        }
+        new_page
+            .write()
+            .with_context(|| format!("writing fixed page `{}`", entry.slug))?;
+        written += 1;
+    }
+    Ok(written)
+}
+
+fn parse_status(s: &str) -> Result<coral_core::frontmatter::Status> {
+    use coral_core::frontmatter::Status::*;
+    Ok(match s.to_lowercase().as_str() {
+        "draft" => Draft,
+        "reviewed" => Reviewed,
+        "verified" => Verified,
+        "stale" => Stale,
+        "archived" => Archived,
+        "reference" => Reference,
+        other => anyhow::bail!("unknown status `{other}`"),
+    })
+}
+
+fn affected_slugs(report: &LintReport, pages: &[coral_core::page::Page]) -> Vec<String> {
+    let mut out: Vec<String> = report
+        .issues
+        .iter()
+        .filter_map(|i| i.page.as_ref())
+        .filter_map(|path| {
+            pages
+                .iter()
+                .find(|p| p.path.as_path() == path.as_path())
+                .map(|p| p.frontmatter.slug.clone())
+        })
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn render_issues_for_prompt(report: &LintReport) -> String {
+    let mut s = String::new();
+    for i in &report.issues {
+        let slug_hint = i
+            .page
+            .as_ref()
+            .map(|p| {
+                p.file_name()
+                    .and_then(|x| x.to_str())
+                    .unwrap_or("(unknown)")
+            })
+            .unwrap_or("(workspace)");
+        s.push_str(&format!(
+            "- [{:?}] {:?} on `{}`: {}\n",
+            i.severity, i.code, slug_hint, i.message
+        ));
+    }
+    s
+}
+
+fn render_pages_for_prompt(pages: &[coral_core::page::Page], slugs: &[String]) -> String {
+    let mut s = String::new();
+    for p in pages.iter().filter(|p| slugs.contains(&p.frontmatter.slug)) {
+        s.push_str(&format!(
+            "- {} ({:?}, status={:?}, confidence={:.2}): {}\n",
+            p.frontmatter.slug,
+            p.frontmatter.page_type,
+            p.frontmatter.status,
+            p.frontmatter.confidence.as_f64(),
+            p.body
+                .chars()
+                .take(200)
+                .collect::<String>()
+                .replace('\n', " ")
+        ));
+    }
+    s
 }
 
 /// Return the set of `.wiki/**/*.md` paths currently staged for commit.
@@ -199,6 +434,137 @@ mod tests {
             kept[0].page.as_deref().unwrap(),
             Path::new("/repo/.wiki/modules/order.md")
         );
+    }
+
+    #[test]
+    fn auto_fix_plan_parses_yaml_with_fences() {
+        let stdout = "```yaml\nfixes:\n  - slug: order\n    action: update\n    confidence: 0.4\n    rationale: dropped below threshold\n  - slug: ghost\n    action: skip\n    rationale: needs human review\n```";
+        let plan = parse_auto_fix_plan(stdout).unwrap();
+        assert_eq!(plan.fixes.len(), 2);
+        assert_eq!(plan.fixes[0].slug, "order");
+        assert_eq!(plan.fixes[0].action, AutoFixAction::Update);
+        assert_eq!(plan.fixes[0].confidence, Some(0.4));
+        assert_eq!(plan.fixes[1].action, AutoFixAction::Skip);
+    }
+
+    #[test]
+    fn auto_fix_plan_action_defaults_to_skip_when_missing() {
+        // Defensive: an LLM that omits `action` shouldn't accidentally apply changes.
+        let stdout = "fixes:\n  - slug: ghost\n    rationale: missing action field\n";
+        let plan = parse_auto_fix_plan(stdout).unwrap();
+        assert_eq!(plan.fixes[0].action, AutoFixAction::Skip);
+    }
+
+    #[test]
+    fn auto_fix_apply_writes_updated_frontmatter_and_appends_body() {
+        use coral_core::frontmatter::{Confidence, Frontmatter, PageType, Status};
+        use coral_core::page::Page;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let wiki = tmp.path().join(".wiki");
+        let modules = wiki.join("modules");
+        std::fs::create_dir_all(&modules).unwrap();
+        let page_path = modules.join("order.md");
+
+        let page = Page {
+            path: page_path.clone(),
+            frontmatter: Frontmatter {
+                slug: "order".into(),
+                page_type: PageType::Module,
+                last_updated_commit: "abc".into(),
+                confidence: Confidence::try_new(0.9).unwrap(),
+                sources: vec![],
+                backlinks: vec![],
+                status: Status::Verified,
+                generated_at: None,
+                extra: Default::default(),
+            },
+            body: "Original body.".into(),
+        };
+        page.write().unwrap();
+
+        let plan = AutoFixPlan {
+            fixes: vec![
+                AutoFixEntry {
+                    slug: "order".into(),
+                    action: AutoFixAction::Update,
+                    confidence: Some(0.5),
+                    status: Some("draft".into()),
+                    body_append: Some("_Stale: needs sources._".into()),
+                    rationale: "high conf without sources".into(),
+                },
+                AutoFixEntry {
+                    slug: "ghost".into(),
+                    action: AutoFixAction::Skip,
+                    confidence: None,
+                    status: None,
+                    body_append: None,
+                    rationale: "unknown slug".into(),
+                },
+            ],
+        };
+        let pages = vec![page];
+        let written = apply_auto_fix_plan(&plan, &pages, &wiki).unwrap();
+        assert_eq!(written, 1);
+
+        let on_disk = std::fs::read_to_string(&page_path).unwrap();
+        assert!(
+            on_disk.contains("confidence: 0.5"),
+            "frontmatter not updated: {on_disk}"
+        );
+        assert!(
+            on_disk.contains("status: draft"),
+            "status not updated: {on_disk}"
+        );
+        assert!(on_disk.contains("Original body."), "body lost: {on_disk}");
+        assert!(
+            on_disk.contains("_Stale: needs sources._"),
+            "append missing: {on_disk}"
+        );
+    }
+
+    #[test]
+    fn auto_fix_apply_marks_retired_pages_stale() {
+        use coral_core::frontmatter::{Confidence, Frontmatter, PageType, Status};
+        use coral_core::page::Page;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let wiki = tmp.path().join(".wiki");
+        let modules = wiki.join("modules");
+        std::fs::create_dir_all(&modules).unwrap();
+        let page_path = modules.join("dead.md");
+        let page = Page {
+            path: page_path.clone(),
+            frontmatter: Frontmatter {
+                slug: "dead".into(),
+                page_type: PageType::Module,
+                last_updated_commit: "abc".into(),
+                confidence: Confidence::try_new(0.7).unwrap(),
+                sources: vec![],
+                backlinks: vec![],
+                status: Status::Verified,
+                generated_at: None,
+                extra: Default::default(),
+            },
+            body: "going away".into(),
+        };
+        page.write().unwrap();
+
+        let plan = AutoFixPlan {
+            fixes: vec![AutoFixEntry {
+                slug: "dead".into(),
+                action: AutoFixAction::Retire,
+                confidence: None,
+                status: None,
+                body_append: None,
+                rationale: "obsolete".into(),
+            }],
+        };
+        apply_auto_fix_plan(&plan, std::slice::from_ref(&page), &wiki).unwrap();
+        let on_disk = std::fs::read_to_string(&page_path).unwrap();
+        assert!(on_disk.contains("status: stale"));
     }
 
     #[test]
