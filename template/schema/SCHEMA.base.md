@@ -27,12 +27,17 @@ You are the librarian for this microservice. You maintain `.wiki/` in sync with 
 | `operations/` | A runbook for on-call (deploy, restore, incident triage) |
 | `sources/` | An RFC, paper, or external doc is referenced from code or ADRs |
 | `gaps/` | The lint detects a gap (page that *should* exist but doesn't) |
+| `examples/` (`reference`) | A worked example or canonical reference snippet that other pages cite — never a primary page on its own. The frontmatter `type: reference` maps to the `examples/` subdir. |
+
+There are also four **system page types** Coral writes itself at the wiki root: `index`, `log`, `schema`, `readme`. You don't create these directly; `coral init` writes them.
 
 ## Required frontmatter
 
 ```yaml
 slug: order-creation
-type: module          # one of the types above
+type: module          # module | concept | entity | flow | decision | synthesis
+                      # operation | source | gap | reference
+                      # (system: index | log | schema | readme)
 last_updated_commit: <40-char git sha>
 confidence: 0.85      # 0.0-1.0, honest self-assessment vs HEAD
 sources:
