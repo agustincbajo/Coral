@@ -1,0 +1,118 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "LintReport",
+  "description": "Top-level lint output: the sorted list of [`LintIssue`]s produced by a run. This is the type emitted by `coral lint --format json`; its JSON schema is published at `docs/schemas/lint.schema.json` for downstream tooling.",
+  "type": "object",
+  "required": [
+    "issues"
+  ],
+  "properties": {
+    "issues": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/LintIssue"
+      }
+    }
+  },
+  "definitions": {
+    "LintCode": {
+      "description": "Stable identifier for each lint rule.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "broken_wikilink",
+            "orphan_page",
+            "low_confidence",
+            "high_confidence_without_sources",
+            "stale_status"
+          ]
+        },
+        {
+          "description": "`frontmatter.last_updated_commit` does not exist in the repo's git history. Indicates either a typo, a force-pushed branch that rewrote history, or a commit that lives only in a workdir that was never pushed.",
+          "type": "string",
+          "enum": [
+            "commit_not_in_git"
+          ]
+        },
+        {
+          "description": "One of the entries in `frontmatter.sources` does not resolve to a file or directory under the repo root. Surfaces stale paths after refactors.",
+          "type": "string",
+          "enum": [
+            "source_not_found"
+          ]
+        },
+        {
+          "description": "A page with `status: archived` is still being linked to from a non-archived page. Either the linker should be updated to point elsewhere or the archive note should be lifted.",
+          "type": "string",
+          "enum": [
+            "archived_page_linked"
+          ]
+        },
+        {
+          "description": "The page's frontmatter contains an extra (non-canonical) key. Not necessarily wrong — consumer wikis are allowed to extend the SCHEMA — but worth a look.",
+          "type": "string",
+          "enum": [
+            "unknown_extra_field"
+          ]
+        },
+        {
+          "description": "Reserved for semantic lint (Phase D).",
+          "type": "string",
+          "enum": [
+            "contradiction"
+          ]
+        },
+        {
+          "description": "Reserved for semantic lint.",
+          "type": "string",
+          "enum": [
+            "obsolete_claim"
+          ]
+        }
+      ]
+    },
+    "LintIssue": {
+      "description": "A single lint finding emitted by a check. `page` is `None` for global issues (no specific source file), and `context` carries an optional anchor such as the wikilink target that failed to resolve.",
+      "type": "object",
+      "required": [
+        "code",
+        "message",
+        "severity"
+      ],
+      "properties": {
+        "code": {
+          "$ref": "#/definitions/LintCode"
+        },
+        "context": {
+          "description": "Optional anchor for the issue, e.g., the wikilink target that's broken.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "message": {
+          "type": "string"
+        },
+        "page": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "severity": {
+          "$ref": "#/definitions/LintSeverity"
+        }
+      }
+    },
+    "LintSeverity": {
+      "description": "Severity tier for a lint issue. Drives sort order in the report and the CLI exit code policy (any `Critical` flips lint to a non-zero exit).",
+      "type": "string",
+      "enum": [
+        "critical",
+        "warning",
+        "info"
+      ]
+    }
+  }
+}

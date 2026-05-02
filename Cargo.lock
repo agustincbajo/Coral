@@ -300,6 +300,7 @@ dependencies = [
  "coral-runner",
  "criterion",
  "rayon",
+ "schemars",
  "serde",
  "serde_json",
  "serde_yaml_ng",

@@ -1,9 +1,12 @@
 //! Lint report — issues, severities, and Markdown rendering.
 
+use schemars::JsonSchema;
 use serde::Serialize;
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+/// Severity tier for a lint issue. Drives sort order in the report and the
+/// CLI exit code policy (any `Critical` flips lint to a non-zero exit).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum LintSeverity {
     Critical,
@@ -22,7 +25,7 @@ impl From<LintSeverity> for u8 {
 }
 
 /// Stable identifier for each lint rule.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum LintCode {
     BrokenWikilink,
@@ -50,7 +53,10 @@ pub enum LintCode {
     ObsoleteClaim,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+/// A single lint finding emitted by a check. `page` is `None` for global
+/// issues (no specific source file), and `context` carries an optional anchor
+/// such as the wikilink target that failed to resolve.
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 pub struct LintIssue {
     pub code: LintCode,
     pub severity: LintSeverity,
@@ -60,7 +66,10 @@ pub struct LintIssue {
     pub context: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Default, Serialize)]
+/// Top-level lint output: the sorted list of [`LintIssue`]s produced by a run.
+/// This is the type emitted by `coral lint --format json`; its JSON schema is
+/// published at `docs/schemas/lint.schema.json` for downstream tooling.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, JsonSchema)]
 pub struct LintReport {
     pub issues: Vec<LintIssue>,
 }
@@ -100,6 +109,16 @@ impl LintReport {
 
     pub fn info_count(&self) -> usize {
         self.count(LintSeverity::Info)
+    }
+
+    /// Returns the JSON schema for `LintReport` as a pretty-printed string.
+    /// Use this to validate downstream tooling (jq pipelines, dashboards,
+    /// CI gates) against the contract Coral emits from
+    /// `coral lint --format json`. The committed schema lives at
+    /// `docs/schemas/lint.schema.json` and is regenerated from this method.
+    pub fn json_schema() -> String {
+        let schema = schemars::schema_for!(LintReport);
+        serde_json::to_string_pretty(&schema).expect("LintReport schema serializes to JSON")
     }
 
     /// Renders the report as a Markdown document for human consumption.
@@ -220,6 +239,141 @@ mod tests {
         assert_eq!(report.issues[0].severity, LintSeverity::Critical);
         assert_eq!(report.issues[1].severity, LintSeverity::Warning);
         assert_eq!(report.issues[2].severity, LintSeverity::Info);
+    }
+
+    #[test]
+    fn lint_report_json_schema_is_valid_json() {
+        let schema = LintReport::json_schema();
+        let value: serde_json::Value =
+            serde_json::from_str(&schema).expect("schema must be valid JSON");
+        assert!(
+            value.is_object(),
+            "schema root must be a JSON object: {schema}"
+        );
+        assert_eq!(
+            value.get("title").and_then(|v| v.as_str()),
+            Some("LintReport"),
+            "schema root must declare title=LintReport: {schema}"
+        );
+    }
+
+    #[test]
+    fn lint_report_json_schema_has_expected_definitions() {
+        let schema = LintReport::json_schema();
+        let value: serde_json::Value =
+            serde_json::from_str(&schema).expect("schema must be valid JSON");
+        // schemars 0.8 emits `definitions`; v1.x emits `$defs`. Accept either.
+        let defs = value
+            .get("definitions")
+            .or_else(|| value.get("$defs"))
+            .and_then(|v| v.as_object())
+            .unwrap_or_else(|| panic!("schema missing definitions/$defs: {schema}"));
+        for expected in ["LintCode", "LintIssue", "LintSeverity"] {
+            assert!(
+                defs.contains_key(expected),
+                "schema definitions missing `{expected}`: {schema}"
+            );
+        }
+    }
+
+    #[test]
+    fn lint_report_serialized_matches_schema_keys() {
+        // Round-trip: serialize a real LintReport with one issue, then assert the
+        // top-level JSON keys match what the schema declares as required.
+        let issue = mk_issue(
+            LintCode::BrokenWikilink,
+            LintSeverity::Critical,
+            Some("a.md"),
+            "broken",
+        );
+        let report = LintReport::from_issues(vec![issue]);
+        let json = serde_json::to_string(&report).expect("report must serialize");
+        let value: serde_json::Value = serde_json::from_str(&json).expect("report json must parse");
+        let obj = value.as_object().expect("report must be a JSON object");
+
+        let schema = LintReport::json_schema();
+        let schema_value: serde_json::Value =
+            serde_json::from_str(&schema).expect("schema must parse");
+        let required: Vec<String> = schema_value
+            .get("required")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        assert!(
+            !required.is_empty(),
+            "schema should declare at least one required field: {schema}"
+        );
+        for key in &required {
+            assert!(
+                obj.contains_key(key),
+                "serialized report missing schema-required key `{key}`: {json}"
+            );
+        }
+        // Spot-check the contract everyone depends on.
+        assert!(required.iter().any(|k| k == "issues"));
+    }
+
+    #[test]
+    fn lint_code_enum_in_schema_lists_every_variant() {
+        let schema = LintReport::json_schema();
+        let value: serde_json::Value = serde_json::from_str(&schema).expect("schema must parse");
+        let defs = value
+            .get("definitions")
+            .or_else(|| value.get("$defs"))
+            .and_then(|v| v.as_object())
+            .expect("schema has definitions");
+        let lint_code = defs.get("LintCode").expect("LintCode definition exists");
+
+        // schemars represents docstring-decorated enum variants as a `oneOf`
+        // of single-value `enum` arrays; bare variants are collapsed into one
+        // `enum` array. Walk both shapes and collect every string value.
+        let mut found: std::collections::BTreeSet<String> = Default::default();
+        let mut collect = |v: &serde_json::Value| {
+            if let Some(arr) = v.get("enum").and_then(|e| e.as_array()) {
+                for entry in arr {
+                    if let Some(s) = entry.as_str() {
+                        found.insert(s.to_string());
+                    }
+                }
+            }
+        };
+        collect(lint_code);
+        if let Some(one_of) = lint_code.get("oneOf").and_then(|v| v.as_array()) {
+            for branch in one_of {
+                collect(branch);
+            }
+        }
+
+        // Mirrors the snake_case rename of every LintCode variant.
+        let expected: [&str; 11] = [
+            "broken_wikilink",
+            "orphan_page",
+            "low_confidence",
+            "high_confidence_without_sources",
+            "stale_status",
+            "commit_not_in_git",
+            "source_not_found",
+            "archived_page_linked",
+            "unknown_extra_field",
+            "contradiction",
+            "obsolete_claim",
+        ];
+        for variant in expected {
+            assert!(
+                found.contains(variant),
+                "LintCode schema missing variant `{variant}`; found: {found:?}"
+            );
+        }
+        assert_eq!(
+            found.len(),
+            expected.len(),
+            "LintCode schema variant count drift; found {found:?}, expected {expected:?}"
+        );
     }
 
     #[test]

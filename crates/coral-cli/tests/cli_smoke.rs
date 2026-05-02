@@ -62,6 +62,32 @@ fn lint_on_empty_wiki_succeeds() {
 }
 
 #[test]
+fn lint_json_emits_object_with_issues_array() {
+    let tmp = TempDir::new().unwrap();
+    Command::cargo_bin("coral")
+        .unwrap()
+        .current_dir(tmp.path())
+        .arg("init")
+        .assert()
+        .success();
+    let assert = Command::cargo_bin("coral")
+        .unwrap()
+        .current_dir(tmp.path())
+        .args(["lint", "--format", "json"])
+        .assert()
+        .success();
+    let output = assert.get_output();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let value: serde_json::Value =
+        serde_json::from_str(&stdout).expect("lint --format json should emit valid json");
+    assert!(value.is_object(), "lint json must be an object: {stdout}");
+    assert!(
+        value.get("issues").and_then(|v| v.as_array()).is_some(),
+        "lint json must have an `issues` array: {stdout}"
+    );
+}
+
+#[test]
 fn lint_without_init_fails() {
     let tmp = TempDir::new().unwrap();
     Command::cargo_bin("coral")
