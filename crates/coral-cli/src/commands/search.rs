@@ -2,8 +2,9 @@ use anyhow::{Context, Result};
 use clap::Args;
 use coral_core::{search, walk};
 use coral_runner::{
-    DEFAULT_OPENAI_DIM, DEFAULT_OPENAI_MODEL, DEFAULT_VOYAGE_DIM, DEFAULT_VOYAGE_MODEL,
-    EmbeddingsProvider, OpenAIProvider, VoyageProvider,
+    AnthropicProvider, DEFAULT_OPENAI_DIM, DEFAULT_OPENAI_MODEL, DEFAULT_VOYAGE_DIM,
+    DEFAULT_VOYAGE_MODEL, EmbeddingsProvider, OpenAIProvider, PLACEHOLDER_ANTHROPIC_DIM,
+    PLACEHOLDER_ANTHROPIC_MODEL, VoyageProvider,
 };
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -32,11 +33,14 @@ pub struct SearchArgs {
     #[arg(long)]
     pub reindex: bool,
     /// Embeddings provider when `--engine embeddings`: `voyage` (default,
-    /// requires VOYAGE_API_KEY) or `openai` (requires OPENAI_API_KEY).
+    /// requires VOYAGE_API_KEY) | `openai` (requires OPENAI_API_KEY) |
+    /// `anthropic` (v0.13 speculative — requires ANTHROPIC_API_KEY; will
+    /// 404 until Anthropic ships the embeddings API).
     #[arg(long, default_value = "voyage")]
     pub embeddings_provider: String,
     /// Optional embeddings model override. Default depends on provider:
-    /// `voyage-3` (voyage) or `text-embedding-3-small` (openai).
+    /// `voyage-3` (voyage), `text-embedding-3-small` (openai), or the
+    /// PLACEHOLDER_ANTHROPIC_MODEL (anthropic, until Anthropic ships).
     #[arg(long)]
     pub embeddings_model: Option<String>,
 }
@@ -95,7 +99,26 @@ fn build_embeddings_provider(args: &SearchArgs) -> Result<Box<dyn EmbeddingsProv
             };
             Ok(Box::new(OpenAIProvider::new(api_key, model, dim)))
         }
-        other => anyhow::bail!("unknown --embeddings-provider: {other}. Choose: voyage | openai"),
+        "anthropic" => {
+            let api_key = std::env::var("ANTHROPIC_API_KEY")
+                .context("ANTHROPIC_API_KEY required for --embeddings-provider anthropic")?;
+            let model = args
+                .embeddings_model
+                .clone()
+                .unwrap_or_else(|| PLACEHOLDER_ANTHROPIC_MODEL.into());
+            eprintln!(
+                "warning: --embeddings-provider anthropic is SPECULATIVE — Anthropic has not \
+                 published the embeddings API. Calls will 404 until they do."
+            );
+            Ok(Box::new(AnthropicProvider::new(
+                api_key,
+                model,
+                PLACEHOLDER_ANTHROPIC_DIM,
+            )))
+        }
+        other => anyhow::bail!(
+            "unknown --embeddings-provider: {other}. Choose: voyage | openai | anthropic"
+        ),
     }
 }
 

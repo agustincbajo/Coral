@@ -14,9 +14,9 @@ pub mod prompt;
 pub mod runner;
 
 pub use embeddings::{
-    DEFAULT_OPENAI_DIM, DEFAULT_OPENAI_MODEL, DEFAULT_VOYAGE_DIM, DEFAULT_VOYAGE_MODEL,
-    EmbedResult, EmbeddingsError, EmbeddingsProvider, MockEmbeddingsProvider, OpenAIProvider,
-    VoyageProvider,
+    AnthropicProvider, DEFAULT_OPENAI_DIM, DEFAULT_OPENAI_MODEL, DEFAULT_VOYAGE_DIM,
+    DEFAULT_VOYAGE_MODEL, EmbedResult, EmbeddingsError, EmbeddingsProvider, MockEmbeddingsProvider,
+    OpenAIProvider, PLACEHOLDER_ANTHROPIC_DIM, PLACEHOLDER_ANTHROPIC_MODEL, VoyageProvider,
 };
 pub use gemini::GeminiRunner;
 pub use http::HttpRunner;

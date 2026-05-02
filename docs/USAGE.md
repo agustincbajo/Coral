@@ -79,16 +79,19 @@ coral query "How is an order created?" [--model <id>] [--provider claude|gemini|
 Run structural and/or semantic lint.
 
 ```bash
-coral lint [--structural] [--semantic] [--all] [--staged] [--auto-fix [--apply]] \
-           [--severity critical|warning|info|all] \
-           [--format markdown|json] [--provider claude|gemini|local]
+coral lint [--structural] [--semantic] [--all] [--staged] \
+           [--fix [--apply]] [--auto-fix [--apply]] [--suggest-sources [--apply]] \
+           [--severity critical|warning|info|all] [--rule <CODE>]... \
+           [--format markdown|json] [--provider claude|gemini|local|http]
 ```
 
 - `--structural` (default if no flag): 9 deterministic checks — broken wikilinks, orphans, low confidence, high confidence without sources, stale status, plus 4 v0.6 additions (`commit-not-in-git`, `source-not-found`, `archived-page-linked`, `unknown-extra-field`).
 - `--semantic`: requires the LLM. Surfaces contradictions, obsolete claims, confidence/sources mismatches.
 - `--all`: both.
 - `--staged`: pre-commit-hook mode. Loads every page (so the graph stays intact for orphan / wikilink checks) but filters the report to issues whose `page` is in `git diff --cached --name-only`. Workspace-level issues (no `page`) are kept. Use to gate commits that touch the wiki.
-- `--auto-fix`: after lint runs, the LLM proposes fixes (downgrade confidence, mark stale, append italic note). Default is **dry-run** (prints YAML plan); `--apply` writes changes back. Capped scope — cannot rewrite whole bodies or invent sources. Override the system prompt at `<cwd>/prompts/lint-auto-fix.md`. **`--auto-fix` always sees the FULL report** — the `--severity` filter is applied AFTER auto-fix runs, so the LLM can propose Warning fixes even in CI gates filtering to Critical only.
+- `--fix` (v0.12): no-LLM mechanical rule auto-fix. Trim trailing whitespace in frontmatter, sort+dedup `sources`/`backlinks`, normalize `[[ slug ]]`→`[[slug]]`, normalize CRLF→LF, trim trailing line whitespace. Default dry-run; `--apply` writes. Composes with `--auto-fix`.
+- `--auto-fix`: after lint runs, the LLM proposes fixes (downgrade confidence, mark stale, append italic note). Default is **dry-run** (prints YAML plan); `--apply` writes changes back. Capped scope — cannot rewrite whole bodies or invent sources. **Per-rule routing** (v0.13): if `template/prompts/lint-auto-fix-<code-kebab>.md` exists, that specialized prompt is used for that issue type (today: `broken-wikilink`, `low-confidence`); otherwise falls back to generic `lint-auto-fix.md`. Override either at `<cwd>/prompts/`. **`--auto-fix` always sees the FULL report** — the `--severity` filter is applied AFTER auto-fix runs, so the LLM can propose Warning fixes even in CI gates filtering to Critical only.
+- `--suggest-sources` (v0.13): for each `HighConfidenceWithoutSources` issue, asks the LLM to propose 1–3 source paths from `git ls-files` output. One LLM call per affected page. Default dry-run; `--apply` appends suggested paths to `frontmatter.sources` (deduped against existing). Override the prompt at `<cwd>/prompts/lint-suggest-sources.md`.
 - `--severity` (v0.8): filter the rendered report and exit-code calculation to issues at or above the named level. `critical` → Critical only. `warning` → Critical + Warning. `info` / `all` → everything (default). Useful as a CI gate that fails only on Critical.
 - `--rule <CODE>` (v0.10, repeatable): filter the report to only the named `LintCode` variants. Codes are kebab-case (snake_case also accepted): `broken-wikilink`, `orphan-page`, `low-confidence`, `high-confidence-without-sources`, `stale-status`, `contradiction`, `obsolete-claim`, `commit-not-in-git`, `source-not-found`, `archived-page-linked`, `unknown-extra-field`. Composes with `--severity` (`--rule broken-wikilink --severity critical` keeps only critical broken-wikilink issues). The `--rule` filter runs BEFORE `--severity`.
 - `--format json`: emit a JSON report. The schema lives at [docs/schemas/lint.schema.json](schemas/lint.schema.json).
@@ -240,7 +243,19 @@ coral search "x" --engine embeddings --format json
 
 Embedding a 200-page wiki with `voyage-3` ≈ $0.001 (200 pages × ~500 tokens × $0.10/1M). OpenAI `text-embedding-3-small` ≈ $0.001 too. Re-runs only embed changed pages. CI workflows can add the `embeddings-cache` composite action to persist `.coral-embeddings.json` across runs.
 
-See [ADR 0006](./adr/0006-local-semantic-search-storage.md) for the rationale on JSON storage vs sqlite-vec (deferred to a future release).
+### Storage backend (v0.13)
+
+By default embeddings cache as a single JSON file at `<wiki_root>/.coral-embeddings.json`. For larger wikis (~5k+ pages), an alternative SQLite backend is available:
+
+```bash
+export CORAL_EMBEDDINGS_BACKEND=sqlite     # default: json
+coral search --engine embeddings "..."
+```
+
+- SQLite backend stores at `<wiki_root>/.coral-embeddings.db` with the same vector encoding (little-endian f32 BLOB).
+- Both backends produce IDENTICAL search results (cosine similarity in pure Rust). A parity test in `crates/coral-core/tests/embeddings_backends_parity.rs` enforces this.
+- Bundled SQLite (~1MB binary growth, no system dep needed). No `sqlite-vec` C extension — pure Rust + SQLite achieves the same goal.
+- Default stays JSON per [ADR 0006](./adr/0006-local-semantic-search-storage.md). Switch when you observe cold-load slowdown.
 
 ---
 
@@ -274,6 +289,7 @@ Both run offline, no API key. Snippets are identical between algorithms (same `b
 - `json`: raw JSON array, one object per page (`slug`, `type`, `confidence`, `sources`, `backlinks`, `body`, ...).
 - `notion-json`: array of Notion API `POST /v1/pages` request bodies, ready to be `curl`-posted to a Notion database. Set `parent.database_id` from your config.
 - `html`: single self-contained HTML file. Embedded CSS supports light + dark via `prefers-color-scheme`, sticky sidebar TOC grouped by page type, every page as `<section id="slug">`. `[[wikilinks]]` translate to in-page anchor links (plain / aliased / anchored forms supported). Drop the file on GitHub Pages / S3 / any static host — no build step. New in v0.5.
+- `html --multi --out <dir>` (v0.13): split into `index.html` + `style.css` + per-page `<type>/<slug>.html` files. Designed for GitHub Pages or any static host where you want clean URLs. `--out` MUST be a directory; `--multi` is rejected for non-html formats.
 - `jsonl`: one JSON object per line — `{slug, body, prompt}` (stub) or `{slug, prompt, completion}` (with `--qa`) — a starting point for fine-tuning datasets.
 
 ### Notion sync example
@@ -374,6 +390,35 @@ coral validate-pin [--remote <URL>]
 - `--remote` overrides the default Coral repo URL (useful for forks / mirrors).
 
 Run as a CI guard before a release that consumes those pins to catch typos cheaply.
+
+---
+
+## `coral status` (v0.12)
+
+Daily-use wiki snapshot — the "git status" of the wiki.
+
+```bash
+coral status [--limit N] [--format markdown|json] [--watch [--interval N]]
+```
+
+- Synthesizes `index.md` `last_commit`, fast structural lint counts (Critical / Warning / Info), stats summary (total pages, avg confidence, orphan count), and the last N (default 5) entries from `.wiki/log.md` reverse-chrono.
+- Markdown ~14 lines for at-a-glance reading. JSON for scripting.
+- Always exits 0 (informational). For CI gates use `coral lint --severity critical`.
+- `--watch` (v0.13): re-render every `--interval N` seconds (default 5, min 1). ANSI clear-screen on TTYs only — pipes (`coral status --watch | tee log`) stay parseable. Loop exits via OS-level SIGINT.
+
+---
+
+## `coral history` (v0.12)
+
+Log entries that mention a slug, reverse-chronological.
+
+```bash
+coral history <slug> [--limit N] [--format markdown|json]
+```
+
+- Filters `.wiki/log.md` entries by case-sensitive substring match on the slug.
+- Capped at N (default 20).
+- Empty match: friendly markdown line / `entries: []` JSON.
 
 ---
 
