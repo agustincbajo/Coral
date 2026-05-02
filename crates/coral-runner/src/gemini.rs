@@ -18,6 +18,7 @@
 
 use crate::runner::{
     Prompt, RunOutput, Runner, RunnerError, RunnerResult, combine_outputs, is_auth_failure,
+    run_streaming_command,
 };
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -135,6 +136,23 @@ impl Runner for GeminiRunner {
             stderr: String::from_utf8_lossy(&output.stderr).to_string(),
             duration,
         })
+    }
+
+    /// Streaming via the shared `run_streaming_command` helper. Lets
+    /// `coral query --provider gemini` see the response token-by-token
+    /// when gemini-cli streams (recent versions do; older `-p` mode buffers).
+    fn run_streaming(
+        &self,
+        prompt: &Prompt,
+        on_chunk: &mut dyn FnMut(&str),
+    ) -> RunnerResult<RunOutput> {
+        let mut cmd = Command::new(&self.binary);
+        cmd.args(Self::build_args(prompt));
+        if let Some(cwd) = &prompt.cwd {
+            cmd.current_dir(cwd);
+        }
+        tracing::debug!(binary = %self.binary.display(), model = ?prompt.model, "spawning gemini (streaming)");
+        run_streaming_command(cmd, prompt.timeout, on_chunk)
     }
 }
 

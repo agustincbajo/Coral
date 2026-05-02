@@ -31,14 +31,14 @@ coral init [--force]
 Compile the initial wiki from `HEAD`.
 
 ```bash
-coral bootstrap [--model <id>] [--provider claude|gemini]
+coral bootstrap [--apply] [--model <id>] [--provider claude|gemini|local]
 ```
 
 - Walks the repo (skips `.git/`, `target/`, `.wiki/`, `node_modules/`, `.idea/`, `.vscode/`).
 - Sends a truncated file listing (max 200 paths) to the LLM via `claude --print`.
-- Prints a YAML suggestion of 5–15 page slugs (type + rationale).
-- **In v0.1, does not write pages.** Apply suggestions manually.
-- `--provider` (or `CORAL_PROVIDER` env): `claude` (default) or `gemini` (shells to a `gemini` CLI binary).
+- **Default is dry-run**: prints the YAML plan of 5–15 page slugs (type + rationale + body).
+- Pass `--apply` to write the pages, upsert `.wiki/index.md`, append `.wiki/log.md`.
+- `--provider` (or `CORAL_PROVIDER` env): `claude` (default) | `gemini` | `local` (llama.cpp).
 
 ---
 
@@ -47,14 +47,14 @@ coral bootstrap [--model <id>] [--provider claude|gemini]
 Incremental ingest from `last_commit` to `HEAD`.
 
 ```bash
-coral ingest [--from <sha>] [--model <id>] [--provider claude|gemini]
+coral ingest [--from <sha>] [--apply] [--model <id>] [--provider claude|gemini|local]
 ```
 
 - Reads `last_commit` from `.wiki/index.md` unless `--from` is given.
 - Runs `git diff --name-status <from>..HEAD`, sends the summary to the LLM.
-- Prints a YAML plan of `{slug, action, rationale}` items where `action ∈ {create, update, retire}`.
-- **In v0.1, does not write pages.**
-- `--provider` (or `CORAL_PROVIDER` env): `claude` (default) or `gemini`.
+- **Default is dry-run**: prints the YAML plan of `{slug, action, type?, body?, rationale}` where `action ∈ {create, update, retire}`.
+- `--apply` mutates `.wiki/`: writes new pages, bumps `last_updated_commit` on updates, marks retired pages `status: stale`, updates `index.md`, appends `log.md`.
+- `--provider` (or `CORAL_PROVIDER` env): `claude` (default) | `gemini` | `local`.
 
 ---
 
@@ -63,13 +63,14 @@ coral ingest [--from <sha>] [--model <id>] [--provider claude|gemini]
 Ask the wiki a question.
 
 ```bash
-coral query "How is an order created?" [--model <id>] [--provider claude|gemini]
+coral query "How is an order created?" [--model <id>] [--provider claude|gemini|local]
 ```
 
 - Walks `.wiki/`, builds a snapshot context (truncated to 40 pages, 200 chars each).
 - Sends question + context + citation instructions to the LLM.
-- Prints the answer to stdout (cites slugs as `[[wikilink]]`).
-- `--provider` (or `CORAL_PROVIDER` env): `claude` (default) or `gemini`.
+- Streams the answer to stdout (cites slugs as `[[wikilink]]`).
+- Telemetry: `RUST_LOG=coral=info coral query "..."` emits `coral query: starting` / `coral query: completed` events with `pages_in_context`, `model`, `duration_ms`, `chunks`, `output_chars`.
+- `--provider` (or `CORAL_PROVIDER` env): `claude` (default) | `gemini` | `local`.
 
 ---
 
@@ -78,14 +79,25 @@ coral query "How is an order created?" [--model <id>] [--provider claude|gemini]
 Run structural and/or semantic lint.
 
 ```bash
-coral lint [--structural] [--semantic] [--all] [--format markdown|json] [--provider claude|gemini]
+coral lint [--structural] [--semantic] [--all] [--staged] [--auto-fix [--apply]] \
+           [--format markdown|json] [--provider claude|gemini|local]
 ```
 
 - `--structural` (default if no flag): broken wikilinks, orphans, low confidence, high confidence without sources, stale status. Pure deterministic checks.
 - `--semantic`: requires the LLM. Surfaces contradictions, obsolete claims, confidence/sources mismatches.
 - `--all`: both.
-- `--provider` (or `CORAL_PROVIDER` env): used by `--semantic` only. `claude` (default) or `gemini`.
-- Exit code `1` if any **critical** issue; `0` otherwise.
+- `--staged`: pre-commit-hook mode. Loads every page (so the graph stays intact for orphan / wikilink checks) but filters the report to issues whose `page` is in `git diff --cached --name-only`. Workspace-level issues (no `page`) are kept. Use to gate commits that touch the wiki.
+- `--auto-fix`: after lint runs, the LLM proposes fixes (downgrade confidence, mark stale, append italic note). Default is **dry-run** (prints YAML plan); `--apply` writes changes back. Capped scope — cannot rewrite whole bodies or invent sources. Override the system prompt at `<cwd>/prompts/lint-auto-fix.md`.
+- `--provider` (or `CORAL_PROVIDER` env): used by `--semantic` and `--auto-fix`. `claude` (default) | `gemini` | `local`.
+- Exit code `1` if any **critical** issue; `0` otherwise. With `--staged`, only critical issues touching staged files trigger `1`.
+
+### Pre-commit hook example
+
+```bash
+# .git/hooks/pre-commit
+#!/usr/bin/env bash
+exec coral lint --structural --staged
+```
 
 ---
 
@@ -94,12 +106,13 @@ coral lint [--structural] [--semantic] [--all] [--format markdown|json] [--provi
 Suggest page consolidations.
 
 ```bash
-coral consolidate [--model <id>] [--provider claude|gemini]
+coral consolidate [--apply] [--model <id>] [--provider claude|gemini|local]
 ```
 
-- Lists all page slugs (truncated to 80) and asks the LLM for merge / retire / split candidates.
-- Prints a YAML proposal. **Does not apply changes.**
-- `--provider` (or `CORAL_PROVIDER` env): `claude` (default) or `gemini`.
+- Lists all page slugs (truncated to 80) and asks the LLM for `merges:`, `retirements:`, `splits:` candidates (YAML).
+- **Default is dry-run**: prints the proposal.
+- `--apply`: marks every `retirements[].slug` as `status: stale`. `merges[]` and `splits[]` are surfaced as warnings — they need human review (body merging / partitioning isn't safely automated).
+- `--provider` (or `CORAL_PROVIDER` env): `claude` (default) | `gemini` | `local`.
 
 ---
 
@@ -136,12 +149,14 @@ coral sync [--version <V>] [--force]
 Generate a tailored reading path.
 
 ```bash
-coral onboard [--profile "backend dev" | "data engineer" | "PM" | "on-call"] [--model <id>] [--provider claude|gemini]
+coral onboard [--profile "backend dev" | "data engineer" | "PM" | "on-call"] [--apply] \
+              [--model <id>] [--provider claude|gemini|local]
 ```
 
 - Sends the wiki page list + profile to the LLM.
-- Prints a Markdown ordered list of 5–10 pages with rationales.
-- `--provider` (or `CORAL_PROVIDER` env): `claude` (default) or `gemini`.
+- **Default**: prints a Markdown ordered list of 5–10 pages with rationales.
+- `--apply`: persists the path as a wiki page at `<wiki>/operations/onboarding-<slug>.md` (slug = profile lowercased + dashed). Re-running with the same profile overwrites; the slug is the dedup key.
+- `--provider` (or `CORAL_PROVIDER` env): `claude` (default) | `gemini` | `local`.
 
 ---
 
@@ -167,13 +182,20 @@ coral prompts list
 Search the wiki.
 
 ```bash
-coral search "<query>" [--engine tfidf|embeddings] [--reindex] [--limit N] [--format markdown|json]
+coral search "<query>" [--engine tfidf|embeddings] \
+                       [--embeddings-provider voyage|openai] \
+                       [--embeddings-model <id>] \
+                       [--reindex] [--limit N] [--format markdown|json]
 ```
 
 ### Engines
 
 - **`tfidf`** (default): pure-Rust TF-IDF over slug + body. No API key, works offline. Suitable for ~500 pages.
-- **`embeddings`**: semantic similarity via Voyage AI `voyage-3`. Requires `VOYAGE_API_KEY` env var. Embeddings are cached at `<wiki_root>/.coral-embeddings.json`; pages with unchanged mtime aren't re-embedded.
+- **`embeddings`**: semantic similarity. Pluggable provider (v0.4+):
+  - `--embeddings-provider voyage` (default) — Voyage AI `voyage-3` (1024-dim). Requires `VOYAGE_API_KEY`.
+  - `--embeddings-provider openai` — OpenAI `text-embedding-3-small` (1536-dim) by default; pass `--embeddings-model text-embedding-3-large` for the 3072-dim variant. Requires `OPENAI_API_KEY`.
+
+  Embeddings are cached at `<wiki_root>/.coral-embeddings.json`, mtime-keyed per slug, dimension-aware. Switching provider/model invalidates the cache automatically.
 
 ### Examples
 
@@ -185,6 +207,14 @@ coral search "outbox dispatcher"
 export VOYAGE_API_KEY=…
 coral search "how does retry work" --engine embeddings
 
+# Semantic via OpenAI.
+export OPENAI_API_KEY=…
+coral search "how does retry work" --engine embeddings --embeddings-provider openai
+
+# OpenAI's larger model.
+coral search "..." --engine embeddings --embeddings-provider openai \
+  --embeddings-model text-embedding-3-large
+
 # Force re-embedding (e.g. after model upgrade).
 coral search "x" --engine embeddings --reindex
 
@@ -194,15 +224,15 @@ coral search "x" --engine embeddings --format json
 
 ### Notes
 
-- TF-IDF tokenizes slug + body, scores via TF-IDF, returns the top-N pages. Stopwords (English + Spanish) filtered out. Single-character tokens dropped. Snippets are 200-char windows around the first matching token.
-- Embeddings cache is schema-versioned; mtime-keyed per slug. Pages whose mtime didn't change skip re-embedding. Use `--reindex` to force a full rebuild (e.g. after a model upgrade).
-- `--embeddings-model` overrides the default `voyage-3`.
+- TF-IDF tokenizes slug + body, scores via TF-IDF, returns the top-N pages. Stopwords (English + Spanish) filtered out. Single-character tokens dropped. Snippets are 200-char windows around the first matching token. Snippets clamp to UTF-8 char boundaries (v0.3.2 fix — the previous byte-indexed slicer panicked on em-dashes).
+- Embeddings cache is schema-versioned; mtime-keyed per slug. Pages whose mtime didn't change skip re-embedding. Use `--reindex` to force a full rebuild.
+- Implementations live in `coral-runner::embeddings::EmbeddingsProvider` — adding a new provider (Anthropic when shipped, etc.) is one new struct.
 
 ### Cost
 
-Embedding a 200-page wiki with `voyage-3` ≈ $0.001 (200 pages × ~500 tokens × $0.10/1M). Re-runs only embed changed pages.
+Embedding a 200-page wiki with `voyage-3` ≈ $0.001 (200 pages × ~500 tokens × $0.10/1M). OpenAI `text-embedding-3-small` ≈ $0.001 too. Re-runs only embed changed pages. CI workflows can add the `embeddings-cache` composite action to persist `.coral-embeddings.json` across runs.
 
-See [ADR 0006](./adr/0006-local-semantic-search-storage.md) for the rationale on JSON storage vs sqlite-vec (deferred to v0.4).
+See [ADR 0006](./adr/0006-local-semantic-search-storage.md) for the rationale on JSON storage vs sqlite-vec (deferred to a future release).
 
 ---
 
@@ -211,12 +241,14 @@ See [ADR 0006](./adr/0006-local-semantic-search-storage.md) for the rationale on
 Export the wiki to various target formats.
 
 ```bash
-coral export [--format markdown-bundle|json|notion-json|jsonl] [--out FILE] [--type TYPE]... [--qa] [--model M] [--provider claude|gemini]
+coral export [--format markdown-bundle|json|notion-json|html|jsonl] [--out FILE] \
+             [--type TYPE]... [--qa] [--model M] [--provider claude|gemini|local]
 ```
 
 - `markdown-bundle` (default): single Markdown file with all pages concatenated. Useful for printing or feeding to another LLM as context.
 - `json`: raw JSON array, one object per page (`slug`, `type`, `confidence`, `sources`, `backlinks`, `body`, ...).
 - `notion-json`: array of Notion API `POST /v1/pages` request bodies, ready to be `curl`-posted to a Notion database. Set `parent.database_id` from your config.
+- `html`: single self-contained HTML file. Embedded CSS supports light + dark via `prefers-color-scheme`, sticky sidebar TOC grouped by page type, every page as `<section id="slug">`. `[[wikilinks]]` translate to in-page anchor links (plain / aliased / anchored forms supported). Drop the file on GitHub Pages / S3 / any static host — no build step. New in v0.5.
 - `jsonl`: one JSON object per line — `{slug, body, prompt}` (stub) or `{slug, prompt, completion}` (with `--qa`) — a starting point for fine-tuning datasets.
 
 ### Notion sync example
@@ -274,6 +306,67 @@ Exit code: `0` if all pages POST cleanly (HTTP 2xx) or dry-run, `1` otherwise.
 2. Create a database with these properties: `Name` (title), `Type` (select), `Status` (select), `Confidence` (number).
 3. Share the database with your integration. Copy the database id (32-char hex from the URL).
 4. `export NOTION_TOKEN=secret_…` and `export CORAL_NOTION_DB=…`. Run `coral notion-push` (no `--apply`) to preview, then add `--apply` to push.
+
+---
+
+## `coral diff`
+
+Compare two wiki pages structurally.
+
+```bash
+coral diff <slugA> <slugB> [--format markdown|json]
+```
+
+- **Frontmatter delta**: type / status / confidence Δ.
+- **Sources arithmetic**: common / only-A / only-B as `BTreeSet`s.
+- **Wikilinks arithmetic**: same as sources but for `[[wikilinks]]` extracted from each body.
+- **Body length stats**: char counts.
+
+Use cases: spot merge candidates, evaluate retirement, review `wiki/auto-ingest` PRs side-by-side. v0.5 ships the structural diff only; future `--semantic` flag will add LLM-driven contradiction detection.
+
+```bash
+# Markdown table side-by-side.
+coral diff order checkout
+
+# JSON for tooling.
+coral diff order checkout --format json | jq '.wikilinks.common'
+```
+
+---
+
+## `coral validate-pin`
+
+Verify every version in `.coral-pins.toml` exists as a tag in the remote Coral repo.
+
+```bash
+coral validate-pin [--remote <URL>]
+```
+
+- Reads `.coral-pins.toml` (or the legacy `.coral-template-version`).
+- One `git ls-remote --tags <url>` call (no clone).
+- Reports `✓` per pin / `✗` for any missing tag.
+- Exit `0` when clean, `1` if any pin is unresolvable.
+- `--remote` overrides the default Coral repo URL (useful for forks / mirrors).
+
+Run as a CI guard before a release that consumes those pins to catch typos cheaply.
+
+---
+
+## CI: embeddings cache
+
+If your CI workflow runs `coral search --engine embeddings`, persist `.coral-embeddings.json` across runs so each build only re-embeds pages whose content changed:
+
+```yaml
+- uses: actions/checkout@v4
+- uses: agustincbajo/Coral/.github/actions/embeddings-cache@v0.5.0
+  with:
+    wiki_root: .wiki    # default
+- run: coral search --engine embeddings "outbox dispatcher"
+  env:
+    VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
+```
+
+Cache key is `<prefix>-<ref>-<hash of .wiki/**/*.md>` with branch-scoped fallback so a single page edit reuses ~all vectors.
 
 ---
 

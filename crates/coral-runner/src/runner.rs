@@ -46,6 +46,115 @@ pub(crate) fn is_auth_failure(text: &str) -> bool {
         || lower.contains("invalid authentication")
 }
 
+/// Shared streaming runner used by Claude / Gemini / Local. Spawns the
+/// already-configured `Command`, reads stdout line-by-line in a worker
+/// thread, invokes `on_chunk` for each line, accumulates the full stdout
+/// for `RunOutput.stdout`, and honors `timeout` via `recv_timeout` so the
+/// child is killed when the deadline elapses.
+///
+/// Auth/non-zero-exit handling matches the non-streaming `run` path: 401-
+/// shaped failures surface as `RunnerError::AuthFailed` via the shared
+/// `combine_outputs` + `is_auth_failure` helpers.
+pub(crate) fn run_streaming_command(
+    mut cmd: Command,
+    timeout: Option<Duration>,
+    on_chunk: &mut dyn FnMut(&str),
+) -> RunnerResult<RunOutput> {
+    use std::io::{BufRead, BufReader, Read};
+    use std::sync::mpsc;
+    use std::thread;
+
+    let start = Instant::now();
+    cmd.stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .stdin(Stdio::null());
+
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(RunnerError::NotFound);
+        }
+        Err(e) => return Err(RunnerError::Io(e)),
+    };
+
+    let stdout_handle = child
+        .stdout
+        .take()
+        .ok_or_else(|| RunnerError::Io(std::io::Error::other("failed to capture stdout")))?;
+    let (tx, rx) = mpsc::channel::<String>();
+    let reader_thread = thread::spawn(move || {
+        let mut reader = BufReader::new(stdout_handle);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match reader.read_line(&mut line) {
+                Ok(0) => break,
+                Ok(_) => {
+                    if tx.send(line.clone()).is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    let mut accumulated = String::new();
+    loop {
+        let remaining = match timeout {
+            Some(t) => match t.checked_sub(start.elapsed()) {
+                Some(r) => r,
+                None => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let _ = reader_thread.join();
+                    return Err(RunnerError::Timeout(t));
+                }
+            },
+            None => Duration::from_secs(86_400),
+        };
+        match rx.recv_timeout(remaining) {
+            Ok(line) => {
+                on_chunk(&line);
+                accumulated.push_str(&line);
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = reader_thread.join();
+                let t = timeout.expect("must be Some to hit RecvTimeoutError::Timeout");
+                return Err(RunnerError::Timeout(t));
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+
+    let status = child.wait()?;
+    let _ = reader_thread.join();
+    let mut stderr = String::new();
+    if let Some(mut h) = child.stderr.take() {
+        let _ = h.read_to_string(&mut stderr);
+    }
+    let duration = start.elapsed();
+
+    if !status.success() {
+        let combined = combine_outputs(&accumulated, &stderr);
+        if is_auth_failure(&combined) {
+            return Err(RunnerError::AuthFailed(combined));
+        }
+        return Err(RunnerError::NonZeroExit {
+            code: status.code(),
+            stderr: combined,
+        });
+    }
+
+    Ok(RunOutput {
+        stdout: accumulated,
+        stderr,
+        duration,
+    })
+}
+
 pub type RunnerResult<T> = std::result::Result<T, RunnerError>;
 
 /// A complete prompt ready for execution.
@@ -199,22 +308,14 @@ impl Runner for ClaudeRunner {
 
     /// Streaming runner: spawns claude, reads stdout line-by-line, invokes
     /// `on_chunk` for each line (including its trailing `\n`), and accumulates
-    /// the full stdout for the returned `RunOutput`.
-    ///
-    /// Honors `prompt.timeout`: a separate thread reads stdout into an
-    /// `mpsc::channel`, and the main loop waits on `recv_timeout` against the
-    /// remaining deadline. If the deadline elapses, the child is killed and
-    /// `RunnerError::Timeout` is returned.
+    /// the full stdout for the returned `RunOutput`. Delegates the I/O loop to
+    /// the shared `run_streaming_command` helper so all runners share timeout
+    /// + auth-detection semantics.
     fn run_streaming(
         &self,
         prompt: &Prompt,
         on_chunk: &mut dyn FnMut(&str),
     ) -> RunnerResult<RunOutput> {
-        use std::io::{BufRead, BufReader, Read};
-        use std::sync::mpsc;
-        use std::thread;
-
-        let start = Instant::now();
         let mut cmd = Command::new(&self.binary);
         cmd.arg("--print");
         if let Some(system) = &prompt.system {
@@ -227,98 +328,8 @@ impl Runner for ClaudeRunner {
             cmd.current_dir(cwd);
         }
         cmd.arg(&prompt.user);
-        cmd.stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .stdin(Stdio::null());
-
         tracing::debug!(binary = %self.binary.display(), model = ?prompt.model, "spawning claude (streaming)");
-
-        let mut child = match cmd.spawn() {
-            Ok(c) => c,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Err(RunnerError::NotFound);
-            }
-            Err(e) => return Err(RunnerError::Io(e)),
-        };
-
-        let stdout_handle = child
-            .stdout
-            .take()
-            .ok_or_else(|| RunnerError::Io(std::io::Error::other("failed to capture stdout")))?;
-        let (tx, rx) = mpsc::channel::<String>();
-        let reader_thread = thread::spawn(move || {
-            let mut reader = BufReader::new(stdout_handle);
-            let mut line = String::new();
-            loop {
-                line.clear();
-                match reader.read_line(&mut line) {
-                    Ok(0) => break,
-                    Ok(_) => {
-                        if tx.send(line.clone()).is_err() {
-                            break;
-                        }
-                    }
-                    Err(_) => break,
-                }
-            }
-        });
-
-        let mut accumulated = String::new();
-        loop {
-            let remaining = match prompt.timeout {
-                Some(t) => match t.checked_sub(start.elapsed()) {
-                    Some(r) => r,
-                    None => {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        let _ = reader_thread.join();
-                        return Err(RunnerError::Timeout(t));
-                    }
-                },
-                None => Duration::from_secs(86_400),
-            };
-            match rx.recv_timeout(remaining) {
-                Ok(line) => {
-                    on_chunk(&line);
-                    accumulated.push_str(&line);
-                }
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    let _ = reader_thread.join();
-                    let t = prompt
-                        .timeout
-                        .expect("must be Some to hit RecvTimeoutError::Timeout");
-                    return Err(RunnerError::Timeout(t));
-                }
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
-            }
-        }
-
-        let status = child.wait()?;
-        let _ = reader_thread.join();
-        let mut stderr = String::new();
-        if let Some(mut h) = child.stderr.take() {
-            let _ = h.read_to_string(&mut stderr);
-        }
-        let duration = start.elapsed();
-
-        if !status.success() {
-            let combined = combine_outputs(&accumulated, &stderr);
-            if is_auth_failure(&combined) {
-                return Err(RunnerError::AuthFailed(combined));
-            }
-            return Err(RunnerError::NonZeroExit {
-                code: status.code(),
-                stderr: combined,
-            });
-        }
-
-        Ok(RunOutput {
-            stdout: accumulated,
-            stderr,
-            duration,
-        })
+        run_streaming_command(cmd, prompt.timeout, on_chunk)
     }
 }
 

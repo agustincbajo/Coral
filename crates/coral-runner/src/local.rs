@@ -20,6 +20,7 @@
 
 use crate::runner::{
     Prompt, RunOutput, Runner, RunnerError, RunnerResult, combine_outputs, is_auth_failure,
+    run_streaming_command,
 };
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -141,6 +142,23 @@ impl Runner for LocalRunner {
             stderr: String::from_utf8_lossy(&output.stderr).to_string(),
             duration,
         })
+    }
+
+    /// Streaming via the shared `run_streaming_command` helper. llama.cpp
+    /// emits tokens as they're generated, so `coral query --provider local`
+    /// sees the response unfold in real time.
+    fn run_streaming(
+        &self,
+        prompt: &Prompt,
+        on_chunk: &mut dyn FnMut(&str),
+    ) -> RunnerResult<RunOutput> {
+        let mut cmd = Command::new(&self.binary);
+        cmd.args(Self::build_args(prompt));
+        if let Some(cwd) = &prompt.cwd {
+            cmd.current_dir(cwd);
+        }
+        tracing::debug!(binary = %self.binary.display(), model = ?prompt.model, "spawning llama-cli (streaming)");
+        run_streaming_command(cmd, prompt.timeout, on_chunk)
     }
 }
 
