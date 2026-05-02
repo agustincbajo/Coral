@@ -280,3 +280,65 @@ fn diff_order_outbox() {
         insta::assert_snapshot!(stdout);
     });
 }
+
+// ---- export -------------------------------------------------------------
+
+/// Pins the JSON export of the seed wiki. The shape (slug, type, status,
+/// confidence, sources, backlinks, body) is the documented contract that
+/// downstream consumers script against — silent regressions here would
+/// break their pipelines.
+#[test]
+fn export_json_4_page_seed() {
+    let tmp = TempDir::new().unwrap();
+    write_seed_wiki(tmp.path());
+    let stdout = run_coral(tmp.path(), &["export", "--format", "json"]);
+    insta::with_settings!({ filters => standard_filters() }, {
+        insta::assert_snapshot!(stdout);
+    });
+}
+
+/// Pins the markdown-bundle export — the simplest "all pages
+/// concatenated" format. Catches regressions in page ordering and the
+/// per-page header (`## <slug> (<type>) — _status: ..., confidence: ..._`).
+#[test]
+fn export_markdown_bundle_4_page_seed() {
+    let tmp = TempDir::new().unwrap();
+    write_seed_wiki(tmp.path());
+    let stdout = run_coral(tmp.path(), &["export", "--format", "markdown-bundle"]);
+    insta::with_settings!({ filters => standard_filters() }, {
+        insta::assert_snapshot!(stdout);
+    });
+}
+
+/// Pins the HTML head — only the doctype + opening tags through the TOC,
+/// not the full body. The full HTML changes when CSS or wikilink
+/// rendering changes; pinning the head + TOC catches structural
+/// regressions (page count, type-grouping, section ordering) without
+/// fighting body rendering churn. Trims to first 60 lines.
+#[test]
+fn export_html_head_4_page_seed() {
+    let tmp = TempDir::new().unwrap();
+    write_seed_wiki(tmp.path());
+    let stdout = run_coral(tmp.path(), &["export", "--format", "html"]);
+    let head: String = stdout.lines().take(60).collect::<Vec<_>>().join("\n");
+    insta::with_settings!({ filters => standard_filters() }, {
+        insta::assert_snapshot!(head);
+    });
+}
+
+// ---- prompts ------------------------------------------------------------
+
+/// Pins `coral prompts list` against the embedded template bundle. The
+/// 9 known prompts (bootstrap, ingest, query, lint-semantic, consolidate,
+/// onboard, qa-pairs, lint-auto-fix, diff-semantic) and their resolution
+/// source (Local / Embedded / Fallback) are user-facing — drift here
+/// breaks the discoverability the prompt-loader registry exists for.
+#[test]
+fn prompts_list_against_embedded_bundle() {
+    let tmp = TempDir::new().unwrap();
+    // Don't write a seed wiki — `prompts list` doesn't require .wiki/.
+    let stdout = run_coral(tmp.path(), &["prompts", "list"]);
+    insta::with_settings!({ filters => standard_filters() }, {
+        insta::assert_snapshot!(stdout);
+    });
+}
