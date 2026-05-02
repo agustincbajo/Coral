@@ -1,0 +1,25 @@
+---
+source: crates/coral-cli/tests/snapshot_cli.rs
+expression: stdout
+---
+# Search results for: outbox dispatcher
+
+- **[[outbox]]** (score: 1.243)
+  # Outbox pattern
+
+Guarantees at-least-once delivery by writing intent to a local outbox
+table inside the same database transaction as the business write. A
+background dispatcher polls the outbox and e
+
+- **[[checkout-flow]]** (score: 0.288)
+  ns 3 services. The order
+service uses [[outbox]] for the OrderCreated event downstream.
+
+- **[[order]]** (score: 0.267)
+  /orders, validates, persists via the
+[[outbox]] pattern, returns 202.
+
+See [[checkout-flow]] for end-to-end behavior.
+
+
+_(Offline tfidf ranking. Pass `--algorithm bm25` (or `tfidf`) to switch ranking, or `--engine embeddings` for semantic search via Voyage AI.)_

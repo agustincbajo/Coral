@@ -1,0 +1,22 @@
+---
+source: crates/coral-cli/tests/snapshot_cli.rs
+expression: stdout
+---
+# Wiki stats
+
+- Total pages: 4
+- By type:
+  - concept: 2
+  - flow: 1
+  - module: 1
+- By status:
+  - draft: 1
+  - reviewed: 2
+  - verified: 1
+- Confidence: avg 0.74 (min 0.50, max 0.90)
+- Low confidence (<0.6): 1
+- Critical low confidence (<0.3): 0
+- Stale pages: 0
+- Archived pages: 0
+- Total outbound links: 5
+- Orphan candidates: 1 (idempotency)

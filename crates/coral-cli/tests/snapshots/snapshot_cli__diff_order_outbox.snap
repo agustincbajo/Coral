@@ -1,0 +1,35 @@
+---
+source: crates/coral-cli/tests/snapshot_cli.rs
+expression: stdout
+---
+# Diff: `order` ↔ `outbox`
+
+## Frontmatter
+
+| field | `order` | `outbox` |
+|---|---|---|
+| type | `module` | `concept` | ⚠️ differ
+| status | `reviewed` | `verified` | ⚠️ differ
+| confidence Δ | — | — | +0.05 |
+| body chars | 162 | 276 |
+
+## Sources
+
+### Only in `order` (1)
+
+- src/order/handler.rs
+
+### Only in `outbox` (1)
+
+- src/outbox/dispatcher.rs
+
+## Wikilinks
+
+### Only in `order` (2)
+
+- checkout-flow
+- outbox
+
+### Only in `outbox` (1)
+
+- order

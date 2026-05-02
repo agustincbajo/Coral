@@ -1,0 +1,28 @@
+---
+source: crates/coral-cli/tests/snapshot_cli.rs
+expression: stdout
+---
+{
+  "total_pages": 4,
+  "by_type": {
+    "concept": 2,
+    "flow": 1,
+    "module": 1
+  },
+  "by_status": {
+    "draft": 1,
+    "reviewed": 2,
+    "verified": 1
+  },
+  "confidence_avg": 0.7374999999999999,
+  "confidence_min": 0.5,
+  "confidence_max": 0.9,
+  "low_confidence_count": 1,
+  "critical_low_confidence_count": 0,
+  "stale_count": 0,
+  "archived_count": 0,
+  "total_outbound_links": 5,
+  "orphan_candidates": [
+    "idempotency"
+  ]
+}

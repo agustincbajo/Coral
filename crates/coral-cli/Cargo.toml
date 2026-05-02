@@ -40,3 +40,4 @@ coral-stats = { path = "../coral-stats" }
 tempfile = { workspace = true }
 assert_cmd = { workspace = true }
 predicates = { workspace = true }
+insta = { version = "1", features = ["yaml", "filters"] }
