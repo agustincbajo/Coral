@@ -471,22 +471,8 @@ fn default_action() -> AutoFixAction {
 }
 
 pub(crate) fn parse_auto_fix_plan(stdout: &str) -> Result<AutoFixPlan> {
-    let trimmed = strip_yaml_fence(stdout);
+    let trimmed = super::plan::strip_yaml_fence(stdout);
     Ok(serde_yaml_ng::from_str(trimmed)?)
-}
-
-fn strip_yaml_fence(s: &str) -> &str {
-    let s = s.trim();
-    if let Some(rest) = s
-        .strip_prefix("```yaml\n")
-        .or_else(|| s.strip_prefix("```\n"))
-    {
-        if let Some(end) = rest.rfind("```") {
-            return rest[..end].trim_end();
-        }
-        return rest;
-    }
-    s
 }
 
 pub(crate) fn apply_auto_fix_plan(
@@ -1070,7 +1056,7 @@ pub(crate) struct SourceSuggestionReport {
 /// responsible for deduping against the page's existing
 /// `frontmatter.sources` and for any path-validation policy.
 pub(crate) fn parse_source_suggestion(stdout: &str) -> Result<Vec<String>> {
-    let trimmed = strip_yaml_fence(stdout);
+    let trimmed = super::plan::strip_yaml_fence(stdout);
     let parsed: SourceSuggestion = serde_yaml_ng::from_str(trimmed)?;
     Ok(parsed.suggested_sources)
 }

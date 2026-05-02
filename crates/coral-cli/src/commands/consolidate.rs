@@ -252,22 +252,8 @@ struct SplitOutcome {
 }
 
 pub(crate) fn parse_consolidate_plan(stdout: &str) -> Result<ConsolidatePlan> {
-    let trimmed = strip_yaml_fence(stdout);
+    let trimmed = super::plan::strip_yaml_fence(stdout);
     Ok(serde_yaml_ng::from_str(trimmed)?)
-}
-
-fn strip_yaml_fence(s: &str) -> &str {
-    let s = s.trim();
-    if let Some(rest) = s
-        .strip_prefix("```yaml\n")
-        .or_else(|| s.strip_prefix("```\n"))
-    {
-        if let Some(end) = rest.rfind("```") {
-            return rest[..end].trim_end();
-        }
-        return rest;
-    }
-    s
 }
 
 /// Applies a consolidation plan against the on-disk wiki. Mutates pages on

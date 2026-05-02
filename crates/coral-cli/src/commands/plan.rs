@@ -46,18 +46,40 @@ impl Plan {
     }
 }
 
-fn strip_yaml_fence(s: &str) -> &str {
+/// Strip a Markdown code fence from the runner's stdout, tolerating
+/// arbitrary prose before AND after the fence. Examples that all
+/// resolve to the inner YAML:
+///
+/// - Bare YAML (no fence): returned as-is.
+/// - "```yaml\n...\n```": classic Markdown fenced block.
+/// - "I have enough context. Here's the plan:\n\n```yaml\n...\n```":
+///   conversational prelude before the fence (LLMs vary on whether
+///   they include this; we used to fail when they did).
+/// - Closing fence followed by trailing commentary: ignored.
+///
+/// If no fence is present, returns the trimmed input verbatim — assume
+/// the caller produced bare YAML.
+pub(crate) fn strip_yaml_fence(s: &str) -> &str {
     let s = s.trim();
-    if let Some(rest) = s
-        .strip_prefix("```yaml\n")
-        .or_else(|| s.strip_prefix("```\n"))
-    {
-        if let Some(end) = rest.rfind("```") {
-            return rest[..end].trim_end();
-        }
-        return rest;
+    // Find the START of a YAML fence anywhere in the input.
+    let (start_idx, fence_len) = match s.find("```yaml\n") {
+        Some(i) => (i, "```yaml\n".len()),
+        None => match s.find("```\n") {
+            Some(i) => (i, "```\n".len()),
+            // Also accept a fence that immediately starts the buffer
+            // with no trailing newline (rare but possible).
+            None => match s.find("```yaml") {
+                Some(i) => (i, "```yaml".len()),
+                None => return s,
+            },
+        },
+    };
+    let after_fence = &s[start_idx + fence_len..];
+    // Find the closing fence (first occurrence after the opener).
+    if let Some(end) = after_fence.find("```") {
+        return after_fence[..end].trim_end();
     }
-    s
+    after_fence
 }
 
 /// Builds a Page in memory from a `create` PlanEntry. Caller writes to disk.
@@ -166,6 +188,44 @@ plan:
     fn parse_invalid_yaml() {
         let err = Plan::parse("").expect_err("empty must error");
         assert!(matches!(err, CoralError::Yaml(_)));
+    }
+
+    /// Real LLMs (Claude, Gemini) sometimes emit conversational prose
+    /// before the YAML code fence, e.g. "I have enough context. Here's
+    /// the plan:\n\n```yaml\n...\n```". The previous strip_yaml_fence
+    /// only handled fence-at-start; this case caused dogfooding apply
+    /// to fail with "found character that cannot start any token at
+    /// line 3 column 1". Pin the fix.
+    #[test]
+    fn parse_tolerates_prose_before_fence() {
+        let with_prelude = "I have enough context to write a precise plan. Here it is:\n\n\
+                            ```yaml\nplan:\n  - slug: order\n    type: module\n    confidence: 0.7\n    \
+                            rationale: anchor\n    body: |\n      # Order\n```";
+        let plan = Plan::parse(with_prelude).expect("must tolerate prelude prose");
+        assert_eq!(plan.plan.len(), 1);
+        assert_eq!(plan.plan[0].slug, "order");
+    }
+
+    /// And trailing prose after the closing fence too.
+    #[test]
+    fn parse_tolerates_prose_after_fence() {
+        let with_postscript = "```yaml\nplan:\n  - slug: order\n    type: module\n    \
+                               confidence: 0.7\n    rationale: anchor\n    body: |\n      # Order\n```\n\
+                               \nLet me know if you'd like adjustments.\n";
+        let plan = Plan::parse(with_postscript).expect("must tolerate postscript");
+        assert_eq!(plan.plan.len(), 1);
+        assert_eq!(plan.plan[0].slug, "order");
+    }
+
+    /// Both at once — the realistic LLM output shape.
+    #[test]
+    fn parse_tolerates_prose_around_fence() {
+        let wrapped = "Here's the plan:\n\n```yaml\nplan:\n  - slug: order\n    type: module\n    \
+                       confidence: 0.7\n    rationale: anchor\n    body: |\n      # Order\n```\n\n\
+                       Happy to refine if needed.\n";
+        let plan = Plan::parse(wrapped).expect("must tolerate prose around fence");
+        assert_eq!(plan.plan.len(), 1);
+        assert_eq!(plan.plan[0].slug, "order");
     }
 
     #[test]
