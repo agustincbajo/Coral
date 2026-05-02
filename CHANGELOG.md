@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-05-01
+
 ### Added
 
 - **`OpenAIProvider`** ([crates/coral-runner/src/embeddings.rs](crates/coral-runner/src/embeddings.rs)): second real `EmbeddingsProvider` impl. Same curl shell-out pattern as Voyage. Constructors `text_embedding_3_small()` (1536-dim, default) and `text_embedding_3_large()` (3072-dim). `coral search --embeddings-provider openai` selects it; needs `OPENAI_API_KEY`. 3 unit tests + 1 ignored real-API smoke.
@@ -125,7 +127,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 5 ADRs: Rust CLI architecture, Claude CLI vs API, template via include_dir, multi-agent flow, versioning + sync.
 - Self-hosted `.wiki/` with 14 seed pages (cli/core/lint/runner/stats modules + concepts + entities + flow + decisions + synthesis + operations + sources).
 
-[Unreleased]: https://github.com/agustincbajo/Coral/compare/v0.3.2...HEAD
+[Unreleased]: https://github.com/agustincbajo/Coral/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/agustincbajo/Coral/releases/tag/v0.4.0
 [0.3.2]: https://github.com/agustincbajo/Coral/releases/tag/v0.3.2
 [0.3.1]: https://github.com/agustincbajo/Coral/releases/tag/v0.3.1
 [0.3.0]: https://github.com/agustincbajo/Coral/releases/tag/v0.3.0
