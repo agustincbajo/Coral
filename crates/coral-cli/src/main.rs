@@ -55,6 +55,8 @@ enum Cmd {
     Export(commands::export::ExportArgs),
     /// Push wiki pages to a Notion database (thin wrapper over `export --format notion-json` + curl).
     NotionPush(commands::notion_push::NotionPushArgs),
+    /// Validate that every version in `.coral-pins.toml` exists as a tag in the remote Coral repo.
+    ValidatePin(commands::validate_pin::ValidatePinArgs),
 }
 
 fn main() -> ExitCode {
@@ -75,6 +77,7 @@ fn main() -> ExitCode {
         Cmd::Search(args) => commands::search::run(args, cli.wiki_root.as_deref()),
         Cmd::Export(args) => commands::export::run(args, cli.wiki_root.as_deref()),
         Cmd::NotionPush(args) => commands::notion_push::run(args, cli.wiki_root.as_deref()),
+        Cmd::ValidatePin(args) => commands::validate_pin::run(args),
     };
 
     match result {

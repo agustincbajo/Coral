@@ -1,0 +1,30 @@
+name: 'Coral embeddings cache'
+description: |
+  Persist .coral-embeddings.json across CI runs so `coral search --engine embeddings`
+  only re-embeds pages whose content changed. Drop this step BEFORE you run any
+  embeddings command in your workflow.
+
+  Cache key strategy: <prefix>-<ref>-<hash of .wiki/**/*.md>. Falls back to the most
+  recent run on the same branch when the exact hash misses, so a single page edit
+  reuses 99% of vectors. Cross-branch reuse is intentionally NOT done — branches
+  often have divergent page bodies and a stale vector would silently rank wrong.
+inputs:
+  wiki_root:
+    description: 'Wiki root directory containing .coral-embeddings.json (default: .wiki).'
+    required: false
+    default: '.wiki'
+  cache_key_prefix:
+    description: 'Prefix for the cache key. Override if you maintain multiple wikis in one repo.'
+    required: false
+    default: 'coral-embeddings'
+runs:
+  using: 'composite'
+  steps:
+    - name: Restore embeddings cache
+      uses: actions/cache@v4
+      with:
+        path: ${{ inputs.wiki_root }}/.coral-embeddings.json
+        key: ${{ inputs.cache_key_prefix }}-${{ github.ref_name }}-${{ hashFiles(format('{0}/**/*.md', inputs.wiki_root)) }}
+        restore-keys: |
+          ${{ inputs.cache_key_prefix }}-${{ github.ref_name }}-
+          ${{ inputs.cache_key_prefix }}-

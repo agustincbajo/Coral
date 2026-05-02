@@ -35,15 +35,15 @@ Honra lo prometido en docs (multi-provider) y ataca la deuda real del stub de Ge
 
 ## v0.5+ — ideas tentativas (sin commitment)
 
-Lista para no perder ideas que no entran ahora.
+Lista para no perder ideas que no entran ahora. **Items entregados anticipadamente** se marcan ✅ y caen del backlog.
 
 - **Local llama.cpp runner** — `LocalRunner` que use un binario `llama-cli`. Útil para offline / ahorrar costos en lint nocturno.
 - **`coral diff <pageA> <pageB>`** — mostrar contradicciones entre 2 versiones de la misma página o entre 2 wikis sincronizados.
 - **`coral lint --auto-fix`** — el LLM bumpea `confidence`, mueve a `_archive/`, completa `sources` automáticamente para issues sencillos.
-- **Hooks pre-commit** — `coral lint --structural --staged` corre solo sobre los `.wiki/**/*.md` cambiados.
+- ✅ **Hooks pre-commit** — `coral lint --staged` corre lint completo pero filtra issues a los `.wiki/**/*.md` staged. Shipped en `[Unreleased]`.
 - **`coral export --format html`** — sitio estático navegable (mdbook backend?) para hospedar la wiki como docs públicas.
-- **Embeddings caching en CI** — la GH action de ingest reusa cache entre runs vía `actions/cache`.
-- **`coral validate-pin`** — verifica que las versiones pinneadas en `.coral-pins.toml` existen como tags.
+- ✅ **Embeddings caching en CI** — composite action `embeddings-cache` con `actions/cache@v4`, key branch-scoped. Shipped en `[Unreleased]`.
+- ✅ **`coral validate-pin`** — verifica via `git ls-remote --tags` que las versiones pinneadas existan. Shipped en `[Unreleased]`.
 
 ## Cómo trabajar este backlog
 

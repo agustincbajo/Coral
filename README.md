@@ -229,6 +229,22 @@ Coral ships 3 reusable composite GitHub Actions consumable by any repo with this
 | `lint` | nightly schedule | `coral lint --all` (structural + semantic). Posts findings as a PR comment / issue. |
 | `consolidate` | weekly schedule | Suggests merges/retirements/splits. Opens PR `wiki/consolidate`. |
 
+### Embeddings cache (opt-in, for `--engine embeddings` workflows)
+
+If your CI runs `coral search --engine embeddings`, drop the cache action **before** the search step so each run only re-embeds pages whose content changed:
+
+```yaml
+- uses: actions/checkout@v4
+- uses: agustincbajo/Coral/.github/actions/embeddings-cache@v0.4.0
+  with:
+    wiki_root: .wiki    # default
+- run: coral search --engine embeddings "outbox dispatcher" --limit 5
+  env:
+    VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
+```
+
+Cache key strategy: `<prefix>-<ref>-<hash of .wiki/**/*.md>`. Falls back to the most recent run on the same branch when the exact hash misses, so a single page edit reuses ~all vectors. Cross-branch reuse is intentionally NOT done — branches often diverge and a stale vector silently ranks wrong.
+
 ### Hermes quality gate (opt-in)
 
 ```yaml

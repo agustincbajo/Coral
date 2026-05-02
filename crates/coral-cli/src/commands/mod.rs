@@ -6,6 +6,7 @@ pub mod pins;
 pub mod search;
 pub mod stats;
 pub mod sync;
+pub mod validate_pin;
 
 pub mod bootstrap;
 pub mod consolidate;

@@ -149,6 +149,7 @@ fn full_lifecycle_with_mock_runner() {
             all: false,
             format: "markdown".into(),
             provider: None,
+            staged: false,
         },
         Some(&wiki),
     )
@@ -199,6 +200,7 @@ fn lifecycle_init_idempotent_does_not_clobber_seeded_pages() {
             all: false,
             format: "markdown".into(),
             provider: None,
+            staged: false,
         },
         Some(&wiki),
     )
@@ -235,6 +237,7 @@ fn lifecycle_lint_json_format_emits_valid_json() {
             all: false,
             format: "json".into(),
             provider: None,
+            staged: false,
         },
         Some(&wiki),
     )
