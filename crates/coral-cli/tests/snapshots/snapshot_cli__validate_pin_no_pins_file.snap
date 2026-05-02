@@ -2,4 +2,4 @@
 source: crates/coral-cli/tests/snapshot_cli.rs
 expression: stderr
 ---
-no .coral-pins.toml or .coral-template-version present at /private[TMPDIR]; nothing to validate
+no .coral-pins.toml or .coral-template-version present at [TMPDIR]; nothing to validate

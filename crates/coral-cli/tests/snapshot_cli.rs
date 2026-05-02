@@ -165,8 +165,14 @@ fn standard_filters() -> Vec<(&'static str, &'static str)> {
             "[TIMESTAMP]",
         ),
         // Tempdir prefix that may sneak into error messages or paths.
-        // Matches macOS (/var/folders/...), Linux (/tmp/...), and Windows-style.
-        (r"/(?:var/folders|tmp)/[^\s]+\.tmp[A-Za-z0-9]*", "[TMPDIR]"),
+        // Matches macOS (/private/var/folders/.../.tmpXXX), plain
+        // /var/folders/.../.tmpXXX, and Linux (/tmp/.tmpXXX) where the
+        // tempdir is the immediate child of /tmp with no intermediate
+        // path component. `[^\s]*` (zero-or-more) handles both cases.
+        (
+            r"(?:/private)?/(?:var/folders|tmp)/[^\s]*\.tmp[A-Za-z0-9]*",
+            "[TMPDIR]",
+        ),
         // Generic catch-all for tempdir-ish absolute paths anchored at .wiki.
         // Keeps the snapshots free of `/private/var/folders/.../.wiki/...`.
         (
