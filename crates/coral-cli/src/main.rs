@@ -57,6 +57,8 @@ enum Cmd {
     NotionPush(commands::notion_push::NotionPushArgs),
     /// Validate that every version in `.coral-pins.toml` exists as a tag in the remote Coral repo.
     ValidatePin(commands::validate_pin::ValidatePinArgs),
+    /// Diff two wiki pages structurally (frontmatter, sources, wikilinks, body stats).
+    Diff(commands::diff::DiffArgs),
 }
 
 fn main() -> ExitCode {
@@ -78,6 +80,7 @@ fn main() -> ExitCode {
         Cmd::Export(args) => commands::export::run(args, cli.wiki_root.as_deref()),
         Cmd::NotionPush(args) => commands::notion_push::run(args, cli.wiki_root.as_deref()),
         Cmd::ValidatePin(args) => commands::validate_pin::run(args),
+        Cmd::Diff(args) => commands::diff::run(args, cli.wiki_root.as_deref()),
     };
 
     match result {

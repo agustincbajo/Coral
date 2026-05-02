@@ -10,6 +10,7 @@ pub mod validate_pin;
 
 pub mod bootstrap;
 pub mod consolidate;
+pub mod diff;
 pub mod ingest;
 pub mod onboard;
 pub mod plan;

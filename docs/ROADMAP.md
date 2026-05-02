@@ -2,7 +2,7 @@
 
 Un solo lugar para ver qué viene. Cada item tiene **prioridad**, **tamaño**, y un **estado** (✅ shipped, ⏸️ blocked, pendiente). Items sin gate no se considerarán "done".
 
-**Última actualización**: 2026-05-01 — todos los P0 entregados (#1, #2, #3, #4); P1 #6, #7, #8 entregados; #5 (dogfooding) bloqueado en `claude setup-token`. v0.4 listo para release. Ver CHANGELOG `[Unreleased]`.
+**Última actualización**: 2026-05-01 — v0.4.0 shipped. `[Unreleased]` ya acumula 5 ítems del backlog v0.5: `validate-pin`, `lint --staged`, `embeddings-cache` action, `coral diff`, `coral export --format html`. Quedan ideas tentativas: local llama.cpp runner, `lint --auto-fix`. P1 #5 (dogfooding) sigue bloqueado en `claude setup-token`.
 
 ## v0.4.0 — multi-provider runners
 
@@ -38,10 +38,10 @@ Honra lo prometido en docs (multi-provider) y ataca la deuda real del stub de Ge
 Lista para no perder ideas que no entran ahora. **Items entregados anticipadamente** se marcan ✅ y caen del backlog.
 
 - **Local llama.cpp runner** — `LocalRunner` que use un binario `llama-cli`. Útil para offline / ahorrar costos en lint nocturno.
-- **`coral diff <pageA> <pageB>`** — mostrar contradicciones entre 2 versiones de la misma página o entre 2 wikis sincronizados.
+- ✅ **`coral diff <pageA> <pageB>`** — diff estructural (frontmatter, sources, wikilinks, body stats). Shipped en `[Unreleased]`. Future: `--semantic` para contradicciones via LLM.
 - **`coral lint --auto-fix`** — el LLM bumpea `confidence`, mueve a `_archive/`, completa `sources` automáticamente para issues sencillos.
 - ✅ **Hooks pre-commit** — `coral lint --staged` corre lint completo pero filtra issues a los `.wiki/**/*.md` staged. Shipped en `[Unreleased]`.
-- **`coral export --format html`** — sitio estático navegable (mdbook backend?) para hospedar la wiki como docs públicas.
+- ✅ **`coral export --format html`** — sitio estático single-file con TOC, dark mode, wikilinks anchor-linkeados. Shipped en `[Unreleased]`.
 - ✅ **Embeddings caching en CI** — composite action `embeddings-cache` con `actions/cache@v4`, key branch-scoped. Shipped en `[Unreleased]`.
 - ✅ **`coral validate-pin`** — verifica via `git ls-remote --tags` que las versiones pinneadas existan. Shipped en `[Unreleased]`.
 
