@@ -71,15 +71,26 @@ pub fn load_or_fallback_in(cwd: &Path, name: &str, fallback: &str) -> LoadedProm
     }
 }
 
-/// Names of prompts known to v0.2. Kept in sync with the LLM commands that
-/// call [`load_or_fallback`].
+/// Names of prompts known to the CLI. Kept in sync with the LLM commands
+/// that call [`load_or_fallback`]. New prompts added in v0.3+ stay listed
+/// here even when the embedded template hasn't shipped yet — the loader
+/// falls back to the in-source `*_FALLBACK` constant on the consuming
+/// command, and `coral prompts list` surfaces the resolved source.
 pub const KNOWN_PROMPTS: &[&str] = &[
+    // v0.1 — original 5 LLM subcommands.
     "bootstrap",
     "ingest",
     "query",
     "lint-semantic",
     "consolidate",
+    // v0.2 — added onboarding.
     "onboard",
+    // v0.3 — added LLM-driven Q/A pairs in `coral export --format jsonl --qa`.
+    "qa-pairs",
+    // v0.5 — added LLM-driven auto-fix in `coral lint --auto-fix`.
+    "lint-auto-fix",
+    // v0.6 — added LLM-driven contradiction analysis in `coral diff --semantic`.
+    "diff-semantic",
 ];
 
 /// Lists all known prompt names with their resolved source. The `content`
