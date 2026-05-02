@@ -23,6 +23,7 @@ tracing = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 criterion = "0.5"
+proptest = "1"
 
 [[bench]]
 name = "search_bench"

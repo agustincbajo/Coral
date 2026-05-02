@@ -308,6 +308,7 @@ dependencies = [
  "ahash",
  "chrono",
  "criterion",
+ "proptest",
  "rayon",
  "regex",
  "serde",
