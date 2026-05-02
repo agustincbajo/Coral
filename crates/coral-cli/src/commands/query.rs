@@ -5,6 +5,7 @@ use coral_runner::{Prompt, Runner};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::Instant;
 
 #[derive(Args, Debug)]
 pub struct QueryArgs {
@@ -68,9 +69,21 @@ pub fn run_with_runner(
         timeout: None,
     };
 
+    let pages_in_context = pages.len().min(40);
+    let model_for_log = prompt.model.clone().unwrap_or_else(|| "default".into());
+    tracing::info!(
+        pages_in_context,
+        model = %model_for_log,
+        question_chars = args.question.chars().count(),
+        "coral query: starting"
+    );
+    let start = Instant::now();
+    let mut chunks_count = 0usize;
+
     let mut stdout = std::io::stdout().lock();
-    let _out = runner
+    let out = runner
         .run_streaming(&prompt, &mut |chunk| {
+            chunks_count += 1;
             // Best-effort: a write failure on stdout (e.g. broken pipe) shouldn't
             // surface as a runner error — just stop emitting.
             let _ = stdout.write_all(chunk.as_bytes());
@@ -79,6 +92,14 @@ pub fn run_with_runner(
         .map_err(|e| anyhow::anyhow!("runner failed: {e}"))?;
     // Trailing newline so the next shell prompt lands on its own line.
     let _ = stdout.write_all(b"\n");
+
+    tracing::info!(
+        duration_ms = start.elapsed().as_millis() as u64,
+        chunks = chunks_count,
+        output_chars = out.stdout.chars().count(),
+        model = %model_for_log,
+        "coral query: completed"
+    );
     Ok(ExitCode::SUCCESS)
 }
 

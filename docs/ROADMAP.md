@@ -23,7 +23,7 @@ Honra lo prometido en docs (multi-provider) y ataca la deuda real del stub de Ge
 |---|---|---|---|
 | 5 | **Dogfooding effectivo de `.wiki/`** — bring `.wiki/` desde 213ac99 → HEAD usando `coral bootstrap --apply` o `coral ingest --apply` por chunks de release | M | ⏸️ bloqueado en auth de `claude` subprocess — necesita `claude setup-token` |
 | 6 | ~~**`PageType::Reference`**~~ — ya existe en [crates/coral-core/src/frontmatter.rs:25](crates/coral-core/src/frontmatter.rs:25) | — | ✅ ya estaba shipped |
-| 7 | **Telemetría básica de `coral query`** — duración, tokens, modelo, snippet del top hit usado | S | pendiente |
+| 7 | **Telemetría básica de `coral query`** — duración, tokens, modelo, snippet del top hit usado | S | ✅ shipped (duración, chunks, output_chars, model, pages_in_context) — visible con `RUST_LOG=coral=info` |
 | 8 | **`coral notion-push --dry-run` por defecto** + `--apply` explícito (consistencia con `bootstrap`/`ingest`) | XS | ✅ shipped en commit `cd9b1f8` |
 
 ### P2 — opportunistic
