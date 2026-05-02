@@ -9,17 +9,25 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum RunnerError {
-    #[error("claude binary not found in PATH; install Claude Code from https://claude.com/code")]
+    #[error(
+        "runner binary not found in PATH. \
+         For Claude: install Claude Code from https://claude.com/code. \
+         For Gemini: install gemini-cli. For Local: install llama-cli (llama.cpp). \
+         For HTTP: --provider http reads CORAL_HTTP_ENDPOINT instead of a binary."
+    )]
     NotFound,
     #[error(
-        "claude is not authenticated. Run `claude setup-token` or export ANTHROPIC_API_KEY in this shell.\n\nProvider response:\n{0}"
+        "runner not authenticated. \
+         For Claude: run `claude setup-token` or export ANTHROPIC_API_KEY. \
+         For Gemini: run `gemini auth login` or export GEMINI_API_KEY. \
+         For HTTP: set CORAL_HTTP_API_KEY (if your endpoint requires auth).\n\nProvider response:\n{0}"
     )]
     AuthFailed(String),
-    #[error("claude exited with code {code:?}: {stderr}")]
+    #[error("runner exited with code {code:?}: {stderr}")]
     NonZeroExit { code: Option<i32>, stderr: String },
-    #[error("claude invocation timed out after {0:?}")]
+    #[error("runner invocation timed out after {0:?}")]
     Timeout(Duration),
-    #[error("io error invoking claude: {0}")]
+    #[error("io error invoking runner: {0}")]
     Io(#[from] std::io::Error),
 }
 

@@ -180,7 +180,6 @@ timeout.
 Items fuera del current scope. Sin commitment hasta que alguien pida
 explícitamente, o hasta que un consumer real demuestre la necesidad.
 
-- **`RunnerError` UX bug**: las variantes `NotFound` / `AuthFailed` / `NonZeroExit` / `Timeout` / `Io` hardcodean "claude" en sus mensajes. Cuando el usuario corre `coral query --provider local` y el binario falta, se imprime "claude binary not found" en vez del binario que efectivamente faltó. Fix: parameterizar el binary name por variante (cada Runner attaches su propio nombre antes de propagar). v0.16 candidate.
 - **sqlite-vec C-extension migration**: hoy `SqliteEmbeddingsIndex`
   hace cosine en pure-Rust. Al cruzar ~5k pages la query empieza a
   doler; cambiar UDF a sqlite-vec mantiene el schema.
@@ -221,4 +220,4 @@ explícitamente, o hasta que un consumer real demuestre la necesidad.
 - [ ] Correr los 16 tests `--ignored` (smokes reales + stress + sync) al menos una vez por release; idealmente parte de `release.yml`. Necesita secrets management para `VOYAGE_API_KEY` / `OPENAI_API_KEY` / `LLAMA_MODEL` / `CLAUDE_CODE_OAUTH_TOKEN`.
 - [ ] Self-hosted dogfooding: maintainer corre `claude setup-token` localmente + `coral ingest --apply` para traer `.wiki/` desde commit `213ac99` hasta HEAD (15 releases worth of catch-up). Plan listo en `~/.claude/plans/tuve-que-cancelar-sesiones-rippling-cray.md`.
 - [ ] Publicar Codecov badge (CI ya genera `lcov.info`).
-- [ ] Fix `RunnerError` UX bug — error messages mention "claude" even with `--provider local|gemini|http` (v0.16 candidate).
+- [x] Fix `RunnerError` UX bug — error messages now provider-agnostic with per-runner hints (shipped in v0.15.1).

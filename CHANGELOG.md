@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.1] - 2026-05-02
+
+Patch release — provider-agnostic `RunnerError` messages.
+
+### Fixed
+
+- **`RunnerError` UX bug**: every variant's `Display` impl hardcoded "claude", so a user running `coral query --provider local` against a missing `llama-cli` got the misleading message "claude binary not found" with a hint to install Claude Code. Same for Gemini, HTTP — every error message implied the user was using Claude.
+- All 5 variants reworded to be runner-agnostic with per-provider hints in one message:
+  - `NotFound` lists install paths for Claude / Gemini / Local / HTTP.
+  - `AuthFailed` lists token-setup commands for Claude / Gemini / HTTP.
+  - `NonZeroExit` / `Timeout` / `Io` say "runner" instead of "claude".
+- No API change — variant signatures unchanged. The existing `runner_error_display_messages_are_actionable` test passes against the new wording (it asserts via `.contains()` substrings which all still match).
+
+### Documentation
+
+- ROADMAP refresh: marked v0.14 + v0.15 work done, promoted speculative items shipped during this session, added v0.16 candidates (cross-process integration test, sqlite-vec migration).
+
 ## [0.15.0] - 2026-05-02
 
 15th release this session. Closes the lost-update race that v0.14
@@ -422,7 +439,8 @@ Test count: 385 (v0.8.0) → 427 (+42).
 - 5 ADRs: Rust CLI architecture, Claude CLI vs API, template via include_dir, multi-agent flow, versioning + sync.
 - Self-hosted `.wiki/` with 14 seed pages (cli/core/lint/runner/stats modules + concepts + entities + flow + decisions + synthesis + operations + sources).
 
-[Unreleased]: https://github.com/agustincbajo/Coral/compare/v0.15.0...HEAD
+[Unreleased]: https://github.com/agustincbajo/Coral/compare/v0.15.1...HEAD
+[0.15.1]: https://github.com/agustincbajo/Coral/releases/tag/v0.15.1
 [0.15.0]: https://github.com/agustincbajo/Coral/releases/tag/v0.15.0
 [0.14.1]: https://github.com/agustincbajo/Coral/releases/tag/v0.14.1
 [0.14.0]: https://github.com/agustincbajo/Coral/releases/tag/v0.14.0
