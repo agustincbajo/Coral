@@ -1,9 +1,16 @@
 //! Structural lint checks — pure functions over `&[Page]`.
+//!
+//! Two of the checks ([`check_commit_in_git`] and [`check_source_exists`])
+//! also touch the filesystem / git, so they take an extra `repo_root: &Path`
+//! argument. Both degrade gracefully when git is missing or paths are
+//! unreadable.
 
 use crate::report::{LintCode, LintIssue, LintSeverity};
 use coral_core::frontmatter::{PageType, Status};
 use coral_core::page::Page;
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
+use std::process::Command;
 
 /// Reports a `BrokenWikilink` Critical for any outbound wikilink whose target
 /// is not the slug of any page in the workspace.
@@ -131,6 +138,188 @@ pub fn check_stale_status(pages: &[Page]) -> Vec<LintIssue> {
     issues
 }
 
+/// Returns true for `last_updated_commit` values that are clearly not real
+/// SHAs (test fixtures and historical placeholders). These pages are skipped
+/// by [`check_commit_in_git`] to avoid drowning the report in false positives.
+fn is_placeholder_commit(commit: &str) -> bool {
+    let trimmed = commit.trim();
+    trimmed.is_empty() || trimmed.len() < 7 || matches!(trimmed, "unknown" | "abc" | "zero")
+}
+
+/// Shells out **once** to `git rev-list --all --no-walk --objects` from
+/// `repo_root` to collect every reachable commit SHA in the repository, and
+/// reports `CommitNotInGit` Warning for each page whose
+/// `frontmatter.last_updated_commit` is not in that set.
+///
+/// Skips pages whose commit is a known placeholder (empty, "unknown", "abc",
+/// "zero", or shorter than 7 chars — see [`is_placeholder_commit`]) so test
+/// fixtures and freshly-bootstrapped wikis do not light up the report.
+///
+/// If the `git rev-list` invocation fails for any reason (no git installed,
+/// detached repo, permission denied, …) the check logs a warning via
+/// `tracing::warn!` and returns an empty issue list — degrading gracefully
+/// rather than failing the whole lint pass.
+pub fn check_commit_in_git(pages: &[Page], repo_root: &Path) -> Vec<LintIssue> {
+    let known: HashSet<String> = match collect_git_commits(repo_root) {
+        Ok(set) => set,
+        Err(err) => {
+            tracing::warn!(
+                error = %err,
+                repo_root = %repo_root.display(),
+                "check_commit_in_git: git rev-list failed; skipping check"
+            );
+            return Vec::new();
+        }
+    };
+
+    let mut issues = Vec::new();
+    for page in pages {
+        let commit = &page.frontmatter.last_updated_commit;
+        if is_placeholder_commit(commit) {
+            continue;
+        }
+        if !known.contains(commit.as_str()) {
+            // `git log` matches by prefix when commits are abbreviated, so do
+            // the same: accept the commit if any known SHA starts with it.
+            let prefix_match = known.iter().any(|sha| sha.starts_with(commit.as_str()));
+            if prefix_match {
+                continue;
+            }
+            issues.push(LintIssue {
+                code: LintCode::CommitNotInGit,
+                severity: LintSeverity::Warning,
+                page: Some(page.path.clone()),
+                message: format!(
+                    "Commit '{}' for page '{}' not found in repo history",
+                    commit, page.frontmatter.slug
+                ),
+                context: Some(commit.clone()),
+            });
+        }
+    }
+    issues
+}
+
+/// Runs `git rev-list --all --no-walk --objects` in `repo_root` and returns
+/// the set of commit SHAs (40-char hex strings, plus any short SHAs that may
+/// appear). Returns an `Err(String)` describing the failure if `git` is not
+/// available, the directory is not a repository, or the command exits
+/// non-zero.
+fn collect_git_commits(repo_root: &Path) -> std::result::Result<HashSet<String>, String> {
+    let output = Command::new("git")
+        .args(["rev-list", "--all", "--no-walk"])
+        .current_dir(repo_root)
+        .output()
+        .map_err(|e| format!("failed to invoke git: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "git rev-list exited {:?}: {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(stdout
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(|s| s.to_string())
+        .collect())
+}
+
+/// Reports `SourceNotFound` Warning for each entry in `frontmatter.sources`
+/// that does not resolve to a file or directory under `repo_root`.
+///
+/// Sources that look like URLs (`http://` / `https://` prefix) are skipped —
+/// only filesystem paths are checked. Both files and directories are valid
+/// targets (`Path::exists()` is sufficient).
+pub fn check_source_exists(pages: &[Page], repo_root: &Path) -> Vec<LintIssue> {
+    let mut issues = Vec::new();
+    for page in pages {
+        for src in &page.frontmatter.sources {
+            if src.starts_with("http://") || src.starts_with("https://") {
+                continue;
+            }
+            let full = repo_root.join(src);
+            if !full.exists() {
+                issues.push(LintIssue {
+                    code: LintCode::SourceNotFound,
+                    severity: LintSeverity::Warning,
+                    page: Some(page.path.clone()),
+                    message: format!(
+                        "Source path '{}' for page '{}' not found on disk",
+                        src, page.frontmatter.slug
+                    ),
+                    context: Some(src.clone()),
+                });
+            }
+        }
+    }
+    issues
+}
+
+/// Reports `ArchivedPageLinked` Warning once per (linker, archived target)
+/// pair: any page whose body / backlinks reference an archived page's slug
+/// gets flagged so the maintainer can either update the link or lift the
+/// archive note. The issue's `page` field is the LINKER (the page with the
+/// stale link), `context` is the archived target's slug.
+pub fn check_archived_linked_from_head(pages: &[Page]) -> Vec<LintIssue> {
+    let archived: HashSet<&str> = pages
+        .iter()
+        .filter(|p| p.frontmatter.status == Status::Archived)
+        .map(|p| p.frontmatter.slug.as_str())
+        .collect();
+    if archived.is_empty() {
+        return Vec::new();
+    }
+
+    let mut issues = Vec::new();
+    for page in pages {
+        // Skip self-links from archived pages — those are fine, and we don't
+        // want archived → archived chatter.
+        if page.frontmatter.status == Status::Archived {
+            continue;
+        }
+        for link in page.outbound_links() {
+            if archived.contains(link.as_str()) {
+                issues.push(LintIssue {
+                    code: LintCode::ArchivedPageLinked,
+                    severity: LintSeverity::Warning,
+                    page: Some(page.path.clone()),
+                    message: format!(
+                        "Page '{}' links to archived page '{}'",
+                        page.frontmatter.slug, link
+                    ),
+                    context: Some(link.clone()),
+                });
+            }
+        }
+    }
+    issues
+}
+
+/// Reports `UnknownExtraField` Info — one issue per non-canonical key in
+/// `frontmatter.extra`. Severity is **Info** on purpose: extra fields are
+/// allowed (consumer wikis extend the SCHEMA) but worth surfacing for review.
+pub fn check_unknown_extra_field(pages: &[Page]) -> Vec<LintIssue> {
+    let mut issues = Vec::new();
+    for page in pages {
+        for key in page.frontmatter.extra.keys() {
+            issues.push(LintIssue {
+                code: LintCode::UnknownExtraField,
+                severity: LintSeverity::Info,
+                page: Some(page.path.clone()),
+                message: format!(
+                    "Page '{}' has non-canonical frontmatter field '{}'",
+                    page.frontmatter.slug, key
+                ),
+                context: Some(key.clone()),
+            });
+        }
+    }
+    issues
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -146,18 +335,51 @@ mod tests {
         status: Status,
         sources: Vec<&str>,
     ) -> Page {
+        mk_page_with(
+            slug,
+            page_type,
+            body,
+            confidence,
+            status,
+            sources,
+            "abc",
+            &[],
+        )
+    }
+
+    /// Extended builder: lets a test override `last_updated_commit` and inject
+    /// `extra` frontmatter keys (used by the new structural checks). The legacy
+    /// `mk_page` delegates here with placeholder commit `"abc"` and no extras.
+    #[allow(clippy::too_many_arguments)]
+    fn mk_page_with(
+        slug: &str,
+        page_type: PageType,
+        body: &str,
+        confidence: f64,
+        status: Status,
+        sources: Vec<&str>,
+        last_updated_commit: &str,
+        extra_keys: &[&str],
+    ) -> Page {
+        let mut extra = BTreeMap::new();
+        for k in extra_keys {
+            extra.insert(
+                (*k).to_string(),
+                serde_yaml_ng::Value::String(format!("value-of-{k}")),
+            );
+        }
         Page {
             path: PathBuf::from(format!(".wiki/modules/{slug}.md")),
             frontmatter: Frontmatter {
                 slug: slug.to_string(),
                 page_type,
-                last_updated_commit: "abc".to_string(),
+                last_updated_commit: last_updated_commit.to_string(),
                 confidence: Confidence::try_new(confidence).unwrap(),
                 sources: sources.into_iter().map(String::from).collect(),
                 backlinks: vec![],
                 status,
                 generated_at: None,
-                extra: BTreeMap::new(),
+                extra,
             },
             body: body.to_string(),
         }
@@ -593,5 +815,613 @@ mod tests {
             .iter()
             .any(|i| i.severity == LintSeverity::Warning);
         assert!(has_warning, "expected a warning in: {report:?}");
+    }
+
+    // --- helpers for the context-aware checks --------------------------------
+
+    /// Spin up a real on-disk git repo inside a TempDir so `check_commit_in_git`
+    /// can shell out to `git rev-list` against something concrete. Returns the
+    /// guard plus the SHA of the single commit we made.
+    fn init_git_repo_with_one_commit() -> (tempfile::TempDir, String) {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let root = tmp.path();
+
+        // `git init` (use -q so we don't pollute test output).
+        let out = std::process::Command::new("git")
+            .args(["init", "-q", "-b", "main"])
+            .current_dir(root)
+            .output()
+            .expect("git init");
+        assert!(out.status.success(), "git init failed: {out:?}");
+
+        // Local config so the commit can be created without inheriting the
+        // host's identity (which CI may not have).
+        for kv in [
+            ("user.email", "test@example.com"),
+            ("user.name", "Test"),
+            ("commit.gpgsign", "false"),
+        ] {
+            let out = std::process::Command::new("git")
+                .args(["config", kv.0, kv.1])
+                .current_dir(root)
+                .output()
+                .expect("git config");
+            assert!(out.status.success(), "git config {} failed: {out:?}", kv.0);
+        }
+
+        std::fs::write(root.join("README.md"), "hello\n").expect("write readme");
+        let out = std::process::Command::new("git")
+            .args(["add", "README.md"])
+            .current_dir(root)
+            .output()
+            .expect("git add");
+        assert!(out.status.success(), "git add failed: {out:?}");
+        let out = std::process::Command::new("git")
+            .args(["commit", "-q", "-m", "initial"])
+            .current_dir(root)
+            .output()
+            .expect("git commit");
+        assert!(
+            out.status.success(),
+            "git commit failed: {} / {}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        let out = std::process::Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(root)
+            .output()
+            .expect("git rev-parse");
+        assert!(out.status.success(), "git rev-parse failed: {out:?}");
+        let sha = String::from_utf8(out.stdout).unwrap().trim().to_string();
+        assert_eq!(sha.len(), 40, "expected 40-char SHA, got {sha:?}");
+        (tmp, sha)
+    }
+
+    // --- check_commit_in_git --------------------------------------------------
+
+    #[test]
+    fn commit_in_git_skips_placeholder_commits() {
+        let (tmp, _sha) = init_git_repo_with_one_commit();
+        let pages = vec![
+            mk_page_with(
+                "p1",
+                PageType::Module,
+                "",
+                0.8,
+                Status::Draft,
+                vec![],
+                "abc",
+                &[],
+            ),
+            mk_page_with(
+                "p2",
+                PageType::Module,
+                "",
+                0.8,
+                Status::Draft,
+                vec![],
+                "",
+                &[],
+            ),
+            mk_page_with(
+                "p3",
+                PageType::Module,
+                "",
+                0.8,
+                Status::Draft,
+                vec![],
+                "zero",
+                &[],
+            ),
+            mk_page_with(
+                "p4",
+                PageType::Module,
+                "",
+                0.8,
+                Status::Draft,
+                vec![],
+                "unknown",
+                &[],
+            ),
+        ];
+        let issues = check_commit_in_git(&pages, tmp.path());
+        assert!(
+            issues.is_empty(),
+            "placeholder commits must be skipped, got {issues:?}"
+        );
+    }
+
+    #[test]
+    fn commit_in_git_real_shape_unknown_sha_emits_warning() {
+        let (tmp, _sha) = init_git_repo_with_one_commit();
+        // 40-char hex value that won't collide with any real SHA in the test repo.
+        let bogus = "f".repeat(40);
+        let pages = vec![mk_page_with(
+            "p1",
+            PageType::Module,
+            "",
+            0.8,
+            Status::Draft,
+            vec![],
+            &bogus,
+            &[],
+        )];
+        let issues = check_commit_in_git(&pages, tmp.path());
+        assert_eq!(issues.len(), 1, "expected 1 issue, got {issues:?}");
+        assert_eq!(issues[0].code, LintCode::CommitNotInGit);
+        assert_eq!(issues[0].severity, LintSeverity::Warning);
+        assert_eq!(issues[0].context.as_deref(), Some(bogus.as_str()));
+    }
+
+    #[test]
+    fn commit_in_git_known_sha_no_issue() {
+        let (tmp, sha) = init_git_repo_with_one_commit();
+        let pages = vec![mk_page_with(
+            "p1",
+            PageType::Module,
+            "",
+            0.8,
+            Status::Draft,
+            vec![],
+            &sha,
+            &[],
+        )];
+        let issues = check_commit_in_git(&pages, tmp.path());
+        assert!(
+            issues.is_empty(),
+            "known SHA should be accepted, got {issues:?}"
+        );
+    }
+
+    #[test]
+    fn commit_in_git_no_repo_returns_empty() {
+        // tempdir without `git init` → git rev-list fails → graceful empty.
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let pages = vec![mk_page_with(
+            "p1",
+            PageType::Module,
+            "",
+            0.8,
+            Status::Draft,
+            vec![],
+            &"f".repeat(40),
+            &[],
+        )];
+        let issues = check_commit_in_git(&pages, tmp.path());
+        assert!(
+            issues.is_empty(),
+            "no .git/ should degrade gracefully, got {issues:?}"
+        );
+    }
+
+    // --- check_source_exists --------------------------------------------------
+
+    #[test]
+    fn source_exists_no_issue() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let src_dir = tmp.path().join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::write(src_dir.join("a.rs"), "fn main() {}\n").unwrap();
+        let pages = vec![mk_page(
+            "a",
+            PageType::Module,
+            "",
+            0.8,
+            Status::Draft,
+            vec!["src/a.rs"],
+        )];
+        let issues = check_source_exists(&pages, tmp.path());
+        assert!(
+            issues.is_empty(),
+            "existing source should not emit, got {issues:?}"
+        );
+    }
+
+    #[test]
+    fn source_exists_missing_emits_warning() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let pages = vec![mk_page(
+            "a",
+            PageType::Module,
+            "",
+            0.8,
+            Status::Draft,
+            vec!["src/missing.rs"],
+        )];
+        let issues = check_source_exists(&pages, tmp.path());
+        assert_eq!(issues.len(), 1, "expected 1 issue, got {issues:?}");
+        assert_eq!(issues[0].code, LintCode::SourceNotFound);
+        assert_eq!(issues[0].severity, LintSeverity::Warning);
+        assert_eq!(issues[0].context.as_deref(), Some("src/missing.rs"));
+    }
+
+    #[test]
+    fn source_exists_skips_https_urls() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let pages = vec![mk_page(
+            "a",
+            PageType::Module,
+            "",
+            0.8,
+            Status::Draft,
+            vec!["https://example.com/spec.pdf", "http://example.com/other"],
+        )];
+        let issues = check_source_exists(&pages, tmp.path());
+        assert!(
+            issues.is_empty(),
+            "URL sources must be skipped, got {issues:?}"
+        );
+    }
+
+    #[test]
+    fn source_exists_multiple_missing_emits_one_per_path() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let pages = vec![mk_page(
+            "a",
+            PageType::Module,
+            "",
+            0.8,
+            Status::Draft,
+            vec!["src/missing-1.rs", "src/missing-2.rs", "src/missing-3.rs"],
+        )];
+        let issues = check_source_exists(&pages, tmp.path());
+        assert_eq!(issues.len(), 3, "expected 3 issues, got {issues:?}");
+        let contexts: Vec<&str> = issues.iter().filter_map(|i| i.context.as_deref()).collect();
+        assert!(contexts.contains(&"src/missing-1.rs"));
+        assert!(contexts.contains(&"src/missing-2.rs"));
+        assert!(contexts.contains(&"src/missing-3.rs"));
+    }
+
+    // --- check_archived_linked_from_head -------------------------------------
+
+    #[test]
+    fn archived_linked_one_linker_emits_one_issue() {
+        let pages = vec![
+            mk_page(
+                "old",
+                PageType::Module,
+                "",
+                0.8,
+                Status::Archived,
+                vec!["src/old.rs"],
+            ),
+            mk_page(
+                "live",
+                PageType::Module,
+                "see [[old]]",
+                0.8,
+                Status::Draft,
+                vec!["src/live.rs"],
+            ),
+        ];
+        let issues = check_archived_linked_from_head(&pages);
+        assert_eq!(issues.len(), 1, "expected 1 issue, got {issues:?}");
+        assert_eq!(issues[0].code, LintCode::ArchivedPageLinked);
+        assert_eq!(issues[0].severity, LintSeverity::Warning);
+        // The page field is the LINKER (live), context is the archived target (old).
+        assert_eq!(
+            issues[0].page.as_deref().unwrap().to_str().unwrap(),
+            ".wiki/modules/live.md"
+        );
+        assert_eq!(issues[0].context.as_deref(), Some("old"));
+    }
+
+    #[test]
+    fn archived_linked_two_linkers_emit_two_issues() {
+        let pages = vec![
+            mk_page(
+                "old",
+                PageType::Module,
+                "",
+                0.8,
+                Status::Archived,
+                vec!["src/old.rs"],
+            ),
+            mk_page(
+                "live1",
+                PageType::Module,
+                "see [[old]]",
+                0.8,
+                Status::Draft,
+                vec!["src/live1.rs"],
+            ),
+            mk_page(
+                "live2",
+                PageType::Module,
+                "see [[old]]",
+                0.8,
+                Status::Draft,
+                vec!["src/live2.rs"],
+            ),
+        ];
+        let issues = check_archived_linked_from_head(&pages);
+        assert_eq!(issues.len(), 2, "expected 2 issues, got {issues:?}");
+        let pages_with_issue: Vec<String> = issues
+            .iter()
+            .filter_map(|i| i.page.as_ref().map(|p| p.display().to_string()))
+            .collect();
+        assert!(pages_with_issue.contains(&".wiki/modules/live1.md".to_string()));
+        assert!(pages_with_issue.contains(&".wiki/modules/live2.md".to_string()));
+    }
+
+    #[test]
+    fn archived_linked_only_from_archived_no_issue() {
+        // Self-noise filter: archived → archived links must not fire.
+        let pages = vec![
+            mk_page(
+                "old1",
+                PageType::Module,
+                "see [[old2]]",
+                0.8,
+                Status::Archived,
+                vec!["src/old1.rs"],
+            ),
+            mk_page(
+                "old2",
+                PageType::Module,
+                "",
+                0.8,
+                Status::Archived,
+                vec!["src/old2.rs"],
+            ),
+        ];
+        let issues = check_archived_linked_from_head(&pages);
+        assert!(
+            issues.is_empty(),
+            "archived → archived must be silenced, got {issues:?}"
+        );
+    }
+
+    #[test]
+    fn archived_linked_no_linkers_no_issue() {
+        let pages = vec![
+            mk_page(
+                "old",
+                PageType::Module,
+                "",
+                0.8,
+                Status::Archived,
+                vec!["src/old.rs"],
+            ),
+            mk_page(
+                "live",
+                PageType::Module,
+                "no link here",
+                0.8,
+                Status::Draft,
+                vec!["src/live.rs"],
+            ),
+        ];
+        let issues = check_archived_linked_from_head(&pages);
+        assert!(
+            issues.is_empty(),
+            "no linkers means no issue, got {issues:?}"
+        );
+    }
+
+    // --- check_unknown_extra_field -------------------------------------------
+
+    #[test]
+    fn unknown_extra_field_empty_no_issue() {
+        let pages = vec![mk_page(
+            "a",
+            PageType::Module,
+            "",
+            0.8,
+            Status::Draft,
+            vec!["src/a.rs"],
+        )];
+        let issues = check_unknown_extra_field(&pages);
+        assert!(
+            issues.is_empty(),
+            "no extras means no issue, got {issues:?}"
+        );
+    }
+
+    #[test]
+    fn unknown_extra_field_three_keys_emit_three_issues() {
+        let pages = vec![mk_page_with(
+            "a",
+            PageType::Module,
+            "",
+            0.8,
+            Status::Draft,
+            vec!["src/a.rs"],
+            "abc",
+            &["audit", "priority", "owner"],
+        )];
+        let issues = check_unknown_extra_field(&pages);
+        assert_eq!(issues.len(), 3, "expected 3 issues, got {issues:?}");
+        let contexts: Vec<&str> = issues.iter().filter_map(|i| i.context.as_deref()).collect();
+        assert!(contexts.contains(&"audit"));
+        assert!(contexts.contains(&"priority"));
+        assert!(contexts.contains(&"owner"));
+    }
+
+    #[test]
+    fn unknown_extra_field_severity_is_info() {
+        let pages = vec![mk_page_with(
+            "a",
+            PageType::Module,
+            "",
+            0.8,
+            Status::Draft,
+            vec!["src/a.rs"],
+            "abc",
+            &["audit"],
+        )];
+        let issues = check_unknown_extra_field(&pages);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].code, LintCode::UnknownExtraField);
+        assert_eq!(issues[0].severity, LintSeverity::Info);
+    }
+
+    // --- run_structural_with_root aggregator --------------------------------
+
+    #[test]
+    fn run_structural_with_root_clean_workspace_zero_issues() {
+        // A pristine, hand-crafted workspace: every page links to every other,
+        // confidence high, sources point at real files, no extras, placeholder
+        // commit (skipped). Must produce 0 issues end-to-end.
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let src = tmp.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("a.rs"), "fn a() {}\n").unwrap();
+        std::fs::write(src.join("b.rs"), "fn b() {}\n").unwrap();
+        let pages = vec![
+            mk_page(
+                "a",
+                PageType::Module,
+                "see [[b]]",
+                0.8,
+                Status::Draft,
+                vec!["src/a.rs"],
+            ),
+            mk_page(
+                "b",
+                PageType::Module,
+                "see [[a]]",
+                0.8,
+                Status::Draft,
+                vec!["src/b.rs"],
+            ),
+        ];
+        let report = crate::run_structural_with_root(&pages, tmp.path());
+        assert!(
+            report.issues.is_empty(),
+            "clean workspace produced unexpected issues: {report:?}"
+        );
+    }
+
+    #[test]
+    fn run_structural_with_root_triggers_each_new_check() {
+        // Build a deliberately-bad workspace so each of the 4 new checks fires
+        // at least once — and assert that ONLY the expected codes appear from
+        // the new family.
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        // git init so commit-in-git can run, but the page references a SHA
+        // that doesn't exist → 1 CommitNotInGit.
+        let _ = std::process::Command::new("git")
+            .args(["init", "-q", "-b", "main"])
+            .current_dir(tmp.path())
+            .output()
+            .expect("git init");
+        for kv in [
+            ("user.email", "test@example.com"),
+            ("user.name", "Test"),
+            ("commit.gpgsign", "false"),
+        ] {
+            let _ = std::process::Command::new("git")
+                .args(["config", kv.0, kv.1])
+                .current_dir(tmp.path())
+                .output()
+                .expect("git config");
+        }
+        std::fs::write(tmp.path().join("README.md"), "hi\n").unwrap();
+        let _ = std::process::Command::new("git")
+            .args(["add", "README.md"])
+            .current_dir(tmp.path())
+            .output();
+        let _ = std::process::Command::new("git")
+            .args(["commit", "-q", "-m", "initial"])
+            .current_dir(tmp.path())
+            .output();
+
+        // Build pages:
+        //   archived (Archived)                 → target for ArchivedPageLinked
+        //   live (links to archived,            → +ArchivedPageLinked
+        //         missing source,               → +SourceNotFound
+        //         bogus 40-char SHA,            → +CommitNotInGit
+        //         extra key)                    → +UnknownExtraField
+        let pages = vec![
+            mk_page(
+                "archived",
+                PageType::Module,
+                "",
+                0.8,
+                Status::Archived,
+                vec![],
+            ),
+            mk_page_with(
+                "live",
+                PageType::Module,
+                "see [[archived]]",
+                0.8,
+                Status::Draft,
+                vec!["src/missing.rs"],
+                &"f".repeat(40),
+                &["audit"],
+            ),
+        ];
+        let report = crate::run_structural_with_root(&pages, tmp.path());
+
+        let codes: std::collections::HashSet<LintCode> =
+            report.issues.iter().map(|i| i.code).collect();
+        assert!(
+            codes.contains(&LintCode::ArchivedPageLinked),
+            "missing ArchivedPageLinked: {report:?}"
+        );
+        assert!(
+            codes.contains(&LintCode::SourceNotFound),
+            "missing SourceNotFound: {report:?}"
+        );
+        assert!(
+            codes.contains(&LintCode::CommitNotInGit),
+            "missing CommitNotInGit: {report:?}"
+        );
+        assert!(
+            codes.contains(&LintCode::UnknownExtraField),
+            "missing UnknownExtraField: {report:?}"
+        );
+    }
+
+    #[test]
+    fn run_structural_backward_compat_delegates() {
+        // The legacy `run_structural(&pages)` must still work and produce the
+        // same set of structural issues for a graph-only fixture (where the
+        // context-aware checks happen to find nothing because the cwd `.` has
+        // no .git access for the bogus paths the pages reference).
+        let pages = vec![
+            mk_page(
+                "a",
+                PageType::Module,
+                "see [[ghost]]",
+                0.8,
+                Status::Draft,
+                vec!["src/a.rs"],
+            ),
+            mk_page(
+                "b",
+                PageType::Module,
+                "see [[a]]",
+                0.8,
+                Status::Draft,
+                vec!["src/b.rs"],
+            ),
+        ];
+        let report_legacy = crate::run_structural(&pages);
+        let report_explicit = crate::run_structural_with_root(&pages, std::path::Path::new("."));
+        // Both must surface BrokenWikilink for [[ghost]].
+        let broken_legacy = report_legacy
+            .issues
+            .iter()
+            .filter(|i| i.code == LintCode::BrokenWikilink)
+            .count();
+        let broken_explicit = report_explicit
+            .issues
+            .iter()
+            .filter(|i| i.code == LintCode::BrokenWikilink)
+            .count();
+        assert_eq!(broken_legacy, 1);
+        assert_eq!(broken_explicit, 1);
+        // And the two should agree on the issue count: legacy is just a
+        // delegating wrapper.
+        assert_eq!(
+            report_legacy.issues.len(),
+            report_explicit.issues.len(),
+            "legacy and explicit must agree:\n  legacy={report_legacy:?}\n  explicit={report_explicit:?}"
+        );
     }
 }

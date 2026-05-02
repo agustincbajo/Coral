@@ -30,6 +30,20 @@ pub enum LintCode {
     LowConfidence,
     HighConfidenceWithoutSources,
     StaleStatus,
+    /// `frontmatter.last_updated_commit` does not exist in the repo's git history.
+    /// Indicates either a typo, a force-pushed branch that rewrote history, or a
+    /// commit that lives only in a workdir that was never pushed.
+    CommitNotInGit,
+    /// One of the entries in `frontmatter.sources` does not resolve to a file or
+    /// directory under the repo root. Surfaces stale paths after refactors.
+    SourceNotFound,
+    /// A page with `status: archived` is still being linked to from a non-archived
+    /// page. Either the linker should be updated to point elsewhere or the archive
+    /// note should be lifted.
+    ArchivedPageLinked,
+    /// The page's frontmatter contains an extra (non-canonical) key. Not necessarily
+    /// wrong — consumer wikis are allowed to extend the SCHEMA — but worth a look.
+    UnknownExtraField,
     /// Reserved for semantic lint (Phase D).
     Contradiction,
     /// Reserved for semantic lint.

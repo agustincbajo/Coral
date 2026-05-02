@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use clap::Args;
 use coral_core::walk;
 use coral_lint::{
-    LintReport, run_structural,
+    LintReport, run_structural_with_root,
     semantic::{SEMANTIC_SYSTEM_PROMPT, check_semantic_with_prompt},
 };
 use coral_runner::Runner;
@@ -78,7 +78,15 @@ pub fn run_with_runner(
 
     let mut issues = Vec::new();
     if do_structural {
-        let r = run_structural(&pages);
+        // The repo root is the parent of `.wiki/` — the context-aware
+        // structural checks (commit-in-git, source-exists) need this to
+        // shell out to `git` and to resolve `sources:` paths against the
+        // workspace, not against `.wiki/`.
+        let repo_root: PathBuf = root
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
+        let r = run_structural_with_root(&pages, &repo_root);
         issues.extend(r.issues);
     }
     if do_semantic {
