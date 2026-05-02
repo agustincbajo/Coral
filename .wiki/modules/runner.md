@@ -1,15 +1,15 @@
 ---
 slug: runner
 type: module
-last_updated_commit: 213ac997cf61ad89610b3cfbe40af05e6b7fa8a8
+last_updated_commit: 721050563f1ed29954b279fe334bf6bc8c8e2c34
 confidence: 0.9
 sources:
-  - crates/coral-runner/src/
+- crates/coral-runner/src/
 backlinks:
-  - cli
-  - lint
-  - mock-runner
-  - runner-trait
+- cli
+- lint
+- mock-runner
+- runner-trait
 status: verified
 ---
 

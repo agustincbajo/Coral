@@ -1,13 +1,13 @@
 ---
 slug: stats
 type: module
-last_updated_commit: 213ac997cf61ad89610b3cfbe40af05e6b7fa8a8
+last_updated_commit: 721050563f1ed29954b279fe334bf6bc8c8e2c34
 confidence: 0.9
 sources:
-  - crates/coral-stats/src/
+- crates/coral-stats/src/
 backlinks:
-  - cli
-  - core
+- cli
+- core
 status: verified
 ---
 

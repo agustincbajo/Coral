@@ -1,17 +1,17 @@
 ---
 slug: cli
 type: module
-last_updated_commit: 213ac997cf61ad89610b3cfbe40af05e6b7fa8a8
+last_updated_commit: 721050563f1ed29954b279fe334bf6bc8c8e2c34
 confidence: 0.9
 sources:
-  - crates/coral-cli/src/main.rs
-  - crates/coral-cli/src/lib.rs
-  - crates/coral-cli/src/commands/
+- crates/coral-cli/src/main.rs
+- crates/coral-cli/src/lib.rs
+- crates/coral-cli/src/commands/
 backlinks:
-  - core
-  - lint
-  - runner
-  - stats
+- core
+- lint
+- runner
+- stats
 status: verified
 ---
 
