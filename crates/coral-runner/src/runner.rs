@@ -337,27 +337,32 @@ impl Runner for ClaudeRunner {
 mod tests {
     use super::*;
 
-    /// Returns a tempfile holding an executable shell script that ignores
-    /// every CLI arg and writes `y\n` forever. Replaces `/usr/bin/yes` for
-    /// timeout tests because GNU coreutils 9.4+ rejects unknown long
-    /// options (the runner adds `--print` which we can't suppress).
-    /// Caller must keep the returned `NamedTempFile` alive for the
-    /// duration of the test (Drop deletes the file).
+    /// Returns a `(TempDir, PathBuf)` holding an executable shell script
+    /// that ignores every CLI arg and writes `y\n` forever. Replaces
+    /// `/usr/bin/yes` for timeout tests because GNU coreutils 9.4+
+    /// rejects unknown long options (the runner adds `--print` which we
+    /// can't suppress).
+    ///
+    /// Uses `fs::write` (which closes the fd on completion) and then
+    /// `set_permissions`. Avoids `tempfile::NamedTempFile` because that
+    /// keeps the file open and Linux refuses to execute a file with an
+    /// open writable fd (`ETXTBSY` "Text file busy").
+    ///
+    /// Caller must keep the returned `TempDir` alive for the duration of
+    /// the test (Drop deletes the directory tree).
     #[cfg(unix)]
-    fn forever_yes_script() -> tempfile::NamedTempFile {
-        use std::io::Write as _;
+    fn forever_yes_script() -> (tempfile::TempDir, std::path::PathBuf) {
         use std::os::unix::fs::PermissionsExt as _;
-        let mut f = tempfile::Builder::new()
+        let dir = tempfile::Builder::new()
             .prefix("coral-yes-")
-            .suffix(".sh")
-            .tempfile()
-            .expect("tempfile");
-        writeln!(f, "#!/bin/sh\nwhile :; do echo y; done").expect("write script");
-        f.flush().expect("flush");
-        let mut perms = std::fs::metadata(f.path()).unwrap().permissions();
+            .tempdir()
+            .expect("tempdir");
+        let path = dir.path().join("yes.sh");
+        std::fs::write(&path, "#!/bin/sh\nwhile :; do echo y; done\n").expect("write script");
+        let mut perms = std::fs::metadata(&path).unwrap().permissions();
         perms.set_mode(0o755);
-        std::fs::set_permissions(f.path(), perms).expect("chmod 755");
-        f
+        std::fs::set_permissions(&path, perms).expect("chmod 755");
+        (dir, path)
     }
 
     #[test]
@@ -408,8 +413,8 @@ mod tests {
     #[test]
     fn claude_runner_run_honors_timeout() {
         use std::time::Instant;
-        let _holder = forever_yes_script();
-        let r = ClaudeRunner::with_binary(_holder.path());
+        let (_dir, script) = forever_yes_script();
+        let r = ClaudeRunner::with_binary(&script);
         let prompt = Prompt {
             user: "ignored".into(),
             timeout: Some(Duration::from_millis(200)),
@@ -478,8 +483,8 @@ mod tests {
     #[test]
     fn claude_runner_streaming_timeout_kills_child() {
         use std::time::Instant;
-        let _holder = forever_yes_script();
-        let r = ClaudeRunner::with_binary(_holder.path());
+        let (_dir, script) = forever_yes_script();
+        let r = ClaudeRunner::with_binary(&script);
         let mut chunks: Vec<String> = Vec::new();
         let prompt = Prompt {
             user: "ignored".into(),
