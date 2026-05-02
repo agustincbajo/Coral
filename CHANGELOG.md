@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-05-02
+
+### Added
+
+- **`coral lint --severity <critical|warning|info|all>`** ([crates/coral-cli/src/commands/lint.rs](crates/coral-cli/src/commands/lint.rs)): filter the rendered report and exit-code calculation to issues at or above the named level. Critical-only mode is the natural CI gate. The filter applies AFTER `--auto-fix` runs, so the LLM still sees every issue (it can propose Warning fixes even when CI gates filter to Critical only). New `parse_severity_filter` helper. **12 new tests** (8 unit + 4 cli_smoke e2e).
+- **JSON schema for `coral lint --format json`** ([docs/schemas/lint.schema.json](docs/schemas/lint.schema.json)): mirrors what `coral stats` already does. Generated via `schemars::schema_for!(LintReport)` in a one-shot `crates/coral-lint/examples/dump_schema.rs` dumper. Top-level `LintReport` with `definitions` for `LintCode` (11 variants), `LintIssue`, `LintSeverity` (3 variants). Useful for downstream tools, IDE validation, and as a drift guard. **5 new tests** including a "schema lists every variant" guard against future LintCode additions silently breaking consumers.
+- **`coverage` CI job** ([.github/workflows/ci.yml](.github/workflows/ci.yml)): `cargo-llvm-cov` runs on every push/PR, prints a summary line and uploads `lcov.info` as a 30-day-retention artifact. `continue-on-error: true` since coverage is informational; `test` job remains the hard gate. Sets up the foundation for an eventual Codecov badge once secrets are wired.
+
+### Documentation
+
+- **USAGE.md updated** for v0.7+ flags: `coral lint --severity`, `coral search --algorithm bm25`, `coral consolidate --apply --rewrite-links`. The new `lint --format json` schema link points at the committed `docs/schemas/lint.schema.json`.
+
 ## [0.7.0] - 2026-05-02
 
 ### Added
@@ -199,7 +211,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 5 ADRs: Rust CLI architecture, Claude CLI vs API, template via include_dir, multi-agent flow, versioning + sync.
 - Self-hosted `.wiki/` with 14 seed pages (cli/core/lint/runner/stats modules + concepts + entities + flow + decisions + synthesis + operations + sources).
 
-[Unreleased]: https://github.com/agustincbajo/Coral/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/agustincbajo/Coral/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/agustincbajo/Coral/releases/tag/v0.8.0
 [0.7.0]: https://github.com/agustincbajo/Coral/releases/tag/v0.7.0
 [0.6.0]: https://github.com/agustincbajo/Coral/releases/tag/v0.6.0
 [0.5.0]: https://github.com/agustincbajo/Coral/releases/tag/v0.5.0

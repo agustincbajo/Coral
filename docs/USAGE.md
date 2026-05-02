@@ -80,16 +80,19 @@ Run structural and/or semantic lint.
 
 ```bash
 coral lint [--structural] [--semantic] [--all] [--staged] [--auto-fix [--apply]] \
+           [--severity critical|warning|info|all] \
            [--format markdown|json] [--provider claude|gemini|local]
 ```
 
-- `--structural` (default if no flag): broken wikilinks, orphans, low confidence, high confidence without sources, stale status. Pure deterministic checks.
+- `--structural` (default if no flag): 9 deterministic checks — broken wikilinks, orphans, low confidence, high confidence without sources, stale status, plus 4 v0.6 additions (`commit-not-in-git`, `source-not-found`, `archived-page-linked`, `unknown-extra-field`).
 - `--semantic`: requires the LLM. Surfaces contradictions, obsolete claims, confidence/sources mismatches.
 - `--all`: both.
 - `--staged`: pre-commit-hook mode. Loads every page (so the graph stays intact for orphan / wikilink checks) but filters the report to issues whose `page` is in `git diff --cached --name-only`. Workspace-level issues (no `page`) are kept. Use to gate commits that touch the wiki.
-- `--auto-fix`: after lint runs, the LLM proposes fixes (downgrade confidence, mark stale, append italic note). Default is **dry-run** (prints YAML plan); `--apply` writes changes back. Capped scope — cannot rewrite whole bodies or invent sources. Override the system prompt at `<cwd>/prompts/lint-auto-fix.md`.
+- `--auto-fix`: after lint runs, the LLM proposes fixes (downgrade confidence, mark stale, append italic note). Default is **dry-run** (prints YAML plan); `--apply` writes changes back. Capped scope — cannot rewrite whole bodies or invent sources. Override the system prompt at `<cwd>/prompts/lint-auto-fix.md`. **`--auto-fix` always sees the FULL report** — the `--severity` filter is applied AFTER auto-fix runs, so the LLM can propose Warning fixes even in CI gates filtering to Critical only.
+- `--severity` (v0.8): filter the rendered report and exit-code calculation to issues at or above the named level. `critical` → Critical only. `warning` → Critical + Warning. `info` / `all` → everything (default). Useful as a CI gate that fails only on Critical.
+- `--format json`: emit a JSON report. The schema lives at [docs/schemas/lint.schema.json](schemas/lint.schema.json).
 - `--provider` (or `CORAL_PROVIDER` env): used by `--semantic` and `--auto-fix`. `claude` (default) | `gemini` | `local`.
-- Exit code `1` if any **critical** issue; `0` otherwise. With `--staged`, only critical issues touching staged files trigger `1`.
+- Exit code `1` if any **critical** issue (after severity filter); `0` otherwise. With `--staged`, only critical issues touching staged files trigger `1`.
 
 ### Pre-commit hook example
 
@@ -103,15 +106,19 @@ exec coral lint --structural --staged
 
 ## `coral consolidate`
 
-Suggest page consolidations.
+Suggest + apply page consolidations.
 
 ```bash
-coral consolidate [--apply] [--model <id>] [--provider claude|gemini|local]
+coral consolidate [--apply [--rewrite-links]] [--model <id>] [--provider claude|gemini|local]
 ```
 
 - Lists all page slugs (truncated to 80) and asks the LLM for `merges:`, `retirements:`, `splits:` candidates (YAML).
 - **Default is dry-run**: prints the proposal.
-- `--apply`: marks every `retirements[].slug` as `status: stale`. `merges[]` and `splits[]` are surfaced as warnings — they need human review (body merging / partitioning isn't safely automated).
+- `--apply` (v0.5+, full coverage in v0.6): materializes the entire YAML plan.
+  - Retirements → mark every `retirements[].slug` as `status: stale`.
+  - Merges → in-place if target IS a source, append-to-existing if target slug already exists, create-new otherwise. Body concat with markdown separator. Frontmatter union (sources + backlinks deduped). Sources marked stale with `_Merged into [[<target>]]_` footer.
+  - Splits → stub pages at `<wiki>/<source.page_type subdir>/<target>.md` with `confidence: 0.4`, `status: draft`. Source marked stale with `_Split into [[a]], [[b]]_` footer.
+- `--rewrite-links` (v0.7+, requires `--apply`): mass-patches outbound `[[wikilinks]]` in OTHER pages that pointed at retired sources. For merges: `[[a]]` → `[[ab]]`. For splits: `[[too-big]]` → `[[part-a]]` (first split target as default). Aliased + anchored forms preserved.
 - `--provider` (or `CORAL_PROVIDER` env): `claude` (default) | `gemini` | `local`.
 
 ---
@@ -246,6 +253,23 @@ coral export [--format markdown-bundle|json|notion-json|html|jsonl] [--out FILE]
 ```
 
 - `markdown-bundle` (default): single Markdown file with all pages concatenated. Useful for printing or feeding to another LLM as context.
+
+### Search algorithms (offline)
+
+Inside the `--engine tfidf` family there are two ranking algorithms (v0.7+):
+
+```bash
+coral search "outbox dispatcher"                            # default tfidf
+coral search "outbox dispatcher" --algorithm bm25           # Okapi BM25
+```
+
+- **`tfidf`** (default): TF-IDF cosine, length-normalized via `sqrt(token_count)`. Good general default.
+- **`bm25`**: Okapi BM25 with constants `k1=1.5`, `b=0.75` (Robertson/Sparck-Jones defaults). IDF clamped at 0 (no negative scores for very common terms). Better precision on 100+ page wikis.
+
+Both run offline, no API key. Snippets are identical between algorithms (same `build_snippet` helper).
+
+`--algorithm` is silently ignored when `--engine embeddings` is set — that path has its own ranking (cosine over Voyage / OpenAI vectors).
+
 - `json`: raw JSON array, one object per page (`slug`, `type`, `confidence`, `sources`, `backlinks`, `body`, ...).
 - `notion-json`: array of Notion API `POST /v1/pages` request bodies, ready to be `curl`-posted to a Notion database. Set `parent.database_id` from your config.
 - `html`: single self-contained HTML file. Embedded CSS supports light + dark via `prefers-color-scheme`, sticky sidebar TOC grouped by page type, every page as `<section id="slug">`. `[[wikilinks]]` translate to in-page anchor links (plain / aliased / anchored forms supported). Drop the file on GitHub Pages / S3 / any static host — no build step. New in v0.5.
