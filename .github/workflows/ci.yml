@@ -91,3 +91,10 @@ jobs:
           name: lcov-coverage
           path: lcov.info
           retention-days: 30
+      - name: Upload to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: lcov.info
+          fail_ci_if_error: false
+          # Public repo — no token needed for the action; tokenless OAuth
+          # works as long as the repo is enabled at app.codecov.io.

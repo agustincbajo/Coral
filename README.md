@@ -5,7 +5,8 @@
 [![CI](https://github.com/agustincbajo/Coral/actions/workflows/ci.yml/badge.svg)](https://github.com/agustincbajo/Coral/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/agustincbajo/Coral?display_name=tag)](https://github.com/agustincbajo/Coral/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-602%20passing-brightgreen)](#testing--ci)
+[![Tests](https://img.shields.io/badge/tests-608%20passing-brightgreen)](#testing--ci)
+[![Codecov](https://codecov.io/gh/agustincbajo/Coral/branch/main/graph/badge.svg)](https://codecov.io/gh/agustincbajo/Coral)
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange?logo=rust)](rust-toolchain.toml)
 
 Coral compiles your codebase into an interconnected Markdown wiki that an LLM (Claude) maintains as you push code. Each merge updates the wiki incrementally; nightly lint catches contradictions; weekly consolidation prunes redundant pages.
@@ -53,17 +54,24 @@ Coral implements [Andrej Karpathy's LLM Wiki pattern](https://gist.github.com/ka
 | Maintenance | Manual | Incremental ingest on every push |
 | Search | grep | TF-IDF (default) + opt-in Voyage embeddings (`--engine embeddings`) |
 
-**What you get out of the box:**
+**What you get out of the box (v0.15.1):**
 
-- A `coral` CLI binary (~2.8 MB, statically linked) with 12 subcommands.
-- 4 Claude Code subagents pre-configured (bibliotecario, linter, consolidator, onboarder).
-- 4 versioned prompt templates with `{{var}}` substitution.
-- 5 deterministic structural lint checks + 1 LLM-driven semantic check.
-- 3 composite GitHub Actions for CI: `ingest`, `lint`, `consolidate`.
-- Optional Hermes quality gate: a second LLM independently validates wiki PRs.
-- Multi-provider runner (Claude default, Gemini optional, MockRunner for tests).
-- TF-IDF search by default, plus opt-in semantic search via Voyage AI (`coral search --engine embeddings`).
-- 4 export formats (Markdown bundle, JSON, Notion API bodies, JSONL for fine-tunes).
+- A `coral` CLI binary (~5 MB, statically linked) with **17 subcommands** (`init`, `bootstrap`, `ingest`, `query`, `lint`, `consolidate`, `stats`, `sync`, `onboard`, `prompts`, `search`, `export`, `notion-push`, `validate-pin`, `diff`, `status`, `history`).
+- **5 runner implementations** (`ClaudeRunner`, `GeminiRunner`, `LocalRunner` for llama.cpp, `HttpRunner` for OpenAI-compat endpoints, `MockRunner` for tests).
+- **3 embeddings providers** (`VoyageProvider`, `OpenAIProvider`, `MockEmbeddingsProvider`) + Anthropic stub waiting for the official endpoint.
+- **9 structural lint checks** + 1 LLM-driven semantic check + per-rule auto-fix prompt routing.
+- **2 storage backends** for embeddings: JSON (default) or SQLite (`CORAL_EMBEDDINGS_BACKEND=sqlite`, v0.13+).
+- **3 composite GitHub Actions** for CI: `ingest`, `lint`, `consolidate` (+ `validate`, `embeddings-cache`).
+- **End-to-end concurrency safety** (v0.14 + v0.15): atomic file writes, `flock(2)`-based cross-process locking, race-free `coral ingest` when run in parallel.
+- **5 export formats** (Markdown bundle, JSON, HTML single-file or `--multi`, Notion API bodies, JSONL for fine-tunes).
+
+### Recent releases (full details in [CHANGELOG.md](CHANGELOG.md))
+
+- **v0.15.1** — provider-agnostic `RunnerError` messages (no more "claude binary not found" when `--provider local` fails).
+- **v0.15.0** — cross-process file locking (`with_exclusive_lock`); `coral ingest` and `bootstrap` now serialize correctly under concurrent invocations.
+- **v0.14.1** — `coral lint --fix` `confidence-from-coverage` rule (no-LLM auto-downgrade when sources go missing).
+- **v0.14.0** — atomic file writes (`atomic_write_string` + `WikiLog::append_atomic`) for torn-write safety on every wiki write.
+- **v0.13.0** — orchestra-ingest reference example, opt-in SQLite backend, `coral lint --suggest-sources`.
 
 ---
 
@@ -291,45 +299,126 @@ The same shape applies to embeddings: `coral-runner` exposes an `EmbeddingsProvi
 
 ## Auth setup
 
-Coral's LLM-driven subcommands (`bootstrap`, `ingest`, `query`, `lint --semantic`, `consolidate`, `onboard`, `export --qa`) shell out to the `claude` CLI in `--print` mode. The `claude` subprocess needs its own auth — Coral does **not** pass anything through, and the parent shell's `ANTHROPIC_API_KEY` may not be valid in the subprocess (see "Running from inside Claude Code" below).
+Coral's LLM-driven subcommands (`bootstrap`, `ingest`, `query`, `lint --semantic`, `consolidate`, `onboard`, `export --qa`) shell out to a runner subprocess. Each runner needs its own credentials — Coral does **not** pass anything through.
 
-### Local shell (recommended)
+This section covers every credential Coral can use, where to get it, and how to make it visible to the `coral` binary.
+
+### Quick reference
+
+| Env var | Used by | Required | How to obtain |
+|---|---|---|---|
+| `CLAUDE_CODE_OAUTH_TOKEN` | `--provider claude` (default) | If using Claude | `claude setup-token` (see below) |
+| `ANTHROPIC_API_KEY` | `--provider claude` (alternative) | If using Claude without OAuth | https://console.anthropic.com/settings/keys |
+| `GEMINI_API_KEY` | `--provider gemini` | If using Gemini | https://aistudio.google.com/apikey |
+| `VOYAGE_API_KEY` | `coral search --engine embeddings` (Voyage backend) | If using semantic search via Voyage | https://www.voyageai.com (free tier available) |
+| `OPENAI_API_KEY` | embeddings via `--embeddings-provider openai` | Optional | https://platform.openai.com/api-keys |
+| `CORAL_HTTP_ENDPOINT` | `--provider http` | Required for HTTP runner | Your endpoint URL (vLLM/Ollama/OpenAI/etc.) |
+| `CORAL_HTTP_API_KEY` | `--provider http` | Optional bearer token | Whatever your endpoint expects |
+| `CORAL_PROVIDER` | Default provider for every command | Optional | One of `claude` / `gemini` / `local` / `http` |
+| `CORAL_EMBEDDINGS_BACKEND` | Storage backend for `coral search` index | Optional | `json` (default) or `sqlite` (v0.13+) |
+
+### Claude OAuth (recommended for personal use)
 
 ```bash
-claude setup-token   # one-time; generates an OAuth token tied to your Anthropic subscription
+claude setup-token
 ```
 
-`claude` stores the token in its own keychain entry. Once set, every `coral` invocation in any shell uses it. To verify:
+This opens a browser, you log in with your Anthropic account (Pro/Max/API), and the CLI prints a token like `sk-ant-oat01-...`.
+
+Add it to your shell profile so every subprocess can see it:
 
 ```bash
-echo "ping" | claude --print
-# → should print a short reply, exit 0
+# zsh (default on macOS)
+echo 'export CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-PASTE_THE_TOKEN_HERE' >> ~/.zshrc
+source ~/.zshrc
+
+# bash
+echo 'export CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-PASTE_THE_TOKEN_HERE' >> ~/.bash_profile
+source ~/.bash_profile
 ```
 
-If you see `Failed to authenticate. API Error: 401 …` here, `coral`'s LLM commands will fail with `RunnerError::AuthFailed` (since v0.3.2). Fix it at this layer first.
+Verify it took effect (without leaking the value to logs):
+
+```bash
+echo "say hi" | claude --print
+# → should respond with a short greeting, exit 0
+```
+
+If you see `Failed to authenticate. API Error: 401 …`, the token isn't visible to the subprocess. Common causes: profile didn't reload (open a new terminal), or you put the export in the wrong file (check `echo $SHELL`).
+
+### Anthropic API key (alternative to OAuth)
+
+If you have a paid Anthropic API key (`sk-ant-api03-...`) instead of OAuth:
+
+```bash
+echo 'export ANTHROPIC_API_KEY=sk-ant-api03-...' >> ~/.zshrc
+source ~/.zshrc
+```
+
+`claude --print` accepts either. OAuth is preferred for individual use because it's tied to your subscription with no per-token rate limit; API keys are pay-per-token.
+
+### Gemini
+
+```bash
+# Install the Gemini CLI first (if not present)
+# https://github.com/google-gemini/gemini-cli
+
+# Add the key
+echo 'export GEMINI_API_KEY=AIza...' >> ~/.zshrc
+source ~/.zshrc
+
+# Verify
+coral query --provider gemini "say hi"
+```
+
+### HTTP runner (Ollama, vLLM, OpenAI, anything OpenAI-compatible)
+
+```bash
+# Local Ollama on default port
+echo 'export CORAL_HTTP_ENDPOINT=http://localhost:11434/v1/chat/completions' >> ~/.zshrc
+
+# Remote OpenAI
+echo 'export CORAL_HTTP_ENDPOINT=https://api.openai.com/v1/chat/completions' >> ~/.zshrc
+echo 'export CORAL_HTTP_API_KEY=sk-...' >> ~/.zshrc
+
+source ~/.zshrc
+coral query --provider http "say hi"
+```
+
+### Voyage AI embeddings (for `coral search --engine embeddings`)
+
+```bash
+echo 'export VOYAGE_API_KEY=pa-...' >> ~/.zshrc
+source ~/.zshrc
+coral search "your query" --engine embeddings
+```
+
+Without it, `coral search` falls back to offline TF-IDF or BM25 (no API needed).
 
 ### CI (GitHub Actions)
 
-```bash
-claude setup-token   # locally
-# Paste the token at:
-# GitHub → Org → Settings → Secrets → CLAUDE_CODE_OAUTH_TOKEN
-```
+For each token your CI workflows need, add it as a **repository secret**:
 
-All consumer repos in the org inherit the secret via the composite actions. No `ANTHROPIC_API_KEY` required.
+1. Go to `https://github.com/<your-org>/<your-repo>/settings/secrets/actions`
+2. Click **New repository secret**
+3. Name + value:
+
+| Secret name | Purpose |
+|---|---|
+| `CLAUDE_CODE_OAUTH_TOKEN` | Required by the `ingest` / `lint --semantic` / `consolidate` composite actions in `examples/orchestra-ingest/.github/workflows/wiki-maintenance.yml` |
+| `VOYAGE_API_KEY` | Optional — runs the `voyage_provider_smoke_real_voyage` test in CI nightly (when added) |
+| `OPENAI_API_KEY` | Optional — runs `openai_provider_smoke_real_openai` |
+| `LLAMA_MODEL` | Optional — path to a local `.gguf` for `local_runner_smoke_real_llama` |
+
+The composite actions (`ingest@v0.15.1`, etc.) read these secrets from the calling workflow — see [`examples/orchestra-ingest/.github/workflows/wiki-maintenance.yml`](examples/orchestra-ingest/.github/workflows/wiki-maintenance.yml) for the complete wiring.
 
 ### Running `coral` from inside Claude Code (gotcha)
 
-If you're invoking `coral` from a Claude Code session, the parent process exports `ANTHROPIC_API_KEY` and `ANTHROPIC_BASE_URL` pointing at the host-managed proxy. **The `claude --print` subprocess cannot use those credentials** — it gets 401. Two workarounds:
+If you're invoking `coral` from a Claude Code session, the parent process exports `ANTHROPIC_API_KEY` and `ANTHROPIC_BASE_URL` pointing at the host-managed proxy. **The `claude --print` subprocess cannot use those credentials** — it gets 401.
 
-- **Run `claude setup-token` once** in a normal shell; the resulting OAuth token is independent of Claude Code's env vars and works from any subprocess.
-- **Or export a real `ANTHROPIC_API_KEY`** (your own, not the proxy's) in the shell that runs `coral`.
+Workaround: set `CLAUDE_CODE_OAUTH_TOKEN` in your shell profile (per the Claude OAuth section above). The OAuth token is independent of Claude Code's env vars and works from any subprocess.
 
-Since v0.3.2, `coral` detects this case and prints an actionable hint (`Run \`claude setup-token\` or export ANTHROPIC_API_KEY in this shell.`) instead of a silent `exit 1`.
-
-### Embeddings provider auth
-
-`coral search --engine embeddings` needs `VOYAGE_API_KEY` set in the shell. Without it, the command exits with a clear error pointing at the env var. The default `--engine tfidf` path needs no API key and works offline.
+Since v0.15.1, `coral`'s `RunnerError` messages list per-provider hints (Claude / Gemini / Local / HTTP) so you see the right fix for whichever runner failed.
 
 ---
 
@@ -471,16 +560,17 @@ Methodology, hot paths, and profiling tips in [docs/PERF.md](docs/PERF.md).
 ## Testing & CI
 
 ```bash
-cargo test --workspace                        # 602 tests passing
+cargo test --workspace                        # 608 tests passing
 cargo test --workspace -- --ignored           # 8 ignored (real-claude / real-gemini /
                                               # real-llama / real-voyage / real-openai
                                               # / real-git smokes) + 7 ignored stress tests
+                                              # + 1 sync-remote
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo bench --workspace -- --test             # benchmarks compile + run once
 ```
 
-### Test breakdown (v0.15.0)
+### Test breakdown (v0.15.1)
 
 | Crate / target | Tests |
 |---|---|
@@ -488,11 +578,12 @@ cargo bench --workspace -- --test             # benchmarks compile + run once
 | `coral-lint` (lib + benches) | 47 |
 | `coral-runner` | 47 + 5 ignored (real-claude / real-gemini / real-llama / real-voyage / real-openai smokes) |
 | `coral-stats` | 14 |
-| `coral-cli` (unit) | 102 + 2 ignored |
+| `coral-cli` (unit) | 105 + 2 ignored |
 | `coral-cli` (integration: cli_smoke) | 31 + 1 ignored |
+| `coral-cli` (cross-process lock) | 3 |
 | `coral-cli` (e2e: full_lifecycle, multi_repo, query_cycle) | 9 |
 | `coral-cli` (template_validation) | 14 |
-| **Total** | **602 + 16 ignored** |
+| **Total** | **608 + 16 ignored** |
 
 ### CI pipeline
 
