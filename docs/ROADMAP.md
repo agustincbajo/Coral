@@ -2,10 +2,7 @@
 
 Estado consolidado del backlog. Cada release tiene su sección con items resueltos.
 
-**Última actualización**: 2026-05-02 — v0.6.0 shipped. Todos los ítems
-implementables sin dependencias externas están en producción. Los 4
-items restantes están todos genuinamente bloqueados (ver "Items
-bloqueados").
+**Última actualización**: 2026-05-02 — v0.11.0 shipped. 11 releases this session (v0.3.2 → v0.11.0). 476 tests. Todo lo implementable está en producción.
 
 ---
 
@@ -13,8 +10,8 @@ bloqueados").
 
 | # | Item | Bloqueador real |
 |---|---|---|
-| B1 | Dogfooding self-hosted `.wiki/` | Necesita que el maintainer corra `claude setup-token` para que el `claude --print` subprocess autentique. La self-hosted wiki sigue en `213ac99` (anterior a v0.1.0). Es 1 acción manual; sin ella no hay ingest LLM-driven. |
-| B2 | `AnthropicEmbeddingsProvider` | Anthropic no publicó embeddings API al momento de este commit. Cuando lo haga, agregar es ~80 LOC en `coral-runner::embeddings` (mismo molde que `OpenAIProvider`). Hoy `OpenAIProvider` cubre el caso "no Voyage". |
+| B1 | Dogfooding self-hosted `.wiki/` | **Doble blocker**: (a) el maintainer tiene que correr `claude setup-token` interactivamente — el sandbox NO permite que el agente lo haga porque OAuth flows crean auth state persistente; (b) si el token se pega en chat (intentado en esta sesión), el sandbox bloquea su uso porque embeber tokens chat-leak en env vars de subprocesses es leak surface adicional. La self-hosted wiki sigue en `213ac99` (anterior a v0.1.0). Workaround: maintainer corre `claude setup-token` en su terminal local + corre `coral ingest --apply` ahí. |
+| B2 | `AnthropicEmbeddingsProvider` | Anthropic no publicó embeddings API al momento de este commit. Cuando lo haga, agregar es ~80 LOC en `coral-runner::embeddings` (mismo molde que `OpenAIProvider`). Hoy `OpenAIProvider` + `HttpRunner` (vLLM/Ollama) cubren los casos "no Voyage". |
 | B3 | sqlite-vec migration | Diferido en [ADR 0006](adr/0006-local-semantic-search-storage.md) hasta que una wiki cruce ~5k pages y la latencia del JSON in-memory empiece a doler. Premature shipearlo ahora. |
 | B4 | `orchestra-ingest` reference repo | Repo separado, fuera del scope de este repo. Issue #12 cerrado pero el follow-up nunca arrancó. Crear cuando alguien pida una demo end-to-end de Coral en una microservice "real". |
 
@@ -84,6 +81,51 @@ timeout.
 | 8 | `SCHEMA.base.md` aligned with 10 PageType variants | ✅ |
 | 9 | Parallelized embeddings batching across rayon | ✅ |
 | 10 | `KNOWN_PROMPTS` registers `qa-pairs` / `lint-auto-fix` / `diff-semantic` + ships their templates | ✅ |
+
+### v0.7.0 — BM25 + rewrite-links + prompt registry polish
+
+| # | Item | Estado |
+|---|---|---|
+| 1 | `coral search --algorithm bm25` (Okapi BM25 alternative to TF-IDF) | ✅ |
+| 2 | `coral consolidate --apply --rewrite-links` (mass-patch outbound wikilinks) | ✅ |
+| 3 | Embedded prompt templates for `diff-semantic` + `lint-auto-fix` | ✅ |
+
+### v0.8.0 — lint --severity + JSON schema + coverage CI
+
+| # | Item | Estado |
+|---|---|---|
+| 1 | `coral lint --severity <critical\|warning\|info\|all>` filter | ✅ |
+| 2 | `docs/schemas/lint.schema.json` (drift-guard tested) | ✅ |
+| 3 | Coverage CI job (`cargo-llvm-cov`, lcov artifact) | ✅ |
+
+### v0.8.1 — test infrastructure + executable tutorial
+
+| # | Item | Estado |
+|---|---|---|
+| 1 | `docs/TUTORIAL.md` — every output captured from the real binary | ✅ |
+| 2 | proptest harnesses for lint / search / wikilinks / frontmatter (31 props) | ✅ |
+| 3 | insta snapshot tests for 11 deterministic CLI outputs | ✅ |
+
+### v0.9.0 — stats extension
+
+| # | Item | Estado |
+|---|---|---|
+| 1 | `pages_without_sources_count` + `oldest_commit_age_pages` + `pages_by_confidence_bucket` on `StatsReport` | ✅ |
+| 2 | 3 more snapshot tests (validate-pin / lint --severity variants) | ✅ |
+
+### v0.10.0 — lint --rule filter + error path tests
+
+| # | Item | Estado |
+|---|---|---|
+| 1 | `coral lint --rule <CODE>` per-LintCode allowlist (composes with --severity) | ✅ |
+| 2 | RunnerError + EmbeddingsError Display assertions + non-streaming timeout | ✅ |
+
+### v0.11.0 — HttpRunner
+
+| # | Item | Estado |
+|---|---|---|
+| 1 | `HttpRunner` — 5th `Runner` impl, OpenAI-compatible chat-completions endpoint (vLLM, Ollama, OpenAI, etc.) | ✅ |
+| 2 | `--provider http` flag (env vars `CORAL_HTTP_ENDPOINT` + `CORAL_HTTP_API_KEY`) | ✅ |
 
 ---
 
