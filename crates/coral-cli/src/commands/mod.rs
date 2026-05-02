@@ -1,10 +1,12 @@
 pub mod export;
+pub mod history;
 pub mod init;
 pub mod lint;
 pub mod notion_push;
 pub mod pins;
 pub mod search;
 pub mod stats;
+pub mod status;
 pub mod sync;
 pub mod validate_pin;
 

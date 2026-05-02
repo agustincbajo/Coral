@@ -1,0 +1,5 @@
+---
+source: crates/coral-cli/tests/snapshot_cli.rs
+expression: stdout
+---
+No log entries mention 'outbox'.

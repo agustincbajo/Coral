@@ -59,6 +59,10 @@ enum Cmd {
     ValidatePin(commands::validate_pin::ValidatePinArgs),
     /// Diff two wiki pages structurally (frontmatter, sources, wikilinks, body stats).
     Diff(commands::diff::DiffArgs),
+    /// Daily-use wiki snapshot: last commit, lint summary, stats summary, recent log.
+    Status(commands::status::StatusArgs),
+    /// Show log entries that mention a slug (reverse chronological).
+    History(commands::history::HistoryArgs),
 }
 
 fn main() -> ExitCode {
@@ -81,6 +85,8 @@ fn main() -> ExitCode {
         Cmd::NotionPush(args) => commands::notion_push::run(args, cli.wiki_root.as_deref()),
         Cmd::ValidatePin(args) => commands::validate_pin::run(args),
         Cmd::Diff(args) => commands::diff::run(args, cli.wiki_root.as_deref()),
+        Cmd::Status(args) => commands::status::run(args, cli.wiki_root.as_deref()),
+        Cmd::History(args) => commands::history::run(args, cli.wiki_root.as_deref()),
     };
 
     match result {

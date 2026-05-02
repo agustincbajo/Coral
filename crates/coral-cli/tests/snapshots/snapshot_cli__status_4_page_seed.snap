@@ -1,0 +1,15 @@
+---
+source: crates/coral-cli/tests/snapshot_cli.rs
+expression: stdout
+---
+# Wiki status
+
+- Wiki: `.wiki`
+- Last commit: `0000000000000000000000000000000000000000`
+- Pages: 4
+- Lint: Critical: 0 | Warning: 5 | Info: 0
+- Stats: 4 pages, avg confidence 0.74, 1 orphan candidate(s)
+
+## Recent log
+
+- [TIMESTAMP] `init`: wiki initialized
