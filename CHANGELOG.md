@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-05-02
+
+### Added
+
+- **`coral search --algorithm bm25`** ([crates/coral-core/src/search.rs](crates/coral-core/src/search.rs)): Okapi BM25 ranking alternative to TF-IDF inside the offline `--engine tfidf` family. Better precision on 100+ page wikis. Same `SearchResult` shape, same tokenization (reuses `tokenize` + `build_snippet`). Constants `pub const BM25_K1: f64 = 1.5` and `pub const BM25_B: f64 = 0.75` (Robertson/Sparck-Jones defaults). IDF clamped at 0 to avoid negative scores for very common terms. **13 new unit tests**.
+- **`coral consolidate --apply --rewrite-links`** ([crates/coral-cli/src/commands/consolidate.rs](crates/coral-cli/src/commands/consolidate.rs)): mass-patches outbound `[[wikilinks]]` in OTHER pages that pointed at retired sources. For merges: `[[a]]`→`[[ab]]`. For splits: `[[too-big]]`→`[[part-a]]` (first target as default). Aliased forms (`[[a|alias]]`) and anchored forms (`[[a#anchor]]`) preserve their suffixes. New `RewriteSummary` reporting struct + `Rewrites: N page(s) patched` print block. Idempotent (second pass finds nothing). **13 new unit tests** including 8 helper-level + 4 end-to-end + 1 smoke.
+- **`KNOWN_PROMPTS` registers `qa-pairs`, `lint-auto-fix`, `diff-semantic`** ([crates/coral-cli/src/commands/prompt_loader.rs](crates/coral-cli/src/commands/prompt_loader.rs)): three prompts added in v0.3 / v0.5 / v0.6 used `prompt_loader::load_or_fallback` correctly but never appeared in `coral prompts list`. Now all 9 surface and propagate through `coral sync` to consumer repos.
+- **Embedded prompt templates for `diff-semantic` and `lint-auto-fix`** ([template/prompts/](template/prompts/)): both were fallback-only before; consumers couldn't drop overrides at `<cwd>/prompts/`.
+
+### Documentation
+
+- **README "Roadmap" section refreshed** for v0.4–v0.6 reality (was stuck on "v0.3.0 — planned").
+- **README test count badge + breakdown** updated to 342.
+- **docs/ROADMAP.md fully consolidated** into a release-history table format with explicit "Items bloqueados" + "v0.7+ speculative" sections.
+
 ## [0.6.0] - 2026-05-02
 
 ### Added
@@ -184,7 +199,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 5 ADRs: Rust CLI architecture, Claude CLI vs API, template via include_dir, multi-agent flow, versioning + sync.
 - Self-hosted `.wiki/` with 14 seed pages (cli/core/lint/runner/stats modules + concepts + entities + flow + decisions + synthesis + operations + sources).
 
-[Unreleased]: https://github.com/agustincbajo/Coral/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/agustincbajo/Coral/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/agustincbajo/Coral/releases/tag/v0.7.0
 [0.6.0]: https://github.com/agustincbajo/Coral/releases/tag/v0.6.0
 [0.5.0]: https://github.com/agustincbajo/Coral/releases/tag/v0.5.0
 [0.4.0]: https://github.com/agustincbajo/Coral/releases/tag/v0.4.0
