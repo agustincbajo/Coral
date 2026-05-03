@@ -3,7 +3,10 @@ slug: search
 type: concept
 last_updated_commit: 721050563f1ed29954b279fe334bf6bc8c8e2c34
 confidence: 0.92
-sources: []
+sources:
+- crates/coral-core/src/search.rs
+- crates/coral-cli/src/commands/search.rs
+- crates/coral-core/src/embeddings.rs
 backlinks: []
 status: draft
 generated_at: 2026-05-02T23:48:12.483062+00:00
