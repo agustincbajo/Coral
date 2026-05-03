@@ -5,6 +5,19 @@ on:
     branches: [main]
   pull_request:
 
+# Cancel in-progress runs for the same ref. Saves Actions minutes when
+# pushes land back-to-back; the latest one wins.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Pin RUST_BACKTRACE on so panics surface stack traces in failing
+  # tests — helps PR debug speed without flooding healthy runs.
+  RUST_BACKTRACE: 1
+  # Coral's MSRV (matches `rust-version.workspace` in Cargo.toml).
+  CORAL_MSRV: "1.85"
+
 jobs:
   fmt:
     name: Rustfmt
@@ -31,7 +44,7 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
 
   test:
-    name: Test
+    name: Test (stable)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -39,6 +52,68 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: cargo test
         run: cargo test --workspace --all-features
+
+  msrv:
+    # Pin Coral to its declared minimum supported Rust version. If
+    # this passes on stable + MSRV, we can promise users that
+    # `cargo install --locked --tag vX.Y.Z coral-cli` works on the
+    # MSRV they read in the README.
+    name: Test (MSRV ${{ env.CORAL_MSRV }})
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.CORAL_MSRV }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: msrv
+      - name: cargo build (MSRV)
+        run: cargo build --workspace --locked
+
+  bc-regression:
+    # Backward-compat gate: the v0.15 single-repo workflow must keep
+    # working on every PR. Runs the dedicated `bc_regression` test
+    # suite separately so the failure mode is unambiguous in the UI
+    # ("BC broke" vs "some unit test broke").
+    name: Backward-compat (v0.15 single-repo)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo test --test bc_regression
+        run: cargo test --test bc_regression -p coral-cli
+
+  cross-platform-smoke:
+    # Coral ships binaries for macOS too. This job catches platform
+    # regressions early instead of waiting for the Release workflow
+    # to fail at tag time.
+    name: Smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: smoke-${{ matrix.os }}
+      - name: cargo build --release
+        run: cargo build --release --bin coral
+      - name: smoke `coral --version`
+        run: ./target/release/coral --version
+      - name: smoke `coral init` in tempdir
+        shell: bash
+        run: |
+          set -euo pipefail
+          TMP="$(mktemp -d)"
+          ./target/release/coral --wiki-root "$TMP/.wiki" init
+          test -f "$TMP/.wiki/index.md"
+          test -f "$TMP/.wiki/log.md"
+          test -f "$TMP/.wiki/SCHEMA.md"
 
   audit:
     name: Security audit (cargo-audit)
