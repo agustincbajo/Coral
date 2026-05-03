@@ -200,14 +200,20 @@ pub fn check_commit_in_git(pages: &[Page], repo_root: &Path) -> Vec<LintIssue> {
     issues
 }
 
-/// Runs `git rev-list --all --no-walk --objects` in `repo_root` and returns
-/// the set of commit SHAs (40-char hex strings, plus any short SHAs that may
-/// appear). Returns an `Err(String)` describing the failure if `git` is not
-/// available, the directory is not a repository, or the command exits
-/// non-zero.
+/// Runs `git rev-list --all` in `repo_root` and returns the set of commit
+/// SHAs across the entire repo history (40-char hex strings, plus any short
+/// SHAs that may appear). Returns an `Err(String)` describing the failure if
+/// `git` is not available, the directory is not a repository, or the command
+/// exits non-zero.
+///
+/// **Important**: do NOT add `--no-walk` here — without an explicit commit
+/// list, `--no-walk` collapses to "tips of every ref" only (~10s of commits
+/// in a real repo), missing every interior commit. We need the full history
+/// so `check_commit_in_git` doesn't false-positive on legitimate ancestor
+/// SHAs (caught this during v0.15.x dogfooding).
 fn collect_git_commits(repo_root: &Path) -> std::result::Result<HashSet<String>, String> {
     let output = Command::new("git")
-        .args(["rev-list", "--all", "--no-walk"])
+        .args(["rev-list", "--all"])
         .current_dir(repo_root)
         .output()
         .map_err(|e| format!("failed to invoke git: {e}"))?;

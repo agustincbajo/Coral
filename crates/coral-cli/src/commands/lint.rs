@@ -125,10 +125,14 @@ pub fn run_with_runner(
         // structural checks (commit-in-git, source-exists) need this to
         // shell out to `git` and to resolve `sources:` paths against the
         // workspace, not against `.wiki/`.
-        let repo_root: PathBuf = root
-            .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| PathBuf::from("."));
+        // `Path::parent()` returns `Some("")` for single-component
+        // relative paths like ".wiki" — that empty PathBuf would cause
+        // `Command::current_dir("")` to fail downstream. Treat empty
+        // as "current dir" explicitly.
+        let repo_root: PathBuf = match root.parent() {
+            Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
+            _ => PathBuf::from("."),
+        };
         let r = run_structural_with_root(&pages, &repo_root);
         issues.extend(r.issues);
     }
@@ -166,10 +170,14 @@ pub fn run_with_runner(
     // every `HighConfidenceWithoutSources` issue, regardless of any
     // active --rule / --severity filters used to gate CI noise).
     if args.suggest_sources && !full_report.issues.is_empty() {
-        let repo_root: PathBuf = root
-            .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| PathBuf::from("."));
+        // `Path::parent()` returns `Some("")` for single-component
+        // relative paths like ".wiki" — that empty PathBuf would cause
+        // `Command::current_dir("")` to fail downstream. Treat empty
+        // as "current dir" explicitly.
+        let repo_root: PathBuf = match root.parent() {
+            Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
+            _ => PathBuf::from("."),
+        };
         let report = run_source_suggestion(&pages, &full_report, runner, args.apply, &repo_root)?;
         println!("{}", render_source_suggestion_report(&report));
     }
