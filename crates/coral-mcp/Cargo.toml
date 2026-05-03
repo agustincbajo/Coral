@@ -1,0 +1,31 @@
+[package]
+name = "coral-mcp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Coral MCP server: exposes the wiki + manifest as Model Context Protocol resources/tools/prompts."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+coral-core = { workspace = true }
+
+# rmcp v1.6 (May 2026) is the official Anthropic Rust SDK for the
+# Model Context Protocol. v0.19 wave 2 will pin this dependency; v0.19
+# wave 1 keeps the structural type model in place without the runtime
+# dep so the workspace still builds without network.
+# rmcp = "1.6"
+
+[features]
+default = ["stdio"]
+stdio = []
+http_sse = []  # v0.19+ Streamable HTTP/SSE transport
+
+[dev-dependencies]
+tempfile = { workspace = true }

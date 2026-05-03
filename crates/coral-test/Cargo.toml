@@ -1,0 +1,33 @@
+[package]
+name = "coral-test"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Coral test layer: TestRunner trait + healthcheck/user-defined runners + JUnit output."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml_ng = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+coral-core = { workspace = true }
+coral-env = { workspace = true }
+
+[features]
+default = ["healthcheck", "user_defined"]
+healthcheck = []
+user_defined = []
+# v0.18+ feature gates:
+# hurl = []        # second input format
+# discover = []    # OpenAPI/proto auto-gen
+# llm = []         # LLM-generated tests
+# contract = []    # consumer-driven contracts
+# property = []    # Schemathesis-style property tests
+
+[dev-dependencies]
+tempfile = { workspace = true }

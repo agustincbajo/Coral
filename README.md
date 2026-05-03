@@ -68,7 +68,8 @@ Coral implements [Andrej Karpathy's LLM Wiki pattern](https://gist.github.com/ka
 
 ### Recent releases (full details in [CHANGELOG.md](CHANGELOG.md))
 
-- **v0.16.0 (in progress)** — multi-repo projects: `coral.toml` manifest, `coral.lock` lockfile, `coral project new/list/add/doctor/lock` commands, and an aggregated wiki across N repos. Single-repo v0.15 users keep zero-friction backward compat (a `Project::synthesize_legacy` shim resolves the cwd into a 1-repo project when no `coral.toml` is found). See [Multi-repo projects](#multi-repo-projects-v0160).
+- **v0.17/0.18/0.19-dev (in progress)** — three new crates land in scaffolded form: `coral-env` (`EnvBackend` trait + `ComposeBackend` runtime detection + `Healthcheck` model), `coral-test` (`TestRunner` trait + `TestKind` enum with 9 variants + `JunitOutput::render`), and `coral-mcp` (resources / tools / prompts catalog ready for [`rmcp = "1.6"`](https://github.com/modelcontextprotocol/rust-sdk) wiring in wave 2). Subprocess + transport wiring follows in wave 2 of each milestone.
+- **v0.16.0 (released)** — multi-repo projects: `coral.toml` manifest, `coral.lock` lockfile, `coral project new/sync/list/add/doctor/lock/graph` commands, and an aggregated wiki across N repos. Single-repo v0.15 users keep zero-friction backward compat (a `Project::synthesize_legacy` shim resolves the cwd into a 1-repo project when no `coral.toml` is found). See [Multi-repo projects](#multi-repo-projects-v0160).
 - **v0.15.1** — provider-agnostic `RunnerError` messages (no more "claude binary not found" when `--provider local` fails).
 - **v0.15.0** — cross-process file locking (`with_exclusive_lock`); `coral ingest` and `bootstrap` now serialize correctly under concurrent invocations.
 - **v0.14.1** — `coral lint --fix` `confidence-from-coverage` rule (no-LLM auto-downgrade when sources go missing).

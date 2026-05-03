@@ -385,6 +385,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "coral-mcp"
+version = "0.16.0"
+dependencies = [
+ "chrono",
+ "coral-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tracing",
+]
+
+[[package]]
 name = "coral-runner"
 version = "0.16.0"
 dependencies = [
@@ -409,6 +422,21 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "coral-test"
+version = "0.16.0"
+dependencies = [
+ "chrono",
+ "coral-core",
+ "coral-env",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "tempfile",
+ "thiserror",
+ "tracing",
 ]
 
 [[package]]

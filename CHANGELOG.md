@@ -7,21 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### v0.17.0-dev — Environment layer (in progress)
+### v0.17.0-dev / v0.18.0-dev / v0.19.0-dev — Multi-wave foundation (in progress)
 
-First wave of v0.17 lays the foundation for multi-service development environments. Single-repo and multi-repo v0.16 users see no behavior change — `[[environments]]` in `coral.toml` is opt-in.
+Three new crates land on the same day, each scaffolded with the same architectural pattern (`Send + Sync` trait, `thiserror` errors, in-memory `Mock*` for upstream tests). Subprocess + transport wiring follows in wave 2 of each milestone — wave 1 ships the type model, the test infrastructure, and a clear contract for the next wave.
 
-#### Added
+#### v0.17 wave 1 — `coral-env` (environment layer)
 
-- **New crate `coral-env`** — pluggable backend trait family for dev environments. Mirrors the `coral-runner` shape: `Send + Sync` `EnvBackend` trait, `thiserror`-typed `EnvError`, in-memory `MockBackend` for upstream tests.
-- **`EnvBackend` trait**: `up`/`down`/`status`/`logs`/`exec` methods. Live-reload (`watch`), devcontainer/k8s emit, port-forward, and attach/reset/prune are reserved for v0.17.x as the testing layer (v0.18) needs them.
+- **New crate `coral-env`**: pluggable backend trait family. `EnvBackend: Send + Sync` with `up`/`down`/`status`/`logs`/`exec`. Watch, devcontainer/k8s emit, port-forward, and attach/reset/prune are reserved for v0.17.x.
 - **`EnvironmentSpec` schema** for `[[environments]]` in `coral.toml`: name, backend, mode (managed/adopt), `compose_command` (auto/docker/podman), `production` flag, env file, services map.
-- **`ServiceKind`** tagged enum (`Real { repo, image, build, ports, env, depends_on, healthcheck, watch }` / `Mock { tool, spec, mode, recording }`). The mock variant is reserved for v0.18+ but lives in the schema so manifests upgrade smoothly.
-- **`Healthcheck` model** with `HealthcheckKind::{Http, Tcp, Exec, Grpc}` + `HealthcheckTiming` (separates `start_period_s` / `interval_s` / `start_interval_s` / `consecutive_failures` — k8s startup-vs-runtime separation).
-- **`EnvPlan`** — backend-agnostic compiled plan; `compose_project_name(project_root, env)` derives `coral-<env>-<8-char-hash>` from the absolute path so worktrees of the same meta-repo never collide.
+- **`ServiceKind`** tagged enum (`Real { repo, image, build, ports, env, depends_on, healthcheck, watch }` / `Mock { tool, spec, mode, recording }`). `Real` is `Box`'d so `Mock` doesn't pay the size of the larger variant.
+- **`Healthcheck`** with `HealthcheckKind::{Http, Tcp, Exec, Grpc}` + `HealthcheckTiming` (separates `start_period_s` / `interval_s` / `start_interval_s` / `consecutive_failures` — k8s startup-vs-runtime).
+- **`EnvPlan`**: backend-agnostic compiled plan; `compose_project_name(project_root, env)` derives `coral-<env>-<8-char-hash>` from the absolute path so two worktrees of the same meta-repo never collide on compose namespaces.
 - **`healthcheck::wait_for_healthy`** loop with `consecutive_failures` policy. Pure function over a probe closure; backend-agnostic.
-- **`ComposeBackend` runtime detection** for `docker compose` v2, `docker-compose` v1, and `podman compose`. Subprocess invocation (rendering compose YAML, real `up -d`, container introspection) follows in v0.17 wave 2.
-- **`MockBackend`** with `calls()` recorder + scriptable `push_status` queue, ready for upstream CLI tests in wave 2.
+- **`ComposeBackend` runtime detection** probes `docker compose`, `docker-compose`, and `podman compose` in order. Subprocess invocation lands in v0.17 wave 2.
+- **`MockBackend`** with `calls()` recorder + `push_status` queue.
+
+#### v0.18 wave 1 — `coral-test` (testing layer)
+
+- **New crate `coral-test`**: `TestRunner: Send + Sync` trait with `supports/run/discover/parallelism_hint/snapshot_dir/supports_record`. Same architectural pattern as `coral-env`/`coral-runner`.
+- **`TestKind`** enum with all 9 PRD §3.3 variants: `Healthcheck`, `UserDefined`, `LlmGenerated`, `Contract`, `PropertyBased`, `Recorded`, `Event`, `Trace`, `E2eBrowser`. v0.18 wave 2 ships only the first two; the rest live in the schema so manifests don't break later.
+- **`TestCase`** + **`TestSource`** (`Inline | File | Discovered { from } | Generated { runner, prompt_version, iter_count, reviewed }`).
+- **`TestReport`** with `TestStatus::{Pass, Fail, Skip, Error}` + per-case `Evidence` (HTTP, exec, stdout/stderr tails).
+- **`JunitOutput::render`** — minimal but compliant `<testsuites>` XML for GitHub Actions reporters and most CI dashboards. `xml_escape` covers `&`, `<`, `>`, `"`, `'`.
+- **`MockTestRunner`** with FIFO scripted statuses + invocation recorder.
+
+#### v0.19 wave 1 — `coral-mcp` (Model Context Protocol server)
+
+- **New crate `coral-mcp`**: type model + resource/tool/prompt catalogs for the upcoming MCP server. Wave 2 wires the [`rmcp = "1.6"`](https://github.com/modelcontextprotocol/rust-sdk) official Rust SDK and the stdio + Streamable HTTP/SSE transports.
+- **`ResourceProvider` trait** + `WikiResourceProvider`. The 6-resource static catalog: `coral://manifest`, `coral://lock`, `coral://graph`, `coral://wiki/_index`, `coral://stats`, `coral://test-report/latest`. Per-page resources (`coral://wiki/<repo>/<slug>`) are listed dynamically by wave 2.
+- **`ToolCatalog`** — 5 read-only tools (`query`, `search`, `find_backlinks`, `affected_repos`, `verify`) + 3 write tools (`run_test`, `up`, `down`). Write tools require `--allow-write-tools` per PRD risk #25 (MCP server as exfiltration vector). All input schemas validated as JSON in tests.
+- **`PromptCatalog`** — 3 templated prompts: `onboard?profile`, `cross_repo_trace?flow`, `code_review?repo&pr_number`.
+- **`ServerConfig`** — `--read-only` defaults to `true` to align with PRD §3.6 security stance.
 
 ## [0.16.0] - 2026-05-03
 

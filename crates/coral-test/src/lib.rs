@@ -1,0 +1,81 @@
+//! Coral testing layer (v0.18+).
+//!
+//! Pluggable trait family for functional smoke / contract / property /
+//! recorded / event / trace / browser tests against a running
+//! environment. v0.18 wave 1 ships the trait, the type model, and a
+//! `MockRunner`; the four MVP runners (`Healthcheck`, `UserDefined`,
+//! `Hurl`, `Discovery`) follow in v0.18 wave 2 with their own feature
+//! flags.
+//!
+//! Mirrors the shape of `coral-env::EnvBackend` and `coral-runner::Runner`
+//! deliberately — same `Send + Sync`, `thiserror` errors, `Mock*` for
+//! tests.
+
+pub mod error;
+pub mod mock;
+pub mod report;
+pub mod spec;
+
+pub use error::{TestError, TestResult};
+pub use mock::MockTestRunner;
+pub use report::{Evidence, JunitOutput, TestReport, TestStatus};
+pub use spec::{TestCase, TestKind, TestSource, TestSpec};
+
+use coral_env::EnvHandle;
+use std::path::PathBuf;
+use std::time::Duration;
+
+/// The pluggable trait. Each concrete runner declares which
+/// `TestKind`s it supports and exposes a `run()` method that produces
+/// a `TestReport`. Every runner is `Send + Sync` so the orchestration
+/// layer can fan out across threads / rayon.
+pub trait TestRunner: Send + Sync {
+    fn name(&self) -> &'static str;
+    fn supports(&self, kind: TestKind) -> bool;
+    fn run(&self, case: &TestCase, env: &EnvHandle) -> TestResult<TestReport>;
+
+    /// Auto-discover `TestCase`s without LLM. Default impl returns
+    /// nothing; runners that read OpenAPI / proto / asyncapi specs
+    /// override this. Used by `coral test discover` (v0.18 wave 2).
+    fn discover(&self, _project_root: &std::path::Path) -> TestResult<Vec<TestCase>> {
+        Ok(Vec::new())
+    }
+
+    /// Hint to the orchestration layer about how to schedule cases
+    /// from this runner. Healthcheck is `Isolated` (parallel-safe);
+    /// stateful flows use `Sequential`; a UserDefined suite that
+    /// targets one service uses `PerService`.
+    fn parallelism_hint(&self) -> ParallelismHint {
+        ParallelismHint::Isolated
+    }
+
+    /// Where to read/write snapshots for `expect.snapshot` assertions.
+    /// `None` = snapshots not supported.
+    fn snapshot_dir(&self) -> Option<PathBuf> {
+        None
+    }
+
+    /// `true` when this runner can capture live traffic to author new
+    /// `TestCase`s (e.g. Keploy-style). v0.20+ feature.
+    fn supports_record(&self) -> bool {
+        false
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParallelismHint {
+    Isolated,
+    Sequential,
+    PerService,
+}
+
+/// Run-level configuration shared across all runners.
+#[derive(Debug, Clone, Default)]
+pub struct RunOptions {
+    pub services: Vec<String>,
+    pub tags: Vec<String>,
+    pub kinds: Vec<TestKind>,
+    pub update_snapshots: bool,
+    pub parallelism: Option<usize>,
+    pub timeout: Option<Duration>,
+}

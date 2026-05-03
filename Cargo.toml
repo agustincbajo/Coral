@@ -38,6 +38,8 @@ coral-env = { path = "crates/coral-env", version = "0.16.0" }
 coral-lint = { path = "crates/coral-lint", version = "0.16.0" }
 coral-runner = { path = "crates/coral-runner", version = "0.16.0" }
 coral-stats = { path = "crates/coral-stats", version = "0.16.0" }
+coral-test = { path = "crates/coral-test", version = "0.16.0" }
+coral-mcp = { path = "crates/coral-mcp", version = "0.16.0" }
 
 [profile.release]
 lto = "thin"
