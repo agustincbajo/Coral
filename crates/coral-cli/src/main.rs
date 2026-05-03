@@ -66,6 +66,13 @@ enum Cmd {
     /// Multi-repo project commands (`new`, `list`, `add`, `doctor`, `lock`).
     /// v0.16: aggregated wiki, dependency graph, lockfile.
     Project(commands::project::ProjectArgs),
+    /// Bring up the dev environment (compose backend in v0.17). Requires
+    /// `[[environments]]` in `coral.toml`.
+    Up(commands::up::UpArgs),
+    /// Tear down the dev environment.
+    Down(commands::down::DownArgs),
+    /// Environment introspection (`status`, `logs`, `exec`).
+    Env(commands::env::EnvArgs),
     /// **Hidden** test-only helper: acquires `with_exclusive_lock(path)`,
     /// reads the file as a u64 counter, increments by 1, writes back.
     /// Used by `tests/cross_process_lock.rs` to verify the v0.15
@@ -102,6 +109,9 @@ fn main() -> ExitCode {
         Cmd::Status(args) => commands::status::run(args, cli.wiki_root.as_deref()),
         Cmd::History(args) => commands::history::run(args, cli.wiki_root.as_deref()),
         Cmd::Project(args) => commands::project::run(args, cli.wiki_root.as_deref()),
+        Cmd::Up(args) => commands::up::run(args, cli.wiki_root.as_deref()),
+        Cmd::Down(args) => commands::down::run(args, cli.wiki_root.as_deref()),
+        Cmd::Env(args) => commands::env::run(args, cli.wiki_root.as_deref()),
         Cmd::TestLockIncr { path } => run_test_lock_incr(&path),
     };
 

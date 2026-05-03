@@ -7,7 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### v0.17.0-dev / v0.18.0-dev / v0.19.0-dev — Multi-wave foundation (in progress)
+### v0.17.0-dev wave 2 — `coral up` / `down` / `env *` (in progress)
+
+Wave 2 wires the real subprocess lifecycle into `ComposeBackend` and
+exposes the env layer through three new top-level commands.
+
+#### Added
+
+- **`coral_env::compose_yaml::render`** — turns an `EnvPlan` into a `docker-compose.yml` string. Covers `image`, `build { context, dockerfile, target, args, cache_from, cache_to }`, `ports`, `environment`, `depends_on { condition: service_healthy }`, and `healthcheck` with all four `HealthcheckKind` variants compiled to compose's `test:` block. Stable byte-output for content-hash-based artifact caching.
+- **Real `ComposeBackend`** lifecycle: `up` (writes `.coral/env/compose/<hash>.yml`, runs `docker compose --file <art> --project-name <coral-env-hash> up -d --wait`), `down` (`down --volumes`), `status` (`ps --format json` with parser tolerant to v1/v2 shapes), `logs` (`logs --no-color --no-log-prefix --timestamps`), `exec` (`exec -T`).
+- **`coral up [--env NAME] [--service NAME]... [--detach] [--build]`** brings up the selected environment. Defaults to the first `[[environments]]` block.
+- **`coral down [--env] [--volumes] [--yes]`** tears down. `--yes` is required when `production = true` (PRD §3.10 safety).
+- **`coral env status [--env NAME] [--format markdown\|json]`** queries `EnvBackend::status()`.
+- **`coral env logs <service> [--env] [--tail N]`** prints container logs.
+- **`coral env exec <service> -- <cmd>...`** runs a command inside a container; exit code propagates.
+- **`Project.environments_raw: Vec<toml::Value>`** — `coral-core` keeps the `[[environments]]` table opaque so the wiki layer doesn't depend on `coral-env`. The CLI's `commands::env_resolve` parses entries on demand.
+- **`commands::env_resolve::{resolve_env, parse_all, default_env_name}`** — CLI-side helpers that turn the opaque manifest table into typed `EnvironmentSpec` values.
+- 4 new compose-yaml render tests + 2 BC tests (`up_fails_clearly_when_no_environments_declared`, `down_fails_clearly_when_production_env_without_yes`).
+
+### v0.17.0-dev wave 1 / v0.18.0-dev wave 1 / v0.19.0-dev wave 1 — Multi-wave foundation
 
 Three new crates land on the same day, each scaffolded with the same architectural pattern (`Send + Sync` trait, `thiserror` errors, in-memory `Mock*` for upstream tests). Subprocess + transport wiring follows in wave 2 of each milestone — wave 1 ships the type model, the test infrastructure, and a clear contract for the next wave.
 

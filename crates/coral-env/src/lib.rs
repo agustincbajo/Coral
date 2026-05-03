@@ -12,6 +12,7 @@
 //! function on the manifest's `[environment].backend` string.
 
 pub mod compose;
+pub mod compose_yaml;
 pub mod error;
 pub mod healthcheck;
 pub mod mock;

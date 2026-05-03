@@ -27,6 +27,12 @@ pub struct Project {
     pub defaults: ProjectDefaults,
     pub remotes: BTreeMap<String, RemoteSpec>,
     pub repos: Vec<RepoEntry>,
+    /// Raw `[[environments]]` table from `coral.toml`, kept opaque at
+    /// the `coral-core` layer because the strongly-typed model lives
+    /// in the `coral-env` crate (which depends on `coral-core`, not the
+    /// reverse — keeps the manifest reusable from `coral-mcp` and
+    /// future readers without dragging the env layer in).
+    pub environments_raw: Vec<toml::Value>,
 
     /// Absolute path of the directory containing `coral.toml`. Set at
     /// load time, **not** in the manifest itself. Empty for legacy
@@ -123,6 +129,7 @@ impl Project {
             defaults: ProjectDefaults::default(),
             remotes: BTreeMap::new(),
             repos: vec![repo],
+            environments_raw: Vec::new(),
             root,
             manifest_path: PathBuf::new(),
         }
@@ -250,6 +257,8 @@ struct RawRoot {
     remotes: BTreeMap<String, RemoteSpec>,
     #[serde(default, rename = "repos")]
     repos: Vec<RawRepo>,
+    #[serde(default, rename = "environments")]
+    environments: Vec<toml::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -335,6 +344,7 @@ pub fn parse_toml(raw: &str, manifest_path: &Path) -> Result<Project> {
         defaults,
         remotes: parsed.remotes,
         repos,
+        environments_raw: parsed.environments,
         root: PathBuf::new(),
         manifest_path: manifest_path.to_path_buf(),
     };
@@ -494,6 +504,7 @@ mod tests {
             defaults: ProjectDefaults::default(),
             remotes: BTreeMap::new(),
             repos,
+            environments_raw: Vec::new(),
             root: PathBuf::new(),
             manifest_path: PathBuf::new(),
         }

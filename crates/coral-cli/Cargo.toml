@@ -33,9 +33,11 @@ regex = { workspace = true }
 rayon = { workspace = true }
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 coral-core = { workspace = true }
+coral-env = { workspace = true }
 coral-lint = { workspace = true }
 coral-runner = { workspace = true }
 coral-stats = { workspace = true }
+coral-test = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

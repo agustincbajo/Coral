@@ -1,4 +1,7 @@
 pub mod common;
+pub mod down;
+pub mod env;
+pub mod env_resolve;
 pub mod export;
 pub mod filters;
 pub mod history;
@@ -11,6 +14,7 @@ pub mod search;
 pub mod stats;
 pub mod status;
 pub mod sync;
+pub mod up;
 pub mod validate_pin;
 
 pub mod bootstrap;

@@ -287,6 +287,55 @@ fn project_sync_clones_a_local_bare_repo_end_to_end() {
 }
 
 #[test]
+fn up_fails_clearly_when_no_environments_declared() {
+    let dir = TempDir::new().unwrap();
+    Command::cargo_bin("coral")
+        .unwrap()
+        .args(["project", "new", "demo"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    Command::cargo_bin("coral")
+        .unwrap()
+        .args(["up"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no [[environments]]"));
+}
+
+#[test]
+fn down_fails_clearly_when_production_env_without_yes() {
+    let dir = TempDir::new().unwrap();
+    std::fs::write(
+        dir.path().join("coral.toml"),
+        r#"apiVersion = "coral.dev/v1"
+[project]
+name = "demo"
+
+[[environments]]
+name = "prod"
+backend = "compose"
+production = true
+
+[environments.services.api]
+kind = "real"
+image = "nginx:latest"
+"#,
+    )
+    .unwrap();
+
+    Command::cargo_bin("coral")
+        .unwrap()
+        .args(["down", "--env", "prod"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("production = true"));
+}
+
+#[test]
 fn project_graph_emits_mermaid_with_nodes_and_edges() {
     let dir = TempDir::new().unwrap();
     Command::cargo_bin("coral")

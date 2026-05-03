@@ -1,19 +1,22 @@
 //! `ComposeBackend` — `docker compose` v2 / `docker-compose` v1 / `podman compose` wrapper.
 //!
-//! v0.17 ships only `up` / `down` / `status` / `logs` / `exec`. Watch
-//! (compose 2.22 `develop.watch`), devcontainer emit, port-forward, and
-//! attach/reset/prune follow in v0.17.x.
-//!
-//! For the v0.17 wave-1 release this module is intentionally a
-//! **placeholder** with the trait wiring + runtime detection in place
-//! but actual subprocess invocation (compose YAML rendering, `up -d`,
-//! container introspection) deferred to wave 2 to keep the diff
-//! reviewable. `MockBackend` covers the upstream tests.
+//! v0.17 wave 2 wires the real subprocess lifecycle: `up -d`, `down`,
+//! `ps --format json` for status, `logs`, `exec`. `develop.watch`
+//! follows in v0.17.x once the rebuild/healthcheck flapping
+//! interaction is pinned by the integration test (PRD risk #6).
 
-use crate::{
-    DownOptions, EnvBackend, EnvCapabilities, EnvError, EnvHandle, EnvPlan, EnvResult, EnvStatus,
-    ExecOptions, ExecOutput, LogLine, LogsOptions, UpOptions,
+use crate::compose_yaml;
+use crate::plan::{
+    EnvHandle, EnvPlan, EnvStatus, HealthState, LogLine, LogStream, PublishedPort, ServiceState,
+    ServiceStatus,
 };
+use crate::{
+    DownOptions, EnvBackend, EnvCapabilities, EnvError, EnvResult, ExecOptions, ExecOutput,
+    LogsOptions, UpOptions,
+};
+use chrono::Utc;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Auto / docker / podman selection.
@@ -90,6 +93,50 @@ impl ComposeBackend {
             }
         }
     }
+
+    /// Render the plan to YAML, write it to `.coral/env/compose/<hash>.yml`,
+    /// and return the path + hash. Idempotent: re-rendering an
+    /// unchanged plan yields the same path so `down()` can find it.
+    fn render_plan_artifact(&self, plan: &EnvPlan) -> EnvResult<(PathBuf, String)> {
+        let yaml = compose_yaml::render(plan);
+        let hash = compose_yaml::content_hash(&yaml);
+        let dir = plan.project_root.join(".coral/env/compose");
+        let path = dir.join(format!("{hash}.yml"));
+        std::fs::create_dir_all(&dir).map_err(|source| EnvError::Io {
+            path: dir.clone(),
+            source,
+        })?;
+        std::fs::write(&path, yaml).map_err(|source| EnvError::Io {
+            path: path.clone(),
+            source,
+        })?;
+        Ok((path, hash))
+    }
+
+    fn run_compose(
+        &self,
+        plan: &EnvPlan,
+        artifact: &Path,
+        extra_args: &[&str],
+    ) -> EnvResult<std::process::Output> {
+        let (bin, prefix) = self.detect_invocation()?;
+        let mut cmd = Command::new(&bin);
+        for arg in &prefix {
+            cmd.arg(arg);
+        }
+        cmd.arg("--file").arg(artifact);
+        cmd.arg("--project-name").arg(&plan.project_name);
+        for arg in extra_args {
+            cmd.arg(arg);
+        }
+        if let Some(env_file) = &plan.env_file {
+            cmd.env("COMPOSE_ENV_FILES", env_file);
+        }
+        cmd.output().map_err(|e| EnvError::BackendError {
+            backend: "compose".into(),
+            message: format!("failed to invoke {bin}: {e}"),
+        })
+    }
 }
 
 fn try_invocation(bin: &str, args: &[&str]) -> bool {
@@ -107,62 +154,263 @@ impl EnvBackend for ComposeBackend {
         "compose"
     }
 
-    fn up(&self, _plan: &EnvPlan, _opts: &UpOptions) -> EnvResult<EnvHandle> {
-        Err(EnvError::BackendError {
+    fn up(&self, plan: &EnvPlan, opts: &UpOptions) -> EnvResult<EnvHandle> {
+        let (artifact_path, artifact_hash) = self.render_plan_artifact(plan)?;
+        let mut args: Vec<&str> = vec!["up"];
+        if opts.detach {
+            args.push("-d");
+        }
+        if opts.build {
+            args.push("--build");
+        }
+        // `--wait` makes compose poll healthchecks itself; we additionally run
+        // `wait_for_healthy` from the higher layer for backend-portable behavior.
+        if opts.detach {
+            args.push("--wait");
+        }
+        let owned_services: Vec<String> = opts.services.clone();
+        for s in &owned_services {
+            args.push(s.as_str());
+        }
+        let output = self.run_compose(plan, &artifact_path, &args)?;
+        if !output.status.success() {
+            let tail = tail(&String::from_utf8_lossy(&output.stderr));
+            return Err(EnvError::BackendError {
+                backend: "compose".into(),
+                message: format!("up failed: {tail}"),
+            });
+        }
+        let mut state = BTreeMap::new();
+        state.insert("project_name".into(), plan.project_name.clone());
+        Ok(EnvHandle {
             backend: "compose".into(),
-            message:
-                "ComposeBackend::up() is wave-2; v0.17.0 ships only the trait + runtime detection"
-                    .into(),
+            artifact_hash,
+            artifact_path,
+            state,
         })
     }
 
-    fn down(&self, _plan: &EnvPlan, _opts: &DownOptions) -> EnvResult<()> {
-        Err(EnvError::BackendError {
-            backend: "compose".into(),
-            message: "ComposeBackend::down() is wave-2".into(),
+    fn down(&self, plan: &EnvPlan, opts: &DownOptions) -> EnvResult<()> {
+        let (artifact_path, _) = self.render_plan_artifact(plan)?;
+        let mut args: Vec<&str> = vec!["down"];
+        if opts.volumes {
+            args.push("--volumes");
+        }
+        let output = self.run_compose(plan, &artifact_path, &args)?;
+        if !output.status.success() {
+            let tail = tail(&String::from_utf8_lossy(&output.stderr));
+            return Err(EnvError::BackendError {
+                backend: "compose".into(),
+                message: format!("down failed: {tail}"),
+            });
+        }
+        Ok(())
+    }
+
+    fn status(&self, plan: &EnvPlan) -> EnvResult<EnvStatus> {
+        let (artifact_path, _) = self.render_plan_artifact(plan)?;
+        let output =
+            self.run_compose(plan, &artifact_path, &["ps", "--all", "--format", "json"])?;
+        if !output.status.success() {
+            // `ps` on an env that has never been `up`'d returns
+            // success with empty stdout; treat any non-success as
+            // empty rather than an error to keep `coral status`
+            // resilient.
+            return Ok(EnvStatus {
+                services: plan
+                    .services
+                    .keys()
+                    .map(|name| ServiceStatus {
+                        name: name.clone(),
+                        state: ServiceState::Pending,
+                        health: HealthState::Unknown,
+                        restarts: 0,
+                        published_ports: vec![],
+                    })
+                    .collect(),
+            });
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut by_name: BTreeMap<String, ServiceStatus> = plan
+            .services
+            .keys()
+            .map(|name| {
+                (
+                    name.clone(),
+                    ServiceStatus {
+                        name: name.clone(),
+                        state: ServiceState::Pending,
+                        health: HealthState::Unknown,
+                        restarts: 0,
+                        published_ports: vec![],
+                    },
+                )
+            })
+            .collect();
+        // compose `ps --format json` emits one JSON object per line in v2
+        // and a JSON array in some older v2.x. Both shapes parse below
+        // because we feed every non-empty line through `from_str` and
+        // accept either Object or Array results.
+        for line in stdout.lines() {
+            let line = line.trim();
+            if line.is_empty() || line == "[" || line == "]" {
+                continue;
+            }
+            let value: Result<serde_json::Value, _> = serde_json::from_str(line);
+            let entries = match value {
+                Ok(serde_json::Value::Array(a)) => a,
+                Ok(v) => vec![v],
+                Err(_) => continue,
+            };
+            for entry in entries {
+                let name = entry
+                    .get("Service")
+                    .or_else(|| entry.get("Name"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                if name.is_empty() {
+                    continue;
+                }
+                if let Some(status) = by_name.get_mut(&name) {
+                    status.state =
+                        parse_state(entry.get("State").and_then(|v| v.as_str()).unwrap_or(""));
+                    status.health =
+                        parse_health(entry.get("Health").and_then(|v| v.as_str()).unwrap_or(""));
+                    status.restarts = entry
+                        .get("RestartCount")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0) as u32;
+                    if let Some(ports_str) = entry.get("Publishers") {
+                        status.published_ports = parse_publishers(ports_str);
+                    }
+                }
+            }
+        }
+        Ok(EnvStatus {
+            services: by_name.into_values().collect(),
         })
     }
 
-    fn status(&self, _plan: &EnvPlan) -> EnvResult<EnvStatus> {
-        Err(EnvError::BackendError {
-            backend: "compose".into(),
-            message: "ComposeBackend::status() is wave-2".into(),
-        })
-    }
-
-    fn logs(
-        &self,
-        _plan: &EnvPlan,
-        _service: &str,
-        _opts: &LogsOptions,
-    ) -> EnvResult<Vec<LogLine>> {
-        Err(EnvError::BackendError {
-            backend: "compose".into(),
-            message: "ComposeBackend::logs() is wave-2".into(),
-        })
+    fn logs(&self, plan: &EnvPlan, service: &str, opts: &LogsOptions) -> EnvResult<Vec<LogLine>> {
+        if !plan.services.contains_key(service) {
+            return Err(EnvError::ServiceNotFound(service.to_string()));
+        }
+        let (artifact_path, _) = self.render_plan_artifact(plan)?;
+        let mut args: Vec<String> = vec![
+            "logs".into(),
+            "--no-color".into(),
+            "--no-log-prefix".into(),
+            "--timestamps".into(),
+        ];
+        if let Some(tail) = opts.tail {
+            args.push("--tail".into());
+            args.push(tail.to_string());
+        }
+        // `--follow` is intentionally not honored at this layer — the CLI
+        // wraps log streaming directly via subprocess piping. Returning
+        // accumulated lines is the right shape for the trait.
+        args.push(service.to_string());
+        let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+        let output = self.run_compose(plan, &artifact_path, &argv)?;
+        let raw = String::from_utf8_lossy(&output.stdout);
+        let now = Utc::now();
+        let mut lines = Vec::new();
+        for line in raw.lines() {
+            lines.push(LogLine {
+                service: service.to_string(),
+                timestamp: now,
+                stream: LogStream::Stdout,
+                line: line.to_string(),
+            });
+        }
+        Ok(lines)
     }
 
     fn exec(
         &self,
-        _plan: &EnvPlan,
-        _service: &str,
-        _cmd: &[String],
+        plan: &EnvPlan,
+        service: &str,
+        cmd: &[String],
         _opts: &ExecOptions,
     ) -> EnvResult<ExecOutput> {
-        Err(EnvError::BackendError {
-            backend: "compose".into(),
-            message: "ComposeBackend::exec() is wave-2".into(),
+        if !plan.services.contains_key(service) {
+            return Err(EnvError::ServiceNotFound(service.to_string()));
+        }
+        let (artifact_path, _) = self.render_plan_artifact(plan)?;
+        let mut args: Vec<String> = vec!["exec".into(), "-T".into(), service.to_string()];
+        for arg in cmd {
+            args.push(arg.clone());
+        }
+        let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+        let output = self.run_compose(plan, &artifact_path, &argv)?;
+        Ok(ExecOutput {
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            exit_code: output.status.code().unwrap_or(-1),
         })
     }
 
     fn capabilities(&self) -> EnvCapabilities {
         EnvCapabilities {
-            watch: false, // wave-2
-            exec: false,
-            logs_follow: false,
+            watch: false, // wave-3
+            exec: true,
+            logs_follow: false, // CLI handles --follow via direct streaming
             port_forward_explicit: false,
             emit_devcontainer: false,
         }
+    }
+}
+
+fn parse_state(s: &str) -> ServiceState {
+    // `docker compose ps --format json` emits state strings like
+    // "running", "exited", "created", "restarting", "paused".
+    match s {
+        "running" => ServiceState::Running,
+        "starting" | "created" | "restarting" => ServiceState::Starting,
+        "exited" | "dead" => ServiceState::Crashed,
+        "stopped" => ServiceState::Stopped,
+        "paused" => ServiceState::Stopped,
+        "" => ServiceState::Unknown,
+        _ => ServiceState::Unknown,
+    }
+}
+
+fn parse_health(s: &str) -> HealthState {
+    match s {
+        "healthy" => HealthState::Pass,
+        "unhealthy" => HealthState::Fail,
+        _ => HealthState::Unknown,
+    }
+}
+
+fn parse_publishers(value: &serde_json::Value) -> Vec<PublishedPort> {
+    let mut out = Vec::new();
+    if let Some(arr) = value.as_array() {
+        for item in arr {
+            let host_port = item
+                .get("PublishedPort")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u16;
+            let container_port =
+                item.get("TargetPort").and_then(|v| v.as_u64()).unwrap_or(0) as u16;
+            if host_port > 0 || container_port > 0 {
+                out.push(PublishedPort {
+                    container_port,
+                    host_port,
+                });
+            }
+        }
+    }
+    out
+}
+
+fn tail(s: &str) -> String {
+    let trimmed = s.trim();
+    if trimmed.len() <= 400 {
+        trimmed.to_string()
+    } else {
+        format!("…{}", &trimmed[trimmed.len() - 400..])
     }
 }
 
@@ -182,5 +430,21 @@ mod tests {
     fn name_is_compose() {
         let b = ComposeBackend::new(ComposeRuntime::Auto);
         assert_eq!(b.name(), "compose");
+    }
+
+    #[test]
+    fn parse_state_maps_compose_strings() {
+        assert!(matches!(parse_state("running"), ServiceState::Running));
+        assert!(matches!(parse_state("created"), ServiceState::Starting));
+        assert!(matches!(parse_state("exited"), ServiceState::Crashed));
+        assert!(matches!(parse_state("stopped"), ServiceState::Stopped));
+        assert!(matches!(parse_state("unknown"), ServiceState::Unknown));
+    }
+
+    #[test]
+    fn parse_health_recognizes_healthy_and_unhealthy() {
+        assert!(matches!(parse_health("healthy"), HealthState::Pass));
+        assert!(matches!(parse_health("unhealthy"), HealthState::Fail));
+        assert!(matches!(parse_health("starting"), HealthState::Unknown));
     }
 }
