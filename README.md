@@ -217,10 +217,10 @@ Sibling of `coral.toml`. Separates **intent** (`ref = "main"` in the manifest) f
 | `coral project new [<name>]` | Create a new `coral.toml` + empty `coral.lock` in the cwd. |
 | `coral project add <name> [--url\|--remote] [--ref] [--tags ...] [--depends-on ...]` | Append a repo entry to the manifest. |
 | `coral project list [--format markdown\|json]` | Tabular view of declared repos with resolved URLs. |
-| `coral project lock [--dry-run]` | Refresh `coral.lock` from the manifest. |
+| `coral project lock [--dry-run]` | Refresh `coral.lock` from the manifest without pulling. |
+| `coral project sync [--repo NAME]... [--tag T]... [--exclude N]... [--sequential] [--strict]` | Clone or fast-forward every selected repo (parallel via rayon by default), then write resolved SHAs to `coral.lock`. Auth failures and dirty trees are skipped-with-warning so one bad repo never aborts the whole sync. |
+| `coral project graph [--format mermaid\|dot\|json]` | Emit the repo dependency graph from `[[repos]] depends_on`. Mermaid output renders directly in GitHub-flavored Markdown. |
 | `coral project doctor [--strict]` | Check for ref drift, missing clones, stale lockfile entries, duplicate paths. |
-
-`coral project sync` (real git clone/pull, parallelized via rayon) is in active development for v0.16.x.
 
 ### Multi-repo filters on every command (planned for v0.16.x)
 

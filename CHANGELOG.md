@@ -7,32 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### v0.16.0-dev — Multi-repo projects (in progress)
+## [0.16.0] - 2026-05-03
 
-The first wave of v0.16 lands the foundation for multi-repo workflows. Single-repo v0.15 users keep zero behavior change — pinned by a new `tests/bc_regression.rs` integration suite running on every PR.
+The biggest release since v0.10 — Coral evolves from "wiki maintainer" to "multi-repo project manifest + wiki + (forthcoming) environments + tests + MCP". Single-repo v0.15 users see **zero behavior change**, pinned by a new `bc_regression` integration suite running on every PR.
 
-#### Added — features
+This release implements the foundation specified in the [v0.16+ PRD](https://github.com/agustincbajo/Coral/issues): the `coral.toml` manifest, the `coral.lock` lockfile, the seven `coral project` subcommands, and the `Project::discover`/`synthesize_legacy` shim that makes the upgrade frictionless. `coral project sync` clones repos in parallel, written atomically into `coral.lock`. `coral project graph` visualizes the dependency graph as Mermaid (renders inline in GitHub Markdown), DOT, or JSON.
 
-- **`Project` model** (`crates/coral-core/src/project/mod.rs`): the new entity that represents a logical grouping of one or more git repositories sharing an aggregated `.wiki/`. The single-repo case is treated as a `Project` synthesized from the cwd.
-- **`Project::discover(cwd)`**: walks up the directory tree looking for a `coral.toml` containing a `[project]` table. Falls back to `Project::synthesize_legacy(cwd)` when none is found, preserving v0.15 behavior.
-- **`coral.toml` manifest** (`crates/coral-core/src/project/manifest.rs`): TOML schema with `apiVersion = "coral.dev/v1"`, `[project.defaults]`, `[remotes.<name>]` URL templates, `[[repos]]` with `name`, `url`/`remote`, `ref`, `path`, `tags`, `depends_on`. Validates: duplicate names, dependency cycles, unknown apiVersion, missing URL resolution.
-- **`coral.lock` lockfile** (`crates/coral-core/src/project/lock.rs`): separates manifest **intent** from resolved SHAs. Atomic writes (tmp + rename, holds `flock` on the file). Round-trip parser; auto-creates on first read.
-- **`coral project` family**: `new`, `list`, `add`, `doctor`, `lock` subcommands. Wired through `crates/coral-cli/src/commands/project/`. Tests pass on legacy single-repo projects (synthesized), multi-repo projects, and edge cases (cycles, duplicates, mutually-exclusive flags).
-- **`coral project doctor`**: replaces the originally-planned `coral project healthcheck` (which collided with `service.healthcheck` planned for v0.17). Reports unknown apiVersion, missing clones, stale lockfile entries, duplicate paths. `--strict` makes any finding exit non-zero (CI gate).
-- **`commands::common::resolve_project()`** shim (`crates/coral-cli/src/commands/common/mod.rs`): single entry point all CLI commands will use to resolve their `Project`. Honors `--wiki-root` exactly as v0.15 to preserve test-fixture and script compatibility.
-- **`commands::filters::RepoFilters`** (`crates/coral-cli/src/commands/filters.rs`): common parser for `--repo` / `--tag` / `--exclude`. In legacy projects every filter resolves to "the only repo is included", so single-repo workflows stay zero-friction. Wires onto `coral ingest`/`lint`/`query`/`status` in v0.16.x.
-- **`tests/bc_regression.rs`** (6 tests): pins v0.15 behavior — `coral init`, `coral status`, `coral lint`, `coral project list` against a legacy cwd. Runs on every PR via `cargo test --test bc_regression`.
-- **`tests/multi_repo_project.rs`** (5 tests): E2E coverage for `project new` → `add` × 3 → `lock` → `list` → `doctor` flow, including `depends_on` cycle detection.
+### Added — multi-repo features
 
-#### Notes — backward compatibility
+- **`Project` model** (`crates/coral-core/src/project/`): the new entity that represents one or more git repositories sharing an aggregated `.wiki/`. The single-repo case is treated as a `Project` synthesized from the cwd via `Project::synthesize_legacy(cwd)`.
+- **`Project::discover(cwd)`** walks up looking for a `coral.toml` containing a `[project]` table. Falls back to legacy synthesis when none is found.
+- **`coral.toml` manifest** (`apiVersion = "coral.dev/v1"`, `[project.defaults]`, `[remotes.<name>]` URL templates, `[[repos]]` with `name`/`url`/`remote`/`ref`/`path`/`tags`/`depends_on`). Validates duplicate names, dependency cycles, unknown apiVersion, unresolvable URLs.
+- **`coral.lock` lockfile** separates manifest intent from resolved SHAs. Atomic tmp+rename with the existing `flock`. Auto-creates on first read.
+- **`coral_core::git_remote`** module: `sync_repo(url, ref, path)` returning a typed `SyncOutcome` (`Cloned`/`Updated`/`SkippedDirty`/`SkippedAuth`/`Failed`). Subprocess `git` so the user's SSH agent / credential helper / GPG signing stay transparent — Coral never prompts for or stores credentials.
+- **Seven `coral project` subcommands**:
+  - `coral project new [<name>] [--remote N] [--force] [--pin-toolchain]` — create the manifest + empty lockfile.
+  - `coral project add <name> [--url|--remote] [--ref] [--path] [--tags ...] [--depends-on ...]` — append a repo entry, validates manifest invariants on save.
+  - `coral project list [--format markdown|json]` — tabular view with resolved URLs.
+  - `coral project lock [--dry-run]` — refresh `coral.lock` from the manifest without pulling.
+  - `coral project sync [--repo N]... [--tag T]... [--exclude N]... [--sequential] [--strict]` — clone or fast-forward selected repos (parallel via rayon by default), write resolved SHAs to `coral.lock` atomically. Auth failures and dirty working trees are skipped-with-warning per PRD risk #10 — one bad repo never aborts the whole sync.
+  - `coral project graph [--format mermaid|dot|json]` — emit the repo dependency graph; Mermaid renders inline in GitHub-flavored Markdown.
+  - `coral project doctor [--strict]` — drift / health check (replaces the originally-named `healthcheck` to avoid collision with `service.healthcheck` planned for v0.17). Reports unknown apiVersion, missing clones, stale lockfile entries, duplicate paths.
+- **`commands::common::resolve_project()`** shim — single entry point every CLI command uses to resolve its `Project`. Honors `--wiki-root` exactly as v0.15.
+- **`commands::filters::RepoFilters`** — shared `--repo`/`--tag`/`--exclude` parser, embedded via clap `#[command(flatten)]`. In legacy projects every filter resolves to "the only repo is included" so single-repo workflows stay zero-friction.
+
+### Added — tests
+
+- **`tests/bc_regression.rs`** (6 tests) pins v0.15 single-repo behavior on every PR: `init`/`status`/`lint`/`project list` against a legacy cwd, plus `--wiki-root` override fidelity.
+- **`tests/multi_repo_project.rs`** (7 tests) E2E coverage for the new flow: `project new` → `add` × N → `lock` → `list` → `sync` (real local-bare-repo clone) → `graph` → `doctor`, including `depends_on` cycle detection.
+- All existing 200+ unit tests + integration suites continue to pass.
+
+### Notes — backward compatibility
 
 - v0.15 users see **zero behavior change**. No `coral.toml` → every command synthesizes a single-repo project from the cwd via `Project::synthesize_legacy`.
 - `coral init` is **not** renamed to `coral project new`. Both exist, both work, with no deprecation warning. Scripts that grep stderr won't break.
-- `--wiki-root <path>` keeps working — v0.15 fixture-based tests continue to pass.
+- `--wiki-root <path>` keeps working — v0.15 fixture-based tests pass unchanged.
 
-#### Notes — forward compatibility
+### Notes — forward compatibility
 
-- A v0.15 binary cannot read multi-repo wikis once the index frontmatter migrates to `last_commit: { repo → sha }` (v0.16.x). Migration path: `coral migrate-back --to v0.15` will reduce a 1-repo map back to a scalar.
+- A v0.15 binary cannot read multi-repo wikis once the index frontmatter migrates to `last_commit: { repo → sha }` (planned for v0.16.x). Migration path: `coral migrate-back --to v0.15` will reduce a 1-repo map back to a scalar. The current v0.16.0 release does **not** yet rewrite `WikiIndex.last_commit`, so v0.15 binaries can still read wikis written by v0.16.0 in single-repo mode.
 
 ## [0.15.1] - 2026-05-02
 

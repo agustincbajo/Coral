@@ -287,6 +287,56 @@ fn project_sync_clones_a_local_bare_repo_end_to_end() {
 }
 
 #[test]
+fn project_graph_emits_mermaid_with_nodes_and_edges() {
+    let dir = TempDir::new().unwrap();
+    Command::cargo_bin("coral")
+        .unwrap()
+        .args(["project", "new", "demo"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+    Command::cargo_bin("coral")
+        .unwrap()
+        .args(["project", "add", "api", "--url", "git@x:acme/api.git"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+    Command::cargo_bin("coral")
+        .unwrap()
+        .args([
+            "project",
+            "add",
+            "worker",
+            "--url",
+            "git@x:acme/worker.git",
+            "--depends-on",
+            "api",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    Command::cargo_bin("coral")
+        .unwrap()
+        .args(["project", "graph", "--format", "mermaid"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("graph TD"))
+        .stdout(predicate::str::contains("api"))
+        .stdout(predicate::str::contains("worker --> api"));
+
+    Command::cargo_bin("coral")
+        .unwrap()
+        .args(["project", "graph", "--format", "json"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"from\": \"worker\""))
+        .stdout(predicate::str::contains("\"to\": \"api\""));
+}
+
+#[test]
 fn project_add_rejects_dependency_cycle() {
     let dir = TempDir::new().unwrap();
     Command::cargo_bin("coral")

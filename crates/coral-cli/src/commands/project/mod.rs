@@ -7,6 +7,7 @@
 
 pub mod add;
 pub mod doctor;
+pub mod graph;
 pub mod list;
 pub mod lock;
 pub mod new;
@@ -37,6 +38,8 @@ pub enum ProjectCmd {
     /// Clone or fetch every repo declared in `coral.toml`, write resolved
     /// SHAs to `coral.lock`. Parallel by default.
     Sync(sync::SyncArgs),
+    /// Visualize the repo dependency graph (mermaid / dot / json).
+    Graph(graph::GraphArgs),
 }
 
 pub fn run(args: ProjectArgs, wiki_root: Option<&Path>) -> anyhow::Result<ExitCode> {
@@ -47,5 +50,6 @@ pub fn run(args: ProjectArgs, wiki_root: Option<&Path>) -> anyhow::Result<ExitCo
         ProjectCmd::Doctor(a) => doctor::run(a, wiki_root),
         ProjectCmd::Lock(a) => lock::run(a, wiki_root),
         ProjectCmd::Sync(a) => sync::run(a, wiki_root),
+        ProjectCmd::Graph(a) => graph::run(a, wiki_root),
     }
 }
