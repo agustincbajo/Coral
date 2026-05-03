@@ -11,6 +11,7 @@
 //! deliberately — same `Send + Sync`, `thiserror` errors, `Mock*` for
 //! tests.
 
+pub mod contract_check;
 pub mod discover;
 pub mod error;
 pub mod healthcheck_runner;
@@ -21,6 +22,11 @@ pub mod report;
 pub mod spec;
 pub mod user_defined_runner;
 
+pub use contract_check::{
+    ContractReport, Finding as ContractFinding, FindingKind as ContractFindingKind,
+    Severity as ContractSeverity, check_project as check_contracts,
+    render_report_json as render_contract_json, render_report_markdown as render_contract_markdown,
+};
 pub use discover::{DiscoveredCase, discover_openapi_in_project};
 pub use error::{TestError, TestResult};
 pub use healthcheck_runner::HealthcheckRunner;

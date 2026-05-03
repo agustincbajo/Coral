@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### v0.19.1-dev — `coral contract check` (cross-repo interface drift detection)
+
+- **New crate module `coral-test::contract_check`** — walks each repo's
+  `openapi.{yaml,yml,json}` (provider) and `.coral/tests/*.{yaml,yml,hurl}`
+  (consumer); for every `[[repos]] depends_on` edge, diffs the consumer's
+  expectations against the provider's declared interface. Deterministic,
+  no LLM.
+- **`coral contract check [--format markdown|json] [--strict]`** CLI command.
+  Reports `UnknownEndpoint`, `UnknownMethod`, `StatusDrift`,
+  `MissingProviderSpec`. Fails fast in CI *before* `coral up` runs.
+- **8 new end-to-end scenarios** in
+  `crates/coral-cli/tests/multi_repo_interface_change.rs`:
+  - happy path (no drift),
+  - endpoint removed (Error),
+  - method changed (Error),
+  - status drift (Warning, Error in `--strict`),
+  - unsynced provider repo (Warning),
+  - JSON output round-trip,
+  - Hurl files are scanned alongside YAML,
+  - legacy single-repo project rejects with a clear error.
+- **13 new unit tests** in `coral-test::contract_check` covering path
+  matching with `{param}` and `${var}` placeholders, status set
+  comparison, and end-to-end project walking.
+
+### CI workflow improvements (no behavior change for users)
+
+- **MSRV 1.85 gate** — `cargo build --workspace --locked` against the
+  declared minimum supported Rust version, so cross-team installs from
+  pinned tags are guaranteed to work.
+- **`bc-regression` dedicated job** — backward-compat suite runs as its
+  own check on every PR; the failure mode reads as "BC broke" instead
+  of "some test broke".
+- **Cross-platform smoke** (ubuntu-latest + macos-latest) — `cargo build
+  --release && coral init` round-trip catches platform regressions before
+  the Release workflow tries to build the tarballs.
+- **`concurrency` group** cancels in-progress runs on the same ref to
+  save Actions minutes.
+
 ## [0.19.0] - 2026-05-03
 
 Massive release that consolidates v0.17 (environments) + v0.18 (testing)

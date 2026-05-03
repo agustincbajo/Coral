@@ -320,6 +320,29 @@ coral test-discover --commit                     # write under .coral/tests/disc
 coral test --include-discovered                  # include discovered cases in the run
 ```
 
+### Multi-repo interface change detection
+
+The single most expensive bug in microservice testing: service A changes its OpenAPI, breaks service B's expectations, and you only find out 20 minutes into a CI run when the runtime test fails with a generic 404. **`coral contract check`** prevents this by diffing each consumer's `.coral/tests/` against each provider's `openapi.yaml` *before* the test environment is even brought up:
+
+```bash
+coral contract check                  # markdown summary; exit 0 if only warnings
+coral contract check --strict         # fail on any finding (CI gate)
+coral contract check --format json    # CI-friendly machine-readable output
+```
+
+What it detects (deterministic, no LLM):
+
+| Drift | Severity | Example |
+|---|---|---|
+| **Unknown endpoint** | Error | worker tests `GET /users/{id}` but api removed it |
+| **Unknown method** | Error | worker tests `POST /users` but api only declares `GET /users` |
+| **Status drift** | Warning (Error in `--strict`) | worker expects `200` but api now documents only `201` |
+| **Missing provider spec** | Warning | worker `depends_on api` but no `openapi.yaml` at `repos/api/` |
+
+Coverage tested in [`crates/coral-cli/tests/multi_repo_interface_change.rs`](crates/coral-cli/tests/multi_repo_interface_change.rs) — 8 end-to-end scenarios. Both YAML and Hurl test files are scanned. Path matching honors OpenAPI `{param}` placeholders against consumer-side concrete paths and `${var}` runtime substitutions.
+
+For Pact-style consumer-driven contracts with a `coral.contracts.lock` and `--can-i-deploy`, see the v0.20+ roadmap.
+
 ---
 
 ## Quickstart — MCP server for coding agents
@@ -419,6 +442,7 @@ The loader uses TF-IDF ranking + backlink BFS + greedy fill under your token bud
 | `coral verify [--env NAME]` | Run all healthchecks. Liveness only, <30s budget. Exit non-zero on any fail. |
 | `coral test [--service N]... [--kind smoke\|healthcheck\|user-defined]... [--tag T]... [--format markdown\|json\|junit] [--update-snapshots] [--include-discovered] [--env]` | Run union of healthcheck + user-defined YAML + Hurl + optional OpenAPI-discovered cases. JUnit XML for CI. |
 | `coral test-discover [--emit markdown\|yaml] [--commit]` | Auto-generate TestCases from `openapi.{yaml,yml,json}` in repos. **No LLM**, deterministic mapping. |
+| `coral contract check [--format markdown\|json] [--strict]` | **Cross-repo interface drift detection.** Walks each repo's OpenAPI spec (provider) and `.coral/tests/*.{yaml,yml,hurl}` (consumer); for every `[[repos]] depends_on` edge reports unknown endpoints, unknown methods, and status-code drift. Fails fast in CI **before** the test environment is even brought up. |
 
 ### AI ecosystem layer (v0.19+)
 

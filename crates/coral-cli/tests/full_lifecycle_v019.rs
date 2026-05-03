@@ -1,8 +1,8 @@
 //! End-to-end lifecycle test that exercises every v0.19 feature
 //! against a single fixture project. The goal is one test that, if
-//! green, proves that the whole CLI surface (multi-repo + env + test
-//! + MCP + export + context) is functional. Individual unit tests
-//! cover details; this one covers integration.
+//! green, proves that the whole CLI surface (multi-repo + env + test +
+//! MCP + export + context) is functional. Individual unit tests cover
+//! details; this one covers integration.
 //!
 //! No Docker required — the env layer is exercised only as far as
 //! `coral up` would need a backend. Tests that require a real
@@ -110,7 +110,13 @@ fn full_v019_lifecycle_end_to_end() {
         .stdout(predicate::str::contains("not yet cloned"));
 
     // 7. coral export-agents — every format renders.
-    for fmt in &["agents-md", "claude-md", "cursor-rules", "copilot", "llms-txt"] {
+    for fmt in &[
+        "agents-md",
+        "claude-md",
+        "cursor-rules",
+        "copilot",
+        "llms-txt",
+    ] {
         Command::cargo_bin("coral")
             .unwrap()
             .args(["export-agents", "--format", fmt])
