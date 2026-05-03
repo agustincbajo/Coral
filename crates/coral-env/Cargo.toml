@@ -1,0 +1,27 @@
+[package]
+name = "coral-env"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Coral env: pluggable backend for dev environments (compose, kind, tilt)."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+regex = { workspace = true }
+chrono = { workspace = true }
+coral-core = { workspace = true }
+
+[features]
+default = ["compose"]
+compose = []
+# kind = []   # v0.20+
+# tilt = []   # v0.20+
+
+[dev-dependencies]
+tempfile = { workspace = true }

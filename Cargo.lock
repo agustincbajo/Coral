@@ -353,6 +353,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "coral-env"
+version = "0.16.0"
+dependencies = [
+ "chrono",
+ "coral-core",
+ "regex",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tracing",
+]
+
+[[package]]
 name = "coral-lint"
 version = "0.16.0"
 dependencies = [

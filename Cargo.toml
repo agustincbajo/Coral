@@ -34,6 +34,7 @@ predicates = "3"
 assert_cmd = "2"
 schemars = { version = "0.8", features = ["chrono"] }
 coral-core = { path = "crates/coral-core", version = "0.16.0" }
+coral-env = { path = "crates/coral-env", version = "0.16.0" }
 coral-lint = { path = "crates/coral-lint", version = "0.16.0" }
 coral-runner = { path = "crates/coral-runner", version = "0.16.0" }
 coral-stats = { path = "crates/coral-stats", version = "0.16.0" }

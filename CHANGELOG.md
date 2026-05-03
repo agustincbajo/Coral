@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### v0.17.0-dev — Environment layer (in progress)
+
+First wave of v0.17 lays the foundation for multi-service development environments. Single-repo and multi-repo v0.16 users see no behavior change — `[[environments]]` in `coral.toml` is opt-in.
+
+#### Added
+
+- **New crate `coral-env`** — pluggable backend trait family for dev environments. Mirrors the `coral-runner` shape: `Send + Sync` `EnvBackend` trait, `thiserror`-typed `EnvError`, in-memory `MockBackend` for upstream tests.
+- **`EnvBackend` trait**: `up`/`down`/`status`/`logs`/`exec` methods. Live-reload (`watch`), devcontainer/k8s emit, port-forward, and attach/reset/prune are reserved for v0.17.x as the testing layer (v0.18) needs them.
+- **`EnvironmentSpec` schema** for `[[environments]]` in `coral.toml`: name, backend, mode (managed/adopt), `compose_command` (auto/docker/podman), `production` flag, env file, services map.
+- **`ServiceKind`** tagged enum (`Real { repo, image, build, ports, env, depends_on, healthcheck, watch }` / `Mock { tool, spec, mode, recording }`). The mock variant is reserved for v0.18+ but lives in the schema so manifests upgrade smoothly.
+- **`Healthcheck` model** with `HealthcheckKind::{Http, Tcp, Exec, Grpc}` + `HealthcheckTiming` (separates `start_period_s` / `interval_s` / `start_interval_s` / `consecutive_failures` — k8s startup-vs-runtime separation).
+- **`EnvPlan`** — backend-agnostic compiled plan; `compose_project_name(project_root, env)` derives `coral-<env>-<8-char-hash>` from the absolute path so worktrees of the same meta-repo never collide.
+- **`healthcheck::wait_for_healthy`** loop with `consecutive_failures` policy. Pure function over a probe closure; backend-agnostic.
+- **`ComposeBackend` runtime detection** for `docker compose` v2, `docker-compose` v1, and `podman compose`. Subprocess invocation (rendering compose YAML, real `up -d`, container introspection) follows in v0.17 wave 2.
+- **`MockBackend`** with `calls()` recorder + scriptable `push_status` queue, ready for upstream CLI tests in wave 2.
+
 ## [0.16.0] - 2026-05-03
 
 The biggest release since v0.10 — Coral evolves from "wiki maintainer" to "multi-repo project manifest + wiki + (forthcoming) environments + tests + MCP". Single-repo v0.15 users see **zero behavior change**, pinned by a new `bc_regression` integration suite running on every PR.
