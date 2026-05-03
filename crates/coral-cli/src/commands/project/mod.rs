@@ -10,6 +10,7 @@ pub mod doctor;
 pub mod list;
 pub mod lock;
 pub mod new;
+pub mod sync;
 
 use clap::{Args, Subcommand};
 use std::path::Path;
@@ -33,6 +34,9 @@ pub enum ProjectCmd {
     Doctor(doctor::DoctorArgs),
     /// Refresh `coral.lock` from the manifest without pulling.
     Lock(lock::LockArgs),
+    /// Clone or fetch every repo declared in `coral.toml`, write resolved
+    /// SHAs to `coral.lock`. Parallel by default.
+    Sync(sync::SyncArgs),
 }
 
 pub fn run(args: ProjectArgs, wiki_root: Option<&Path>) -> anyhow::Result<ExitCode> {
@@ -42,5 +46,6 @@ pub fn run(args: ProjectArgs, wiki_root: Option<&Path>) -> anyhow::Result<ExitCo
         ProjectCmd::Add(a) => add::run(a, wiki_root),
         ProjectCmd::Doctor(a) => doctor::run(a, wiki_root),
         ProjectCmd::Lock(a) => lock::run(a, wiki_root),
+        ProjectCmd::Sync(a) => sync::run(a, wiki_root),
     }
 }

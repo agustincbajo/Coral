@@ -318,6 +318,7 @@ dependencies = [
  "insta",
  "predicates",
  "pulldown-cmark",
+ "rayon",
  "regex",
  "serde",
  "serde_json",

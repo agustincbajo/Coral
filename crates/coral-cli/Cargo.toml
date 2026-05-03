@@ -30,6 +30,7 @@ serde_yaml_ng = { workspace = true }
 chrono = { workspace = true }
 walkdir = { workspace = true }
 regex = { workspace = true }
+rayon = { workspace = true }
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 coral-core = { workspace = true }
 coral-lint = { workspace = true }

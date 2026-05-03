@@ -193,6 +193,99 @@ fn project_doctor_warns_on_missing_clones_in_strict_mode() {
         .stdout(predicate::str::contains("not yet cloned"));
 }
 
+/// End-to-end: build a tiny bare repo locally, then run
+/// `coral project new` + `add` + `sync` against it. Verifies real
+/// `git_remote::sync_repo` clones it and writes the resolved SHA into
+/// `coral.lock`.
+///
+/// Gated on `git` being on PATH; CI runners always have it.
+#[test]
+fn project_sync_clones_a_local_bare_repo_end_to_end() {
+    use std::process::Command as Stdc;
+
+    let dir = TempDir::new().unwrap();
+    let bare = dir.path().join("origin.git");
+    let work = dir.path().join("source");
+    let project_root = dir.path().join("orchestra");
+    std::fs::create_dir_all(&project_root).unwrap();
+
+    // Build a 1-commit bare repo to clone from.
+    Stdc::new("git")
+        .args(["init", "--bare", bare.to_str().unwrap()])
+        .status()
+        .unwrap();
+    Stdc::new("git")
+        .args(["init", "--initial-branch=main", work.to_str().unwrap()])
+        .status()
+        .unwrap();
+    std::fs::write(work.join("README.md"), "hello\n").unwrap();
+    Stdc::new("git")
+        .current_dir(&work)
+        .args(["add", "."])
+        .status()
+        .unwrap();
+    Stdc::new("git")
+        .current_dir(&work)
+        .args([
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-m",
+            "init",
+        ])
+        .status()
+        .unwrap();
+    Stdc::new("git")
+        .current_dir(&work)
+        .args(["remote", "add", "origin", bare.to_str().unwrap()])
+        .status()
+        .unwrap();
+    Stdc::new("git")
+        .current_dir(&work)
+        .args(["push", "-u", "origin", "main"])
+        .status()
+        .unwrap();
+
+    Command::cargo_bin("coral")
+        .unwrap()
+        .args(["project", "new", "orchestra"])
+        .current_dir(&project_root)
+        .assert()
+        .success();
+
+    Command::cargo_bin("coral")
+        .unwrap()
+        .args(["project", "add", "demo", "--url", bare.to_str().unwrap()])
+        .current_dir(&project_root)
+        .assert()
+        .success();
+
+    Command::cargo_bin("coral")
+        .unwrap()
+        .args(["project", "sync"])
+        .current_dir(&project_root)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("cloned"));
+
+    // `repos/demo/` should exist with the cloned README.
+    let cloned = project_root.join("repos").join("demo").join("README.md");
+    assert!(cloned.is_file(), "expected {} to exist", cloned.display());
+
+    // `coral.lock` should now have a concrete SHA.
+    let lock = std::fs::read_to_string(project_root.join("coral.lock")).unwrap();
+    assert!(
+        lock.contains("[repos.demo]"),
+        "lockfile missing entry: {lock}"
+    );
+    assert!(
+        !lock.contains("sha       = \"00000"),
+        "lockfile should have concrete SHA, got: {lock}"
+    );
+}
+
 #[test]
 fn project_add_rejects_dependency_cycle() {
     let dir = TempDir::new().unwrap();
