@@ -7,7 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### v0.19.1-dev — `coral contract check` (cross-repo interface drift detection)
+## [0.19.1] - 2026-05-03
+
+Validation pass on top of v0.19.0. Three real bugs caught during a
+multi-agent re-validation are fixed; coverage extended; README's first
+v0.19 rewrite (which had invalid TOML) is now snapshot-tested. No
+behavior change for v0.15 single-repo users.
+
+### `coral contract check` — cross-repo interface drift detection
 
 - **New crate module `coral-test::contract_check`** — walks each repo's
   `openapi.{yaml,yml,json}` (provider) and `.coral/tests/*.{yaml,yml,hurl}`
