@@ -160,6 +160,7 @@ mod tests {
         EnvPlan {
             name: "dev".into(),
             project_name: "coral-dev-deadbeef".into(),
+            mode: crate::spec::EnvMode::Managed,
             services: Default::default(),
             env_file: None,
             project_root: std::path::PathBuf::from("/tmp"),

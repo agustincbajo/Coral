@@ -43,6 +43,18 @@ fn render_service(name: &str, service: &ServiceSpecPlan, plan: &EnvPlan) -> Valu
         Value::String(format!("{}-{}", plan.project_name, name)),
     );
 
+    // Apply the environment-level `env_file` to every service so the
+    // declared envs reach all containers (compose's idiomatic pattern).
+    // Per-service `env: { K = V }` overrides still take precedence
+    // because compose merges service-level `environment` after
+    // `env_file`.
+    if let Some(env_file) = &plan.env_file {
+        out.insert(
+            Value::String("env_file".into()),
+            Value::Sequence(vec![Value::String(env_file.to_string_lossy().into_owned())]),
+        );
+    }
+
     match &service.kind {
         ServiceKind::Real(real) => render_real(&mut out, real, service),
         ServiceKind::Mock(_) => {
@@ -162,16 +174,28 @@ fn render_healthcheck(hc: &Healthcheck) -> Value {
         HealthcheckKind::Http {
             path,
             expect_status,
-            ..
+            headers,
         } => {
             // curl-based probe: portable across alpine/debian containers
             // that ship curl. Users with images that don't have curl can
             // override with `kind = "exec"`. We bake the expected status
             // into the test rather than parse `--write-out` output.
+            //
+            // Render any declared headers as `-H 'k: v'` flags so probes
+            // against authenticated endpoints succeed. Without this the
+            // probe would silently get 401/403 and the service would
+            // report unhealthy forever.
+            let mut header_args = String::new();
+            for (k, v) in headers {
+                // Single-quote the value because the whole CMD-SHELL is
+                // already double-quoted by YAML scalar rules; embedded
+                // single quotes in a header value are vanishingly rare.
+                header_args.push_str(&format!(" -H '{k}: {v}'"));
+            }
             vec![
                 Value::String("CMD-SHELL".into()),
                 Value::String(format!(
-                    "curl -fsS -o /dev/null -w '%{{http_code}}' http://localhost:8080{path} | grep -q '^{expect_status}$' || exit 1"
+                    "curl -fsS -o /dev/null -w '%{{http_code}}'{header_args} http://localhost:8080{path} | grep -q '^{expect_status}$' || exit 1"
                 )),
             ]
         }
@@ -259,6 +283,7 @@ mod tests {
         EnvPlan {
             name: name.into(),
             project_name: format!("coral-{name}-deadbeef"),
+            mode: crate::spec::EnvMode::Managed,
             services: BTreeMap::new(),
             env_file: None,
             project_root: std::path::PathBuf::from("/tmp"),
@@ -357,5 +382,112 @@ mod tests {
         assert_eq!(h1, h2);
         assert_ne!(content_hash("hello"), content_hash("world"));
         assert_eq!(h1.len(), 8);
+    }
+
+    #[test]
+    fn render_propagates_env_file_to_every_service() {
+        let mut plan = empty_plan("dev");
+        plan.env_file = Some(std::path::PathBuf::from("env/dev.env"));
+        plan.services.insert("db".into(), real_service("db"));
+        plan.services.insert("api".into(), real_service("api"));
+        let yaml = render(&plan);
+        // Every service inherits env_file: [env/dev.env]. Compose merges
+        // env_file before per-service `environment:` so per-service env
+        // overrides still win.
+        let env_file_count = yaml.matches("env/dev.env").count();
+        assert!(
+            env_file_count >= 2,
+            "expected env_file to fan out across all services, got: {yaml}"
+        );
+    }
+
+    #[test]
+    fn render_omits_env_file_when_unset() {
+        let mut plan = empty_plan("dev");
+        plan.services.insert("db".into(), real_service("db"));
+        let yaml = render(&plan);
+        assert!(!yaml.contains("env_file"));
+    }
+
+    #[test]
+    fn render_http_healthcheck_emits_header_flags() {
+        let mut plan = empty_plan("dev");
+        let mut svc = real_service("api");
+        if let ServiceKind::Real(real) = &mut svc.kind {
+            real.healthcheck = Some(Healthcheck {
+                kind: HealthcheckKind::Http {
+                    path: "/health".into(),
+                    expect_status: 200,
+                    headers: BTreeMap::from([(
+                        "X-Internal-Auth".into(),
+                        "${HEALTHCHECK_TOKEN}".into(),
+                    )]),
+                },
+                timing: HealthcheckTiming::default(),
+            });
+        }
+        plan.services.insert("api".into(), svc);
+        let yaml = render(&plan);
+        // YAML single-quote escaping turns `'foo'` into `''foo''` inside
+        // the surrounding single-quoted scalar; assert the header field
+        // name and value travel through, regardless of escape form.
+        assert!(
+            yaml.contains("-H ") && yaml.contains("X-Internal-Auth: ${HEALTHCHECK_TOKEN}"),
+            "expected curl probe to render auth header flag, got:\n{yaml}"
+        );
+    }
+
+    #[test]
+    fn render_http_healthcheck_without_headers_is_clean() {
+        let mut plan = empty_plan("dev");
+        let mut svc = real_service("api");
+        if let ServiceKind::Real(real) = &mut svc.kind {
+            real.healthcheck = Some(Healthcheck {
+                kind: HealthcheckKind::Http {
+                    path: "/health".into(),
+                    expect_status: 200,
+                    headers: BTreeMap::new(),
+                },
+                timing: HealthcheckTiming::default(),
+            });
+        }
+        plan.services.insert("api".into(), svc);
+        let yaml = render(&plan);
+        assert!(yaml.contains("curl -fsS"));
+        // No stray `-H ` flag when no headers were declared.
+        assert!(!yaml.contains(" -H "));
+    }
+
+    #[test]
+    fn render_grpc_healthcheck_emits_grpc_health_probe() {
+        let mut plan = empty_plan("dev");
+        let mut svc = real_service("api");
+        if let ServiceKind::Real(real) = &mut svc.kind {
+            real.healthcheck = Some(Healthcheck {
+                kind: HealthcheckKind::Grpc {
+                    port: 50051,
+                    service: Some("health.v1".into()),
+                },
+                timing: HealthcheckTiming::default(),
+            });
+        }
+        plan.services.insert("api".into(), svc);
+        let yaml = render(&plan);
+        assert!(yaml.contains("grpc_health_probe -addr=:50051 -service health.v1"));
+    }
+
+    #[test]
+    fn render_is_deterministic_for_identical_plans() {
+        // The content hash drives `.coral/env/compose/<hash>.yml` and
+        // drift detection; if rendering ever became non-deterministic
+        // (e.g. iterating a HashMap), `coral up` would re-render every
+        // invocation. Pin the property explicitly.
+        let mut plan = empty_plan("dev");
+        plan.services.insert("api".into(), real_service("api"));
+        plan.services.insert("db".into(), real_service("db"));
+        let a = render(&plan);
+        let b = render(&plan);
+        assert_eq!(a, b);
+        assert_eq!(content_hash(&a), content_hash(&b));
     }
 }

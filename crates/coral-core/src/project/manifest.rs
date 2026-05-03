@@ -606,6 +606,91 @@ depends_on = ["api"]
     }
 
     #[test]
+    fn validate_rejects_three_node_cycle() {
+        // a → b → c → a — DFS coloring must catch transitive cycles, not
+        // just the trivial 2-node case.
+        let mut p = make_project_with_repos(&["a", "b", "c"]);
+        p.repos[0].depends_on.push("b".to_string());
+        p.repos[1].depends_on.push("c".to_string());
+        p.repos[2].depends_on.push("a".to_string());
+        let err = p.validate().unwrap_err();
+        assert!(format!("{}", err).contains("cycle"));
+    }
+
+    #[test]
+    fn validate_rejects_self_loop() {
+        // A repo declaring itself as a dependency is also a cycle.
+        let mut p = make_project_with_repos(&["a"]);
+        p.repos[0].depends_on.push("a".to_string());
+        let err = p.validate().unwrap_err();
+        assert!(format!("{}", err).contains("cycle"));
+    }
+
+    #[test]
+    fn validate_accepts_diamond_dag() {
+        //   a
+        //  ╱ ╲
+        // b   c
+        //  ╲ ╱
+        //   d
+        // Diamond pattern shares ancestor `a` via two paths but is acyclic.
+        // The Gray/Black coloring must mark `a` Black on the first DFS so
+        // visiting it again from the second path doesn't false-positive.
+        let mut p = make_project_with_repos(&["a", "b", "c", "d"]);
+        p.repos[1].depends_on.push("a".to_string());
+        p.repos[2].depends_on.push("a".to_string());
+        p.repos[3].depends_on.push("b".to_string());
+        p.repos[3].depends_on.push("c".to_string());
+        p.validate().expect("diamond DAGs must be allowed");
+    }
+
+    #[test]
+    fn validate_accepts_disconnected_components() {
+        // Two independent islands {a, b} and {c, d}. Validation must walk
+        // every component, not just the one rooted at the first node.
+        let mut p = make_project_with_repos(&["a", "b", "c", "d"]);
+        p.repos[1].depends_on.push("a".to_string());
+        p.repos[3].depends_on.push("c".to_string());
+        p.validate()
+            .expect("disconnected acyclic components must validate");
+    }
+
+    #[test]
+    fn validate_detects_cycle_in_one_of_many_components() {
+        // Component A is acyclic ({a, b}), Component B has a 3-node cycle
+        // ({c, d, e}). Validation must surface the failure even when the
+        // graph has multiple disconnected components.
+        let mut p = make_project_with_repos(&["a", "b", "c", "d", "e"]);
+        p.repos[1].depends_on.push("a".to_string());
+        p.repos[2].depends_on.push("d".to_string());
+        p.repos[3].depends_on.push("e".to_string());
+        p.repos[4].depends_on.push("c".to_string());
+        let err = p.validate().unwrap_err();
+        assert!(format!("{}", err).contains("cycle"));
+    }
+
+    #[test]
+    fn has_cycle_handles_dangling_dependency_gracefully() {
+        // `has_cycle` is the lower-level fn; the `validate_rejects_unknown_dependency`
+        // check runs before it, but pin behavior in case ordering changes.
+        // Dangling edges must report no cycle (so the higher-level "not
+        // declared" check fires instead) without panicking on the lookup.
+        let single = vec![RepoEntry {
+            name: "lone".into(),
+            url: Some("git@example.com/lone.git".into()),
+            remote: None,
+            r#ref: None,
+            path: None,
+            tags: vec![],
+            depends_on: vec!["ghost".into()],
+            include: vec![],
+            exclude: vec![],
+            enabled: true,
+        }];
+        assert!(!has_cycle(&single));
+    }
+
+    #[test]
     fn validate_rejects_missing_url_without_remote() {
         let raw = r#"apiVersion = "coral.dev/v1"
 [project]

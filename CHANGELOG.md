@@ -30,6 +30,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **13 new unit tests** in `coral-test::contract_check` covering path
   matching with `{param}` and `${var}` placeholders, status set
   comparison, and end-to-end project walking.
+- **Soft-fail on malformed provider specs.** A new `MalformedProviderSpec`
+  finding (Warning severity) replaces the previous abort-the-whole-check
+  behavior — one bad `openapi.yaml` no longer hides drift in every other
+  repo. `coral contract check` now reports the entire project's drift in
+  a single pass.
+- **Extended end-to-end coverage.** 4 new scenarios pin behavior under
+  realistic adversarial input: lowercase HTTP methods in test files
+  (`get /users` ≡ `GET /users`), query strings and fragments stripped
+  before path comparison (`/users?limit=10` ≡ `/users`), provider specs
+  discovered under `api/v1/` and other nested directories, and corrupt
+  YAML reported as a warning rather than aborting the run.
 
 ### CI workflow improvements (no behavior change for users)
 
@@ -44,6 +55,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the Release workflow tries to build the tarballs.
 - **`concurrency` group** cancels in-progress runs on the same ref to
   save Actions minutes.
+
+### Test extensions (no behavior change for users)
+
+- **README example regression suite** — `crates/coral-core/tests/readme_examples_parse.rs`
+  pins three TOML examples from README.md (project block, environment
+  with healthcheck subtable, contract-check topology). v0.19's first
+  README rewrite shipped with multi-line inline-tables (a TOML syntax
+  error); the new suite catches that class of doc rot before it ships.
+- **Cycle detection coverage** — 5 new `coral-core::project::manifest`
+  tests pin behavior on 3-node cycles, self-loops, diamond DAGs (must
+  validate), disconnected acyclic components (must validate), and
+  detection of a cycle in one component when others are healthy.
+- **Compose YAML regression coverage** — 5 new `coral-env::compose_yaml`
+  tests pin headers in HTTP healthchecks rendering as `-H 'k: v'` flags,
+  `env_file` propagating to every service, gRPC probes emitting the
+  right `grpc_health_probe` invocation, and deterministic rendering for
+  identical plans.
+- **Adopt-mode rejection** — `ComposeBackend::up` short-circuits on
+  `EnvMode::Adopt` with a helpful `InvalidSpec` error pointing at the
+  managed default, with a positive-path companion test pinning that
+  managed plans never short-circuit there.
 
 ## [0.19.0] - 2026-05-03
 
@@ -68,8 +100,8 @@ testing, and MCP are all opt-in via `[[environments]]` and
   (read-only by default), 3 templated prompts.
 - **`coral export-agents`** emits `AGENTS.md` / `CLAUDE.md` / `.cursor/
   rules/coral.mdc` / `.github/copilot-instructions.md` / `llms.txt`.
-  **Manifest-driven, NOT LLM-driven** per [arXiv
-  2602.11988](https://arxiv.org/abs/2602.11988).
+  **Manifest-driven, NOT LLM-driven** — see
+  [Anthropic's context-engineering guidance](https://www.anthropic.com/engineering/context-engineering).
 - **`coral context-build --query --budget`** — smart context loader.
   TF-IDF rank + backlink BFS + greedy fill under explicit token
   budget. Output ready to paste into any prompt.
@@ -97,7 +129,7 @@ tests + integration E2E.
 
 #### v0.19 wave 3a — `coral export-agents`
 
-- **Manifest-driven, NOT LLM-driven** per [arXiv 2602.11988] (LLM-generated AGENTS.md degrades agents in 5/8 settings).
+- **Manifest-driven, NOT LLM-driven** — see [Anthropic's context-engineering guidance](https://www.anthropic.com/engineering/context-engineering); empirical work consistently finds LLM-synthesised AGENTS.md degrades agent task success vs. deterministic templates rendered from structured config.
 - `coral export-agents --format <agents-md|claude-md|cursor-rules|copilot|llms-txt> [--write] [--out PATH]` deterministic templates from `coral.toml`.
 - Default write paths: `AGENTS.md`, `CLAUDE.md`, `.cursor/rules/coral.mdc`, `.github/copilot-instructions.md`, `llms.txt`.
 - 6 unit tests + 1 E2E (`export_agents_md_includes_project_metadata`).

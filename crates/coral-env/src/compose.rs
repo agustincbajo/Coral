@@ -155,6 +155,18 @@ impl EnvBackend for ComposeBackend {
     }
 
     fn up(&self, plan: &EnvPlan, opts: &UpOptions) -> EnvResult<EnvHandle> {
+        // `mode = "adopt"` requires invoking the user's existing
+        // `docker-compose.yml` instead of generating one. Wave 3 of
+        // v0.17 will wire this; until then, fail loudly so users
+        // don't unknowingly run a managed YAML when they declared
+        // `mode = "adopt"`.
+        if matches!(plan.mode, crate::spec::EnvMode::Adopt) {
+            return Err(EnvError::InvalidSpec(
+                "environment `mode = \"adopt\"` is reserved for v0.17.x; \
+                 set `mode = \"managed\"` (the default) for now"
+                    .into(),
+            ));
+        }
         let (artifact_path, artifact_hash) = self.render_plan_artifact(plan)?;
         let mut args: Vec<&str> = vec!["up"];
         if opts.detach {
@@ -446,5 +458,63 @@ mod tests {
         assert!(matches!(parse_health("healthy"), HealthState::Pass));
         assert!(matches!(parse_health("unhealthy"), HealthState::Fail));
         assert!(matches!(parse_health("starting"), HealthState::Unknown));
+    }
+
+    #[test]
+    fn up_rejects_adopt_mode_with_invalid_spec_error() {
+        // `mode = "adopt"` is reserved for v0.17.x and must not silently
+        // fall through to managed-mode rendering — the user explicitly
+        // declared a different intent.
+        use crate::EnvBackend;
+        use crate::plan::EnvPlan;
+        use crate::spec::EnvMode;
+        let plan = EnvPlan {
+            name: "dev".into(),
+            project_name: "coral-dev-deadbeef".into(),
+            mode: EnvMode::Adopt,
+            services: Default::default(),
+            env_file: None,
+            project_root: std::path::PathBuf::from("/tmp"),
+        };
+        let backend = ComposeBackend::new(ComposeRuntime::Auto);
+        let err = backend
+            .up(&plan, &Default::default())
+            .expect_err("adopt mode must be rejected");
+        match err {
+            EnvError::InvalidSpec(msg) => {
+                assert!(
+                    msg.contains("adopt") && msg.contains("managed"),
+                    "expected helpful error message, got: {msg}"
+                );
+            }
+            other => panic!("expected InvalidSpec, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn up_managed_mode_does_not_short_circuit_on_mode() {
+        // Sanity-check the converse: a Managed plan must NOT be
+        // rejected at the mode check (it'll fail later trying to invoke
+        // docker, which is the correct error path for tests w/o docker).
+        use crate::EnvBackend;
+        use crate::plan::EnvPlan;
+        use crate::spec::EnvMode;
+        let plan = EnvPlan {
+            name: "dev".into(),
+            project_name: "coral-dev-deadbeef".into(),
+            mode: EnvMode::Managed,
+            services: Default::default(),
+            env_file: None,
+            project_root: std::path::PathBuf::from("/tmp"),
+        };
+        let backend = ComposeBackend::new(ComposeRuntime::Auto);
+        let err = backend
+            .up(&plan, &Default::default())
+            .expect_err("docker is unavailable in unit tests");
+        // The error must NOT be the InvalidSpec we'd get from adopt; it
+        // should be a binary-not-found / backend error.
+        if matches!(err, EnvError::InvalidSpec(_)) {
+            panic!("managed mode should not be rejected as InvalidSpec");
+        }
     }
 }

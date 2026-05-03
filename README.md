@@ -49,7 +49,7 @@ Coral started as a [Karpathy-style LLM Wiki](https://gist.github.com/karpathy/44
 
 ## What you get
 
-A single `coral` binary (~5 MB, statically linked, MSRV 1.85) with **34 subcommands** across five layers:
+A single `coral` binary (~6.3 MB stripped, statically linked, MSRV 1.85) with **36 leaf subcommands** (28 top-level commands, four of which group sub-subcommands) across five layers:
 
 | Layer | Commands | Since |
 |---|---|---|
@@ -69,7 +69,7 @@ Plus:
 - **5 export formats** for the wiki (`markdown-bundle`, `json`, `notion-json`, `jsonl`, `html`).
 - **5 export formats** for AI agent instructions (`agents-md`, `claude-md`, `cursor-rules`, `copilot`, `llms-txt`) — manifest-driven, NOT LLM-driven.
 - **9 `TestKind` variants** (`Healthcheck`, `UserDefined`, `LlmGenerated`, `Contract`, `PropertyBased`, `Recorded`, `Event`, `Trace`, `E2eBrowser`).
-- **8 MCP resources + 8 tools + 3 prompts** exposed via JSON-RPC 2.0 stdio.
+- **6 MCP resources + 8 tools + 3 prompts** exposed via JSON-RPC 2.0 stdio.
 - **End-to-end concurrency safety**: atomic writes (`tmp + rename`), cross-process `flock(2)` locking, race-free parallel `coral ingest`.
 - **Backward-compat guarantee**: every v0.15 single-repo workflow keeps working — pinned by a dedicated `bc-regression` test job that runs on every PR.
 
@@ -81,7 +81,7 @@ Three problems in one tool.
 
 ### 1. The naive `AGENTS.md` problem
 
-Giving an LLM context about your repo by hand-writing one giant `AGENTS.md` file is fragile. It grows out of control, eats your context window, drifts out of sync with the code, and provides zero auditability. [Recent research (arXiv 2602.11988, March 2026)](https://arxiv.org/abs/2602.11988) found that LLM-generated context files actually **degraded** task success rates in 5 of 8 tested settings.
+Giving an LLM context about your repo by hand-writing one giant `AGENTS.md` file is fragile. It grows out of control, eats your context window, drifts out of sync with the code, and provides zero auditability. Recent context-engineering work — including [Anthropic's published guidance](https://www.anthropic.com/engineering/context-engineering) and broader empirical reports — has converged on **structured note-taking persisted across sessions** rather than monolithic context dumps; LLM-generated `AGENTS.md` files in particular have shown degraded agent task success vs. deterministic, manifest-driven templates.
 
 **Coral wiki** is a constellation of small (<300 line) Markdown pages, each tagged with frontmatter (`slug`, `type`, `confidence`, `sources`, `backlinks`), curated by an LLM bibliotecario subagent under a strict SCHEMA.
 
@@ -376,7 +376,7 @@ coral export-agents --format copilot         --write    # writes .github/copilot
 coral export-agents --format llms-txt        --write    # writes llms.txt
 ```
 
-**Why deterministic templates instead of LLM-generated?** Per [arXiv 2602.11988 (Mar 2026)](https://arxiv.org/abs/2602.11988), LLM-generated AGENTS.md files **degraded** task success rates in 5 of 8 tested settings vs. human-curated or template-rendered files. Coral's templates pull structured data from `coral.toml` and `[hooks]` — not synthesized prose.
+**Why deterministic templates instead of LLM-generated?** Empirical work on context files (and [Anthropic's context-engineering guidance](https://www.anthropic.com/engineering/context-engineering)) has consistently found that LLM-synthesized `AGENTS.md` files degrade agent task success vs. human-curated or template-rendered ones. Coral's templates pull structured data from `coral.toml` and `[hooks]` — not synthesized prose.
 
 For prompt-paste workflows where you don't have an MCP-speaking client:
 
@@ -449,7 +449,7 @@ The loader uses TF-IDF ranking + backlink BFS + greedy fill under your token bud
 | Command | Purpose |
 |---|---|
 | `coral mcp serve [--transport stdio] [--read-only] [--allow-write-tools]` | MCP server (JSON-RPC 2.0 stdio, MCP 2025-11-25). Exposes 6 resources, 8 tools, 3 prompts. Read-only by default. |
-| `coral export-agents --format <agents-md\|claude-md\|cursor-rules\|copilot\|llms-txt> [--write] [--out PATH]` | Manifest-driven instruction file emission. **NOT LLM-driven** per [arXiv 2602.11988](https://arxiv.org/abs/2602.11988). |
+| `coral export-agents --format <agents-md\|claude-md\|cursor-rules\|copilot\|llms-txt> [--write] [--out PATH]` | Manifest-driven instruction file emission. **NOT LLM-driven** — see [Anthropic's context-engineering guidance](https://www.anthropic.com/engineering/context-engineering) for why deterministic templates beat synthesized ones. |
 | `coral context-build --query <q> --budget <tokens> [--format markdown\|json] [--seeds N]` | Smart context loader. TF-IDF rank + backlink BFS + greedy fill under token budget. |
 
 ---
@@ -546,17 +546,30 @@ kind          = "http"
 path          = "/health"
 expect_status = 200
 headers       = { "X-Internal-Auth" = "${HEALTHCHECK_TOKEN}" }
-timing        = { interval_s = 2, timeout_s = 5, retries = 5,
-                  start_period_s = 30, start_interval_s = 1,
-                  consecutive_failures = 3 }
+
+[environments.dev.services.api.healthcheck.timing]
+interval_s           = 2
+timeout_s            = 5
+retries              = 5
+start_period_s       = 30
+start_interval_s     = 1
+consecutive_failures = 3
 
 [environments.dev.services.db]
 kind  = "real"
 image = "postgres:16"
 ports = [5432]
-healthcheck = { kind = "tcp", port = 5432,
-                timing = { interval_s = 5, timeout_s = 3, retries = 6,
-                           start_period_s = 20, consecutive_failures = 3 } }
+
+[environments.dev.services.db.healthcheck]
+kind = "tcp"
+port = 5432
+
+[environments.dev.services.db.healthcheck.timing]
+interval_s           = 5
+timeout_s            = 3
+retries              = 6
+start_period_s       = 20
+consecutive_failures = 3
 ```
 
 Validation rules (enforced on every load):
@@ -737,7 +750,7 @@ coral_test:
 
 ### Composite GitHub Actions
 
-Three composite actions ship under `.github/actions/`:
+Five composite actions ship under `.github/actions/`:
 
 - `ingest/` — incremental wiki ingest (calls `coral ingest --apply`)
 - `lint/` — structural + semantic lint with PR-comment summary
@@ -745,7 +758,7 @@ Three composite actions ship under `.github/actions/`:
 - `embeddings-cache/` — Voyage embeddings cache restore/save
 - `validate/` — Hermes-style PR validator (LLM-validated wiki claims)
 
-Add a `verify` action in v0.20+ for env healthchecks.
+A `verify` action for env healthchecks lands in v0.20+.
 
 ---
 
@@ -819,7 +832,11 @@ Environment variables:
 | `CORAL_EMBEDDINGS_PROVIDER` | `voyage` / `openai` / `mock` | `voyage` |
 | `RUST_LOG` | Logging filter (e.g. `coral=debug,info`) | `info` |
 | `RUST_BACKTRACE` | Stack traces on panic | (unset) |
-| `CORAL_DEPRECATE_INIT` | Show deprecation warning when `coral init` is used as alias for `coral project new` | (unset, no warning) |
+| `ANTHROPIC_API_KEY` | Auth for Claude runner | (none) |
+| `GEMINI_API_KEY` | Auth for Gemini runner | (none) |
+| `VOYAGE_API_KEY` | Auth for Voyage embeddings | (none) |
+| `OPENAI_API_KEY` | Auth for OpenAI embeddings / HTTP runner | (none) |
+| `NOTION_TOKEN` + `CORAL_NOTION_DB` | Auth + DB id for `coral notion-push` | (none) |
 
 ---
 
@@ -912,7 +929,7 @@ Measured on an Apple M1 Pro (10c CPU, 32GB RAM) against Coral's own dogfooded `.
 | `coral mcp serve` (one round-trip) | n/a | <5ms | JSON-RPC dispatch |
 | `coral context-build --budget 50000` | 130ms | 70ms | TF-IDF + BFS |
 
-Binary size: **2.8 MB stripped** (release build, `panic = "abort"`, LTO thin, codegen-units = 1).
+Binary size: **~6.3 MB stripped** (release build, `panic = "abort"`, LTO thin, codegen-units = 1, all features). The `coral-mcp` server, `rusqlite` (bundled), and the LLM-runner adapters are the largest contributors. Disable defaults via Cargo features for a smaller binary.
 
 The `coral-env` and `coral-test` layers are I/O-bound (subprocess `docker compose`, `git`, `curl`); CPU is never the bottleneck there.
 
@@ -1050,7 +1067,7 @@ Single-repo workflows keep working as-is — no migration required. To move to m
 - Cross-repo glob (`[[repos]] glob = "services/*"`) and sub-manifests `<include>`.
 - SWE-ContextBench benchmark publication.
 
-Detailed PRD: [/Users/agustinbajo/.claude/plans/quiero-que-eval-es-todo-glittery-eclipse.md](https://github.com/agustincbajo/Coral/blob/main/.claude/plans/quiero-que-eval-es-todo-glittery-eclipse.md) (or local clone) — 1340 lines covering every iteration.
+Detailed PRD covering every PRD iteration (multi-repo, environments, testing, MCP, AGENTS.md research) is tracked privately in the maintainer's plans directory; the relevant decisions and trade-offs are summarised in the [CHANGELOG](CHANGELOG.md) per release.
 
 ---
 
@@ -1102,7 +1119,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide.
 ### Coding agent ecosystem
 
 - **[AGENTS.md spec](https://agents.md/)** — the cross-tool agent instruction format Coral emits.
-- **[arXiv 2602.11988](https://arxiv.org/abs/2602.11988)** — empirical evidence that LLM-generated AGENTS.md *degrades* agent performance; Coral's manifest-driven exporter is the response.
+- **[Anthropic — Context engineering for agents](https://www.anthropic.com/engineering/context-engineering)** — design rationale for structured note-taking + deterministic instruction files (vs. LLM-synthesized ones); Coral's manifest-driven exporter follows this guidance.
 - **[rmcp Rust SDK](https://github.com/modelcontextprotocol/rust-sdk)** — official MCP Rust SDK; Coral's hand-rolled JSON-RPC server in `coral-mcp` will swap to this in v0.20+ if the spec stabilizes further.
 
 ### Comparable / adjacent tools

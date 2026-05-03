@@ -15,7 +15,6 @@
 
 use anyhow::Result;
 use clap::{Args, Subcommand};
-use coral_test::ContractReport;
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -70,9 +69,14 @@ fn run_check(args: CheckArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
 
+    // Skip disabled repos entirely. Other commands honour the
+    // `[[repos]] enabled = false` flag (see `commands::filters`); a
+    // user temporarily disabling a repo expects every command to
+    // pretend it isn't there, including contract check.
     let repos: Vec<(String, Vec<String>)> = project
         .repos
         .iter()
+        .filter(|r| r.enabled)
         .map(|r| (r.name.clone(), r.depends_on.clone()))
         .collect();
 
@@ -96,6 +100,3 @@ fn run_check(args: CheckArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
     }
     Ok(ExitCode::SUCCESS)
 }
-
-#[allow(dead_code)]
-fn _ensure_contract_report_is_used(_r: ContractReport) {}

@@ -1,11 +1,14 @@
 //! `coral export --format <agents-md|claude-md|cursor-rules|copilot|llms-txt>`
 //!
-//! **Manifest-driven, NOT LLM-driven.** Per [arXiv 2602.11988] LLM-generated
-//! AGENTS.md degrades agents in 5/8 settings; Coral renders deterministically
-//! from `coral.toml` `[project.agents_md]` blocks + `[hooks]` + `[[repos]]`,
-//! and points the agent at the wiki via `coral mcp serve` for actual content.
+//! **Manifest-driven, NOT LLM-driven.** Empirical context-engineering
+//! guidance (see [Anthropic's published recommendations][ace]) consistently
+//! finds that LLM-synthesised AGENTS.md files degrade agent task success
+//! vs. deterministic templates rendered from structured config. Coral
+//! renders from `coral.toml` `[project.agents_md]` blocks + `[hooks]`
+//! + `[[repos]]`, and points the agent at the wiki via `coral mcp serve`
+//!   for actual content.
 //!
-//! [arXiv 2602.11988]: https://arxiv.org/abs/2602.11988
+//! [ace]: https://www.anthropic.com/engineering/context-engineering
 
 use anyhow::{Context, Result};
 use clap::Args;

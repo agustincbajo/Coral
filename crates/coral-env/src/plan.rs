@@ -21,6 +21,11 @@ pub struct EnvPlan {
     /// project root path so two worktrees of the same meta-repo don't
     /// collide on the same `coral-<slug>` namespace.
     pub project_name: String,
+    /// Managed (Coral generates the compose YAML) vs. Adopt (user
+    /// brings their own compose file). Backends that don't support
+    /// adopt mode yet should bail with `EnvError::InvalidSpec` rather
+    /// than silently rendering a managed YAML.
+    pub mode: crate::spec::EnvMode,
     pub services: BTreeMap<String, ServiceSpecPlan>,
     pub env_file: Option<PathBuf>,
     pub project_root: PathBuf,
@@ -140,6 +145,7 @@ impl EnvPlan {
         Ok(Self {
             name: spec.name.clone(),
             project_name,
+            mode: spec.mode,
             services,
             env_file: spec.env_file.clone(),
             project_root: project_root.to_path_buf(),
