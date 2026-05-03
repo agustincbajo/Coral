@@ -7,7 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### v0.18.0-dev wave 3 + v0.19.0-dev waves 2–3 — Discovery, Hurl, MCP serve, exports, context build (in progress)
+## [0.19.0] - 2026-05-03
+
+Massive release that consolidates v0.17 (environments) + v0.18 (testing)
++ v0.19 (AI ecosystem) all the way through PRD wave 3 of each milestone.
+Single-repo v0.15 users still see zero behavior change — environments,
+testing, and MCP are all opt-in via `[[environments]]` and
+`.coral/tests/`.
+
+### Headline features
+
+- **`coral up` / `coral down` / `coral env *`** — multi-service dev
+  environments via Compose backend (real subprocess: render YAML,
+  `up -d --wait`, `ps --format json` parser).
+- **`coral verify`** + **`coral test`** with markdown / JSON / JUnit
+  output. HealthcheckRunner + UserDefinedRunner (YAML + Hurl) with
+  retry policies, captures (`${var}`), and snapshot assertions.
+- **`coral test discover`** auto-generates TestCases from
+  `openapi.{yaml,yml,json}`. **No LLM** — deterministic mapping.
+- **`coral mcp serve`** — Model Context Protocol server (JSON-RPC 2.0
+  stdio, MCP 2025-11-25). 6-resource catalog, 8-tool catalog
+  (read-only by default), 3 templated prompts.
+- **`coral export-agents`** emits `AGENTS.md` / `CLAUDE.md` / `.cursor/
+  rules/coral.mdc` / `.github/copilot-instructions.md` / `llms.txt`.
+  **Manifest-driven, NOT LLM-driven** per [arXiv
+  2602.11988](https://arxiv.org/abs/2602.11988).
+- **`coral context-build --query --budget`** — smart context loader.
+  TF-IDF rank + backlink BFS + greedy fill under explicit token
+  budget. Output ready to paste into any prompt.
+
+### v0.18.0-dev wave 3 + v0.19.0-dev waves 2–3 — Discovery, Hurl, MCP serve, exports, context build
 
 The remaining v0.18 + v0.19 waves land together. Coral now ships every
 feature the PRD blueprinted as part of v0.16 → v0.19, with full unit
