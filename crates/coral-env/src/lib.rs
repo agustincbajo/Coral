@@ -25,7 +25,9 @@ pub use plan::{
     EnvHandle, EnvPlan, EnvStatus, HealthState, LogLine, LogStream, PublishedPort, ServiceSpecPlan,
     ServiceState, ServiceStatus,
 };
-pub use spec::{EnvironmentSpec, Healthcheck, HealthcheckKind, HealthcheckTiming, ServiceKind};
+pub use spec::{
+    EnvironmentSpec, Healthcheck, HealthcheckKind, HealthcheckTiming, RealService, ServiceKind,
+};
 
 use std::path::PathBuf;
 

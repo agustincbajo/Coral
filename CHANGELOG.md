@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### v0.18.0-dev wave 2 — `coral test` / `coral verify` (in progress)
+
+Wave 2 of v0.18 wires real `HealthcheckRunner` and `UserDefinedRunner`
+into `coral test` and the new `coral verify` sugar. Discovery from
+OpenAPI / proto, Hurl as a second input format, snapshot assertions,
+contract tests, and the rest of the v0.18 roadmap follow in wave 3.
+
+#### Added
+
+- **`coral_test::probe`** — backend-agnostic `probe_once(status, kind, timeout)` that resolves a service's published port at probe time. HTTP via `curl` subprocess (same reasoning as `coral_core::git_remote`: no heavy HTTP client in the default tree). TCP via std `TcpStream::connect_timeout`. Exec via `Command::new`. gRPC delegates to `grpc_health_probe`, falls back to TCP connect.
+- **`HealthcheckRunner`** auto-derives `TestCase`s from each service's `service.healthcheck`. One probe per case → `TestStatus::{Pass,Fail,Skip}`. Tagged `["healthcheck", "smoke"]` so `--tag smoke` picks them up.
+- **`UserDefinedRunner`** — parse + run `.coral/tests/*.{yaml,yml}` suites. v0.18 wave 2 supports HTTP steps (`http: GET /path` shorthand, `headers`, `body`, `expect.status` + `expect.body_contains`) and exec steps (`exec: ["cmd", "arg"]` + `expect.exit_code` + `expect.stdout_contains`). gRPC, GraphQL, snapshot, captures, retry, parallel are wave 3.
+- **`coral verify [--env NAME]`** — sugar for "run all healthchecks". Liveness only, <30s budget. Exit non-zero on any fail.
+- **`coral test [--service NAME]... [--kind smoke|healthcheck|user-defined]... [--tag T]... [--format markdown|json|junit] [--env NAME]`** — runs the union of healthcheck cases + user-defined YAML suites. Filters by service and tag (PRD §5.2). JUnit XML via `JunitOutput::render`.
+- **6 new probe tests** + **8 user-defined runner tests** (parse_http_line variants, split_curl_status round-trip, YamlSuite serde, discover from `.coral/tests/`).
+
 ### v0.17.0-dev wave 2 — `coral up` / `down` / `env *` (in progress)
 
 Wave 2 wires the real subprocess lifecycle into `ComposeBackend` and

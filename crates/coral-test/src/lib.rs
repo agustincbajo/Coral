@@ -12,14 +12,19 @@
 //! tests.
 
 pub mod error;
+pub mod healthcheck_runner;
 pub mod mock;
+pub mod probe;
 pub mod report;
 pub mod spec;
+pub mod user_defined_runner;
 
 pub use error::{TestError, TestResult};
+pub use healthcheck_runner::HealthcheckRunner;
 pub use mock::MockTestRunner;
 pub use report::{Evidence, JunitOutput, TestReport, TestStatus};
 pub use spec::{TestCase, TestKind, TestSource, TestSpec};
+pub use user_defined_runner::UserDefinedRunner;
 
 use coral_env::EnvHandle;
 use std::path::PathBuf;

@@ -73,6 +73,11 @@ enum Cmd {
     Down(commands::down::DownArgs),
     /// Environment introspection (`status`, `logs`, `exec`).
     Env(commands::env::EnvArgs),
+    /// Run liveness healthchecks against the running environment (<30s).
+    Verify(commands::verify::VerifyArgs),
+    /// Run functional tests (healthcheck + user-defined YAML, with
+    /// markdown / JSON / JUnit output for CI).
+    Test(commands::test::TestArgs),
     /// **Hidden** test-only helper: acquires `with_exclusive_lock(path)`,
     /// reads the file as a u64 counter, increments by 1, writes back.
     /// Used by `tests/cross_process_lock.rs` to verify the v0.15
@@ -112,6 +117,8 @@ fn main() -> ExitCode {
         Cmd::Up(args) => commands::up::run(args, cli.wiki_root.as_deref()),
         Cmd::Down(args) => commands::down::run(args, cli.wiki_root.as_deref()),
         Cmd::Env(args) => commands::env::run(args, cli.wiki_root.as_deref()),
+        Cmd::Verify(args) => commands::verify::run(args, cli.wiki_root.as_deref()),
+        Cmd::Test(args) => commands::test::run(args, cli.wiki_root.as_deref()),
         Cmd::TestLockIncr { path } => run_test_lock_incr(&path),
     };
 

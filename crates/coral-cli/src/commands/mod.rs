@@ -14,8 +14,10 @@ pub mod search;
 pub mod stats;
 pub mod status;
 pub mod sync;
+pub mod test;
 pub mod up;
 pub mod validate_pin;
+pub mod verify;
 
 pub mod bootstrap;
 pub mod consolidate;
