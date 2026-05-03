@@ -386,6 +386,144 @@ fn project_graph_emits_mermaid_with_nodes_and_edges() {
 }
 
 #[test]
+fn test_discover_generates_yaml_from_openapi_spec() {
+    let dir = TempDir::new().unwrap();
+    Command::cargo_bin("coral")
+        .unwrap()
+        .args(["project", "new", "demo"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+    // Drop a tiny OpenAPI fixture under repos/api/.
+    let api = dir.path().join("repos/api");
+    std::fs::create_dir_all(&api).unwrap();
+    std::fs::write(
+        api.join("openapi.yaml"),
+        r#"openapi: 3.0.0
+info: { title: api, version: 1.0.0 }
+paths:
+  /health:
+    get:
+      tags: [api]
+      responses:
+        '200': { description: ok }
+"#,
+    )
+    .unwrap();
+
+    Command::cargo_bin("coral")
+        .unwrap()
+        .args(["test-discover", "--emit", "yaml"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("openapi GET /health"));
+
+    Command::cargo_bin("coral")
+        .unwrap()
+        .args(["test-discover", "--commit"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    let dir_listing = std::fs::read_dir(dir.path().join(".coral/tests/discovered")).unwrap();
+    assert!(dir_listing.count() >= 1);
+}
+
+#[test]
+fn export_agents_md_includes_project_metadata() {
+    let dir = TempDir::new().unwrap();
+    Command::cargo_bin("coral")
+        .unwrap()
+        .args(["project", "new", "demo"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+    Command::cargo_bin("coral")
+        .unwrap()
+        .args(["project", "add", "api", "--url", "git@x:acme/api.git"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    Command::cargo_bin("coral")
+        .unwrap()
+        .args(["export-agents", "--format", "agents-md"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("# AGENTS.md"))
+        .stdout(predicate::str::contains("`demo`"))
+        .stdout(predicate::str::contains("`api`"));
+
+    // --write should land at AGENTS.md
+    Command::cargo_bin("coral")
+        .unwrap()
+        .args(["export-agents", "--format", "agents-md", "--write"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+    assert!(dir.path().join("AGENTS.md").is_file());
+
+    // Cursor rules should land at .cursor/rules/coral.mdc
+    Command::cargo_bin("coral")
+        .unwrap()
+        .args(["export-agents", "--format", "cursor-rules", "--write"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+    assert!(dir.path().join(".cursor/rules/coral.mdc").is_file());
+}
+
+#[test]
+fn mcp_serve_responds_to_initialize_via_stdio() {
+    use std::io::Write;
+    use std::process::{Command as Stdc, Stdio};
+
+    let dir = TempDir::new().unwrap();
+    Command::cargo_bin("coral")
+        .unwrap()
+        .args(["init"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    // Spawn `coral mcp serve` and pipe a single initialize request.
+    let mut child = Stdc::new(env!("CARGO_BIN_EXE_coral"))
+        .args(["mcp", "serve"])
+        .current_dir(dir.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn coral mcp serve");
+
+    {
+        let stdin = child.stdin.as_mut().expect("stdin");
+        let req = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {}
+        });
+        writeln!(stdin, "{}", req).unwrap();
+    }
+    // Drop stdin so the server's stdin loop exits cleanly.
+    drop(child.stdin.take());
+
+    let output = child.wait_with_output().expect("wait");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("\"protocolVersion\""),
+        "expected initialize response, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("\"name\":\"coral\""),
+        "expected serverInfo, got: {stdout}"
+    );
+}
+
+#[test]
 fn project_add_rejects_dependency_cycle() {
     let dir = TempDir::new().unwrap();
     Command::cargo_bin("coral")

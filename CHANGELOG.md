@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### v0.18.0-dev wave 3 + v0.19.0-dev waves 2–3 — Discovery, Hurl, MCP serve, exports, context build (in progress)
+
+The remaining v0.18 + v0.19 waves land together. Coral now ships every
+feature the PRD blueprinted as part of v0.16 → v0.19, with full unit
+tests + integration E2E.
+
+#### v0.18 wave 3 — discovery, Hurl, retry/captures/snapshots
+
+- **`coral test discover` + `coral test --include-discovered`** auto-generates `TestCase`s from `openapi.{yaml,yml,json}` (OpenAPI 3.x) anywhere under the project. Walks excluding `.git/`, `.coral/`, `node_modules/`, `target/`, `vendor/`, `dist/`, `build/`. One case per `(path, method)` with status assertion picked from the spec's lowest 2xx response. Endpoints with `requestBody.required = true` are skipped (we don't fabricate bodies).
+- **Hurl support** (`coral-test::hurl_runner`) — hand-rolled minimal parser for `.coral/tests/*.hurl` files (request-line, headers, `HTTP <status>`, `[Asserts] jsonpath "$.x" exists`, `# coral: name=...` directive). Avoids the libcurl FFI dep that pulling official `hurl` would require. Output `YamlSuite` is identical to YAML suites so the same executor runs both.
+- **Retry policy** with `BackoffKind::{None, Linear, Exponential}` and `RetryCondition::{FivexX, FourxX, Timeout, Any}` — per-step or suite-default. Exponential capped at 5s.
+- **Captures** in `HttpStep.capture: { var: "$.path" }` extract from the response body and substitute as `${var}` in subsequent step URLs/headers/bodies.
+- **Snapshot assertions** in `HttpExpect.snapshot: "fixtures/x.json"` write on first run, compare on subsequent runs. `coral test --update-snapshots` flag accepts new outputs.
+
+#### v0.19 wave 2 — `coral mcp serve`
+
+- **`coral-mcp::server`** ships a hand-rolled JSON-RPC 2.0 stdio server implementing the minimal MCP surface (`initialize`, `resources/list`, `resources/read`, `tools/list`, `tools/call`, `prompts/list`, `prompts/get`, `ping`). Pinned to MCP spec 2025-11-25.
+- Hand-rolled rather than `rmcp = "1.6"` to keep the dep tree slim — the trait-based catalogs mean we can swap to rmcp in v0.20 without breaking callers.
+- **`coral mcp serve [--transport stdio] [--read-only] [--allow-write-tools]`** CLI command.
+- Read-only mode (default) blocks `up`, `down`, `run_test` tool calls (PRD §3.6 + risk #25). E2E test pipes a real `initialize` request via stdio and asserts the protocol version + serverInfo response.
+
+#### v0.19 wave 3a — `coral export-agents`
+
+- **Manifest-driven, NOT LLM-driven** per [arXiv 2602.11988] (LLM-generated AGENTS.md degrades agents in 5/8 settings).
+- `coral export-agents --format <agents-md|claude-md|cursor-rules|copilot|llms-txt> [--write] [--out PATH]` deterministic templates from `coral.toml`.
+- Default write paths: `AGENTS.md`, `CLAUDE.md`, `.cursor/rules/coral.mdc`, `.github/copilot-instructions.md`, `llms.txt`.
+- 6 unit tests + 1 E2E (`export_agents_md_includes_project_metadata`).
+
+#### v0.19 wave 3b — `coral context-build`
+
+- **Smart context loader** under explicit token budget. Differentiator vs Devin Wiki / Cursor multi-root / pure RAG: no vector DB, no full-context blast, just curated selection.
+- TF-IDF ranks pages by query terms; BFS over `backlinks` walks adjacent context; greedy fill stops at `--budget` (4 chars/token heuristic).
+- Output sorted by `(confidence desc, body length asc)` so the most-trusted concise sources lead the prompt.
+- `coral context-build --query "X" --budget 50000 --format markdown|json [--seeds 8]`.
+
 ### v0.18.0-dev wave 2 — `coral test` / `coral verify` (in progress)
 
 Wave 2 of v0.18 wires real `HealthcheckRunner` and `UserDefinedRunner`

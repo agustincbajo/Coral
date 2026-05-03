@@ -313,6 +313,7 @@ dependencies = [
  "coral-core",
  "coral-env",
  "coral-lint",
+ "coral-mcp",
  "coral-runner",
  "coral-stats",
  "coral-test",

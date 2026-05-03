@@ -9,7 +9,7 @@ use clap::Args;
 use coral_env::compose::{ComposeBackend, ComposeRuntime};
 use coral_env::{EnvBackend, EnvHandle, EnvPlan};
 use coral_test::{
-    HealthcheckRunner, JunitOutput, TestCase, TestRunner, TestStatus, UserDefinedRunner,
+    HealthcheckRunner, HurlRunner, JunitOutput, TestCase, TestRunner, TestStatus, UserDefinedRunner,
 };
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -39,6 +39,16 @@ pub struct TestArgs {
     /// Output format.
     #[arg(long, default_value = "markdown")]
     pub format: Format,
+
+    /// Update snapshot files instead of failing on mismatch.
+    #[arg(long)]
+    pub update_snapshots: bool,
+
+    /// Auto-generate test cases from OpenAPI specs found in repos
+    /// (`openapi.{yaml,yml,json}`). Determines what `discover` would
+    /// emit and runs it against the live env.
+    #[arg(long)]
+    pub include_discovered: bool,
 }
 
 #[derive(clap::ValueEnum, Clone, Debug, Copy)]
@@ -91,7 +101,8 @@ pub fn run(args: TestArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
             .any(|k| matches!(k, KindArg::UserDefined | KindArg::Smoke));
 
     let hc_runner = HealthcheckRunner::new(backend.clone(), plan.clone(), spec.clone());
-    let ud_runner = UserDefinedRunner::new(backend.clone(), plan.clone());
+    let ud_runner = UserDefinedRunner::new(backend.clone(), plan.clone())
+        .with_update_snapshots(args.update_snapshots);
 
     let mut all_cases: Vec<(TestCase, &dyn TestRunner)> = Vec::new();
     if want_healthcheck {
@@ -100,10 +111,22 @@ pub fn run(args: TestArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
         }
     }
     if want_user_defined {
-        let pairs = UserDefinedRunner::discover_tests_dir(&project.root)
-            .context("discovering user-defined tests")?;
-        for (case, _suite) in pairs {
+        let yaml_pairs = UserDefinedRunner::discover_tests_dir(&project.root)
+            .context("discovering YAML user-defined tests")?;
+        for (case, _suite) in yaml_pairs {
             all_cases.push((case, &ud_runner));
+        }
+        let hurl_pairs =
+            HurlRunner::discover(&project.root).context("discovering Hurl user-defined tests")?;
+        for (case, _suite) in hurl_pairs {
+            all_cases.push((case, &ud_runner));
+        }
+        if args.include_discovered {
+            let openapi_cases = coral_test::discover_openapi_in_project(&project.root)
+                .context("discovering OpenAPI tests")?;
+            for d in openapi_cases {
+                all_cases.push((d.case, &ud_runner));
+            }
         }
     }
 

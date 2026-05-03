@@ -68,10 +68,12 @@ Coral implements [Andrej Karpathy's LLM Wiki pattern](https://gist.github.com/ka
 
 ### Recent releases (full details in [CHANGELOG.md](CHANGELOG.md))
 
-- **v0.17/0.18-dev waves 1–2 + v0.19-dev wave 1 (in progress)** — three new crates ship; the env + test layers are real, MCP scaffolds the catalogs:
-  - `coral-env` wave 2: real `ComposeBackend` (compose YAML render + subprocess `up`/`down`/`status`/`logs`/`exec`); `coral up`/`down`/`env *` CLI commands.
-  - `coral-test` wave 2: `HealthcheckRunner` (TCP/HTTP/exec/gRPC probes) + `UserDefinedRunner` (YAML test suites with HTTP+exec steps); `coral verify` (liveness <30s) and `coral test` (markdown / JSON / JUnit output).
-  - `coral-mcp` wave 1: 6-resource + 8-tool + 3-prompt catalog, `--read-only` default. `rmcp = "1.6"` transport wiring lands in wave 2.
+- **v0.17/0.18-dev (waves 1–3) + v0.19-dev (waves 1–3) (in progress)** — every feature the PRD blueprinted:
+  - `coral-env`: real `ComposeBackend` + `coral up`/`down`/`env *`.
+  - `coral-test` waves 2–3: `HealthcheckRunner`, `UserDefinedRunner` with retry/captures/snapshots, `HurlRunner` (`.hurl` files), OpenAPI auto-discovery (`coral test discover` + `--include-discovered`).
+  - `coral-mcp` wave 2: hand-rolled JSON-RPC 2.0 stdio server (`coral mcp serve`); 6-resource + 8-tool + 3-prompt catalog; read-only by default per PRD §3.6 / risk #25.
+  - `coral export-agents` (manifest-driven, NOT LLM-driven per [arXiv 2602.11988](https://arxiv.org/abs/2602.11988)) emits AGENTS.md / CLAUDE.md / cursor-rules / copilot / llms.txt.
+  - `coral context-build --query --budget` smart context loader (TF-IDF + backlink BFS + greedy fill under token budget).
 - **v0.16.0 (released)** — multi-repo projects: `coral.toml` manifest, `coral.lock` lockfile, `coral project new/sync/list/add/doctor/lock/graph` commands, and an aggregated wiki across N repos. Single-repo v0.15 users keep zero-friction backward compat (a `Project::synthesize_legacy` shim resolves the cwd into a 1-repo project when no `coral.toml` is found). See [Multi-repo projects](#multi-repo-projects-v0160).
 - **v0.15.1** — provider-agnostic `RunnerError` messages (no more "claude binary not found" when `--provider local` fails).
 - **v0.15.0** — cross-process file locking (`with_exclusive_lock`); `coral ingest` and `bootstrap` now serialize correctly under concurrent invocations.
@@ -258,7 +260,11 @@ The `RepoFilters` parser (in `crates/coral-cli/src/commands/filters.rs`) is wire
 | `coral project new/list/add/doctor/lock/sync/graph` | Multi-repo project commands — manifest, lockfile, parallel git clone, drift report, dependency graph viz. v0.16.0+. See [Multi-repo projects](#multi-repo-projects-v0160). | No |
 | `coral up/down/env {status,logs,exec}` | Bring up + tear down + introspect a multi-service dev environment via Compose backend. v0.17.0+. Requires `[[environments]]` in `coral.toml`. | No |
 | `coral verify [--env NAME]` | Run liveness healthchecks against a running environment (<30s budget). v0.18.0+. | No |
-| `coral test [--service N] [--kind K] [--tag T] [--format markdown\|json\|junit]` | Run functional tests (healthcheck + user-defined YAML). v0.18.0+. JUnit XML for CI. | No |
+| `coral test [--service N] [--kind K] [--tag T] [--format markdown\|json\|junit] [--update-snapshots] [--include-discovered]` | Run functional tests (healthcheck + user-defined YAML/Hurl + optional OpenAPI auto-discovered). v0.18.0+. JUnit XML for CI. Retry policies, captures (`${var}`), snapshot assertions. | No |
+| `coral test-discover [--emit yaml] [--commit]` | Auto-generate `TestCase`s from `openapi.{yaml,yml,json}` in repos. **No LLM.** v0.18.0+. | No |
+| `coral mcp serve [--transport stdio] [--read-only] [--allow-write-tools]` | Expose wiki + manifest as a Model Context Protocol server (JSON-RPC 2.0 stdio, MCP 2025-11-25). v0.19.0+. | No |
+| `coral export-agents --format <agents-md\|claude-md\|cursor-rules\|copilot\|llms-txt> [--write]` | Manifest-driven agent instruction emit. **NOT LLM-driven.** v0.19.0+. | No |
+| `coral context-build --query "<q>" --budget <tokens>` | Smart context loader: TF-IDF + backlink BFS, greedy fill under token budget. Markdown ready to paste into any prompt. v0.19.0+. | No |
 
 ---
 

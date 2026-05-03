@@ -78,6 +78,23 @@ enum Cmd {
     /// Run functional tests (healthcheck + user-defined YAML, with
     /// markdown / JSON / JUnit output for CI).
     Test(commands::test::TestArgs),
+    /// Auto-generate TestCases from OpenAPI specs in the project's
+    /// repos (no LLM). Print, emit YAML, or `--commit` to disk.
+    #[command(name = "test-discover")]
+    TestDiscover(commands::test_discover::DiscoverArgs),
+    /// MCP server (Model Context Protocol). Exposes wiki + manifest
+    /// as resources/tools/prompts to coding agents.
+    Mcp(commands::mcp::McpArgs),
+    /// Manifest-driven instruction file emit (AGENTS.md, CLAUDE.md,
+    /// .cursor/rules, .github/copilot-instructions.md, llms.txt).
+    /// **Not LLM-driven** — deterministic templates from `coral.toml`.
+    #[command(name = "export-agents")]
+    ExportAgents(commands::export_agents::ExportAgentsArgs),
+    /// Smart context loader: rank wiki pages by query, walk
+    /// backlinks, fill under a token budget. Output ready to paste
+    /// into any prompt.
+    #[command(name = "context-build")]
+    ContextBuild(commands::context_build::ContextBuildArgs),
     /// **Hidden** test-only helper: acquires `with_exclusive_lock(path)`,
     /// reads the file as a u64 counter, increments by 1, writes back.
     /// Used by `tests/cross_process_lock.rs` to verify the v0.15
@@ -119,6 +136,10 @@ fn main() -> ExitCode {
         Cmd::Env(args) => commands::env::run(args, cli.wiki_root.as_deref()),
         Cmd::Verify(args) => commands::verify::run(args, cli.wiki_root.as_deref()),
         Cmd::Test(args) => commands::test::run(args, cli.wiki_root.as_deref()),
+        Cmd::TestDiscover(args) => commands::test_discover::run(args, cli.wiki_root.as_deref()),
+        Cmd::Mcp(args) => commands::mcp::run(args, cli.wiki_root.as_deref()),
+        Cmd::ExportAgents(args) => commands::export_agents::run(args, cli.wiki_root.as_deref()),
+        Cmd::ContextBuild(args) => commands::context_build::run(args, cli.wiki_root.as_deref()),
         Cmd::TestLockIncr { path } => run_test_lock_incr(&path),
     };
 
