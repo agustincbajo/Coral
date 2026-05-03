@@ -1,0 +1,116 @@
+name: Nightly real-API smoke tests
+
+# Runs the `--ignored` real-API smoke tests every night against actual
+# providers (Claude, Gemini, Voyage, OpenAI, llama.cpp). The default CI
+# (`ci.yml`) runs only the deterministic test suite (608 tests) — these
+# smokes need credentials and are too expensive/slow for every push.
+#
+# Each job runs only when its required secret is set in the repo. If the
+# secret is missing, the job is skipped gracefully (no failure, no email).
+# To enable a smoke: add the corresponding secret at
+# https://github.com/<owner>/Coral/settings/secrets/actions
+#
+# Manual trigger: GitHub UI → Actions → Nightly → Run workflow.
+
+on:
+  schedule:
+    - cron: '0 5 * * *' # 05:00 UTC daily — well after the lint cron at 03:00.
+  workflow_dispatch:
+
+jobs:
+  claude-smoke:
+    name: Real Claude smoke (claude_runner_smoke_real_claude)
+    runs-on: ubuntu-latest
+    if: ${{ vars.SKIP_NIGHTLY != 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Skip if CLAUDE_CODE_OAUTH_TOKEN missing
+        if: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN == '' }}
+        run: |
+          echo "::warning::CLAUDE_CODE_OAUTH_TOKEN not set; skipping real-Claude smoke."
+          echo "Add it at https://github.com/${{ github.repository }}/settings/secrets/actions"
+          exit 0
+      - name: Install claude CLI
+        if: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
+        run: |
+          # Claude Code CLI install — adjust if upstream provides a Linux installer.
+          npm install -g @anthropic-ai/claude-code
+      - name: Run Claude smoke test
+        if: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: cargo test -p coral-runner --lib claude_runner_smoke_real_claude -- --ignored --nocapture
+
+  gemini-smoke:
+    name: Real Gemini smoke (gemini_runner_smoke_real_gemini)
+    runs-on: ubuntu-latest
+    if: ${{ vars.SKIP_NIGHTLY != 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Skip if GEMINI_API_KEY missing
+        if: ${{ secrets.GEMINI_API_KEY == '' }}
+        run: |
+          echo "::warning::GEMINI_API_KEY not set; skipping real-Gemini smoke."
+          exit 0
+      - name: Install gemini CLI
+        if: ${{ secrets.GEMINI_API_KEY != '' }}
+        run: npm install -g @google/gemini-cli
+      - name: Run Gemini smoke test
+        if: ${{ secrets.GEMINI_API_KEY != '' }}
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: cargo test -p coral-runner --lib gemini_runner_smoke_real_gemini -- --ignored --nocapture
+
+  voyage-smoke:
+    name: Real Voyage embeddings smoke (voyage_provider_smoke_real_voyage)
+    runs-on: ubuntu-latest
+    if: ${{ vars.SKIP_NIGHTLY != 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Skip if VOYAGE_API_KEY missing
+        if: ${{ secrets.VOYAGE_API_KEY == '' }}
+        run: |
+          echo "::warning::VOYAGE_API_KEY not set; skipping real-Voyage smoke."
+          exit 0
+      - name: Run Voyage smoke test
+        if: ${{ secrets.VOYAGE_API_KEY != '' }}
+        env:
+          VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
+        run: cargo test -p coral-runner --lib voyage_provider_smoke_real_voyage -- --ignored --nocapture
+
+  openai-smoke:
+    name: Real OpenAI embeddings smoke (openai_provider_smoke_real_openai)
+    runs-on: ubuntu-latest
+    if: ${{ vars.SKIP_NIGHTLY != 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Skip if OPENAI_API_KEY missing
+        if: ${{ secrets.OPENAI_API_KEY == '' }}
+        run: |
+          echo "::warning::OPENAI_API_KEY not set; skipping real-OpenAI smoke."
+          exit 0
+      - name: Run OpenAI smoke test
+        if: ${{ secrets.OPENAI_API_KEY != '' }}
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: cargo test -p coral-runner --lib openai_provider_smoke_real_openai -- --ignored --nocapture
+
+  stress-tests:
+    name: 200-page wiki stress tests
+    runs-on: ubuntu-latest
+    # Stress tests don't need any secret — always run.
+    if: ${{ vars.SKIP_NIGHTLY != 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run stress tests
+        run: cargo test -p coral-cli --test stress_large_wiki -- --ignored --nocapture

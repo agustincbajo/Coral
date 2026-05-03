@@ -27,11 +27,19 @@ Each subcommand is a module under `commands/`:
 | `bootstrap` | `commands/bootstrap.rs` | Yes |
 | `ingest` | `commands/ingest.rs` | Yes |
 | `query` | `commands/query.rs` | Yes |
-| `lint` | `commands/lint.rs` | Optional (`--semantic`) |
+| `lint` | `commands/lint.rs` | Optional (`--semantic`, `--auto-fix`, `--suggest-sources`) |
 | `consolidate` | `commands/consolidate.rs` | Yes |
 | `stats` | `commands/stats.rs` | No |
 | `sync` | `commands/sync.rs` | No |
 | `onboard` | `commands/onboard.rs` | Yes |
+| `prompts` | `commands/prompts.rs` | No |
+| [[search]] | `commands/search.rs` | Optional (`--engine embeddings`) |
+| `export` | `commands/export.rs` | Optional (`--qa`) |
+| `notion-push` | `commands/notion_push.rs` | No |
+| `validate-pin` | `commands/validate_pin.rs` | No |
+| `diff` | `commands/diff.rs` | Optional (`--semantic`) |
+| `status` | `commands/status.rs` | No |
+| `history` | `commands/history.rs` | No |
 
 LLM-using commands expose two entry points:
 

@@ -15,6 +15,6 @@ generated_at: 2026-05-02T23:48:12.483332+00:00
 # Embeddings
 
 Coral's embeddings subsystem converts wiki page bodies into fixed-
-dimension float vectors for semantic similarity search.
+dimension float vectors for semantic similarity [[search]].
 
 ## EmbeddingsProvider trait (`coral-runner/src/embeddings.rs`)
