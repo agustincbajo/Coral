@@ -35,6 +35,19 @@ jobs:
         run: cargo build --release --workspace --target ${{ matrix.target }}
       - name: Strip binary (Linux/macOS)
         run: strip target/${{ matrix.target }}/release/coral || true
+      - name: Ad-hoc codesign (macOS)
+        # Without this, Gatekeeper rejects the binary on first launch even
+        # after the user `xattr`-removes the quarantine flag, because Apple
+        # Silicon binaries with no signature at all (not even ad-hoc) are
+        # killed at exec time. Ad-hoc signature (`-`) is free, requires no
+        # cert, and pacifies that check. Users still see the
+        # "unidentified developer" prompt — only Developer ID + notarytool
+        # eliminates that, which costs $99/year and isn't worth it yet.
+        if: contains(matrix.target, 'apple-darwin')
+        run: |
+          codesign --force --sign - --timestamp=none --options=runtime \
+            target/${{ matrix.target }}/release/coral
+          codesign --verify --verbose target/${{ matrix.target }}/release/coral
       - name: Package
         id: package
         run: |

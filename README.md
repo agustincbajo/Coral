@@ -123,7 +123,7 @@ Unit tests don't tell you if your microservices actually work together. End-to-e
 ### From a tagged release (recommended)
 
 ```bash
-cargo install --locked --git https://github.com/agustincbajo/Coral --tag v0.19.0 coral-cli
+cargo install --locked --git https://github.com/agustincbajo/Coral --tag v0.19.1 coral-cli
 ```
 
 ### From `main` (latest)
@@ -146,12 +146,38 @@ cargo build --release
 Each tagged release ships pre-built binaries for x86_64 Linux, x86_64 macOS, and aarch64 macOS (Apple Silicon) on the [Releases page](https://github.com/agustincbajo/Coral/releases). Download `coral-vX.Y.Z-<target>.tar.gz`, verify the SHA-256, extract the `coral` binary, place it on your `$PATH`.
 
 ```bash
-curl -L -o coral.tar.gz https://github.com/agustincbajo/Coral/releases/download/v0.19.0/coral-v0.19.0-aarch64-apple-darwin.tar.gz
+curl -L -o coral.tar.gz https://github.com/agustincbajo/Coral/releases/download/v0.19.1/coral-v0.19.1-aarch64-apple-darwin.tar.gz
 shasum -a 256 -c coral.tar.gz.sha256  # if you also downloaded the .sha256 sidecar
 tar -xzf coral.tar.gz
-sudo mv coral-v0.19.0-aarch64-apple-darwin/coral /usr/local/bin/
+sudo mv coral-v0.19.1-aarch64-apple-darwin/coral /usr/local/bin/
 coral --version
 ```
+
+#### macOS — first run is blocked by Gatekeeper
+
+The pre-built macOS tarballs are **ad-hoc signed** (free; just enough to satisfy the Apple Silicon kernel exec check) but **not notarized** (notarization requires a $99/year Apple Developer account, which Coral doesn't have yet). On first launch, macOS shows:
+
+> *"No se ha abierto coral. Apple no ha podido verificar que coral no contenga software malicioso..."*
+> *"coral cannot be opened because Apple cannot check it for malicious software."*
+
+This is expected — the binary is fine, Apple just hasn't been paid to vouch for it. Two ways to allow it:
+
+**Terminal (one line):**
+
+```bash
+xattr -d com.apple.quarantine /usr/local/bin/coral
+```
+
+That removes the quarantine flag macOS pinned on the file when you downloaded it. After that, `coral --version` runs cleanly forever.
+
+**GUI (System Settings):**
+
+1. When the warning appears, click **Aceptar / Cancel** (do NOT click "Trasladar a Papelera / Move to Trash").
+2. Open **System Settings → Privacy & Security**.
+3. Scroll to the *Security* section — there's a "coral was blocked..." line with an **"Open Anyway / Abrir igualmente"** button.
+4. Click it, confirm once more, and Coral opens. macOS remembers the exception.
+
+Either of these is a one-time step per release. To skip it entirely, install via `cargo install --locked --git ...` instead — `cargo` builds the binary on your machine, so Gatekeeper has no quarantine flag to apply.
 
 ---
 
