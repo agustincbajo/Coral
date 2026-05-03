@@ -63,6 +63,9 @@ enum Cmd {
     Status(commands::status::StatusArgs),
     /// Show log entries that mention a slug (reverse chronological).
     History(commands::history::HistoryArgs),
+    /// Multi-repo project commands (`new`, `list`, `add`, `doctor`, `lock`).
+    /// v0.16: aggregated wiki, dependency graph, lockfile.
+    Project(commands::project::ProjectArgs),
     /// **Hidden** test-only helper: acquires `with_exclusive_lock(path)`,
     /// reads the file as a u64 counter, increments by 1, writes back.
     /// Used by `tests/cross_process_lock.rs` to verify the v0.15
@@ -98,6 +101,7 @@ fn main() -> ExitCode {
         Cmd::Diff(args) => commands::diff::run(args, cli.wiki_root.as_deref()),
         Cmd::Status(args) => commands::status::run(args, cli.wiki_root.as_deref()),
         Cmd::History(args) => commands::history::run(args, cli.wiki_root.as_deref()),
+        Cmd::Project(args) => commands::project::run(args, cli.wiki_root.as_deref()),
         Cmd::TestLockIncr { path } => run_test_lock_incr(&path),
     };
 

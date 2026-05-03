@@ -22,6 +22,7 @@ Coral compiles your codebase into an interconnected Markdown wiki that an LLM (C
 - [Quickstart (5 minutes)](#quickstart-5-minutes)
 - [Tutorial (no LLM auth required)](docs/TUTORIAL.md)
 - [Example consumer: `examples/orchestra-ingest/`](examples/orchestra-ingest/) — copy-pasteable starter wiki + workflows for a new microservice repo
+- [Multi-repo projects (v0.16.0+)](#multi-repo-projects-v0160)
 - [Subcommands at a glance](#subcommands-at-a-glance)
 - [The wiki schema](#the-wiki-schema)
 - [CI integration](#ci-integration)
@@ -67,6 +68,7 @@ Coral implements [Andrej Karpathy's LLM Wiki pattern](https://gist.github.com/ka
 
 ### Recent releases (full details in [CHANGELOG.md](CHANGELOG.md))
 
+- **v0.16.0 (in progress)** — multi-repo projects: `coral.toml` manifest, `coral.lock` lockfile, `coral project new/list/add/doctor/lock` commands, and an aggregated wiki across N repos. Single-repo v0.15 users keep zero-friction backward compat (a `Project::synthesize_legacy` shim resolves the cwd into a 1-repo project when no `coral.toml` is found). See [Multi-repo projects](#multi-repo-projects-v0160).
 - **v0.15.1** — provider-agnostic `RunnerError` messages (no more "claude binary not found" when `--provider local` fails).
 - **v0.15.0** — cross-process file locking (`with_exclusive_lock`); `coral ingest` and `bootstrap` now serialize correctly under concurrent invocations.
 - **v0.14.1** — `coral lint --fix` `confidence-from-coverage` rule (no-LLM auto-downgrade when sources go missing).
@@ -150,6 +152,88 @@ The full reference is in [docs/USAGE.md](docs/USAGE.md).
 
 ---
 
+## Multi-repo projects (v0.16.0+)
+
+For microservice setups where a single product spans multiple Git repos, Coral introduces the concept of a **project** — a `coral.toml` manifest at a meta-repo root that lists `[[repos]]` and produces a single aggregated wiki.
+
+**Single-repo workflows keep working unchanged.** When no `coral.toml` exists, every command synthesizes a legacy 1-repo project from the cwd. v0.15 users upgrading to v0.16 see zero behavior change — pinned by an integration test (`tests/bc_regression.rs`) that runs on every PR.
+
+### Quickstart
+
+```bash
+mkdir orchestra && cd orchestra
+coral project new orchestra
+coral project add api    --url git@github.com:acme/api.git    --tags service team:platform
+coral project add shared --url git@github.com:acme/shared.git --tags library
+coral project add worker --url git@github.com:acme/worker.git \
+                         --tags service team:data \
+                         --depends-on api shared
+coral project list                  # tabular view
+coral project lock                  # refresh coral.lock from manifest
+coral project doctor                # drift / config health check
+```
+
+### `coral.toml` schema
+
+```toml
+apiVersion = "coral.dev/v1"
+
+[project]
+name = "orchestra"
+
+[project.toolchain]
+coral = "0.16.0"
+
+[project.defaults]
+ref           = "main"
+remote        = "github"
+path_template = "repos/{name}"
+
+[remotes.github]
+fetch = "git@github.com:acme/{name}.git"
+
+[[repos]]
+name = "api"
+ref  = "release/v3"
+tags = ["service", "team:platform"]
+
+[[repos]]
+name       = "worker"
+remote     = "github"
+tags       = ["service", "team:data"]
+depends_on = ["api"]
+```
+
+The `[remotes.<name>]` template + `defaults.remote` + `[[repos]]` pattern (borrowed from Google's [git-repo](https://gerrit.googlesource.com/git-repo/+/master/docs/manifest-format.md) tool) keeps the manifest concise even with 20+ repos in the same org.
+
+### `coral.lock`
+
+Sibling of `coral.toml`. Separates **intent** (`ref = "main"` in the manifest) from **resolved** (the SHA actually clone-ed). Same role as `Cargo.lock` / `package-lock.json` / `MODULE.bazel.lock`. Written atomically by `coral project lock`. Real ref-resolution + git fetch lands in v0.16.x with `coral project sync`.
+
+### `coral project` subcommands
+
+| Subcommand | Purpose |
+|---|---|
+| `coral project new [<name>]` | Create a new `coral.toml` + empty `coral.lock` in the cwd. |
+| `coral project add <name> [--url\|--remote] [--ref] [--tags ...] [--depends-on ...]` | Append a repo entry to the manifest. |
+| `coral project list [--format markdown\|json]` | Tabular view of declared repos with resolved URLs. |
+| `coral project lock [--dry-run]` | Refresh `coral.lock` from the manifest. |
+| `coral project doctor [--strict]` | Check for ref drift, missing clones, stale lockfile entries, duplicate paths. |
+
+`coral project sync` (real git clone/pull, parallelized via rayon) is in active development for v0.16.x.
+
+### Multi-repo filters on every command (planned for v0.16.x)
+
+The `RepoFilters` parser (in `crates/coral-cli/src/commands/filters.rs`) is wired and ready: `--repo`, `--tag`, and `--exclude` flags become available on `coral ingest`, `coral lint`, `coral query`, and `coral status` as those commands migrate to the new `Project` resolution path. `--affected` / `--since <sha>` follow once `coral project sync` records authoritative SHAs in the lockfile.
+
+### Backward compat
+
+- No `coral.toml` → behavior identical to v0.15. Verified by `cargo test --test bc_regression` on every PR.
+- Existing scripts that pass `--wiki-root <path>` keep working — the override flag is honored and synthesizes a single-repo project pointed at the override.
+- `coral init` and `coral project new` are independent: the former scaffolds the wiki, the latter scaffolds the manifest. They compose in any order.
+
+---
+
 ## Subcommands at a glance
 
 | Command | What it does | Needs LLM? |
@@ -167,6 +251,7 @@ The full reference is in [docs/USAGE.md](docs/USAGE.md).
 | `coral notion-push [--type T]` | Push pages to a Notion database via curl (reads `NOTION_TOKEN` + `CORAL_NOTION_DB`). | No |
 | `coral onboard --profile <P>` | Tailored 5–10 page reading path for a reader profile. | Yes |
 | `coral prompts list` | Show which prompts are local-overridden, embedded, or fallback. | No |
+| `coral project new/list/add/doctor/lock` | Multi-repo project commands — manifest, lockfile, drift report. v0.16.0+. See [Multi-repo projects](#multi-repo-projects-v0160). | No |
 
 ---
 

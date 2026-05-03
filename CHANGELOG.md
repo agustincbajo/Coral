@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### v0.16.0-dev — Multi-repo projects (in progress)
+
+The first wave of v0.16 lands the foundation for multi-repo workflows. Single-repo v0.15 users keep zero behavior change — pinned by a new `tests/bc_regression.rs` integration suite running on every PR.
+
+#### Added — features
+
+- **`Project` model** (`crates/coral-core/src/project/mod.rs`): the new entity that represents a logical grouping of one or more git repositories sharing an aggregated `.wiki/`. The single-repo case is treated as a `Project` synthesized from the cwd.
+- **`Project::discover(cwd)`**: walks up the directory tree looking for a `coral.toml` containing a `[project]` table. Falls back to `Project::synthesize_legacy(cwd)` when none is found, preserving v0.15 behavior.
+- **`coral.toml` manifest** (`crates/coral-core/src/project/manifest.rs`): TOML schema with `apiVersion = "coral.dev/v1"`, `[project.defaults]`, `[remotes.<name>]` URL templates, `[[repos]]` with `name`, `url`/`remote`, `ref`, `path`, `tags`, `depends_on`. Validates: duplicate names, dependency cycles, unknown apiVersion, missing URL resolution.
+- **`coral.lock` lockfile** (`crates/coral-core/src/project/lock.rs`): separates manifest **intent** from resolved SHAs. Atomic writes (tmp + rename, holds `flock` on the file). Round-trip parser; auto-creates on first read.
+- **`coral project` family**: `new`, `list`, `add`, `doctor`, `lock` subcommands. Wired through `crates/coral-cli/src/commands/project/`. Tests pass on legacy single-repo projects (synthesized), multi-repo projects, and edge cases (cycles, duplicates, mutually-exclusive flags).
+- **`coral project doctor`**: replaces the originally-planned `coral project healthcheck` (which collided with `service.healthcheck` planned for v0.17). Reports unknown apiVersion, missing clones, stale lockfile entries, duplicate paths. `--strict` makes any finding exit non-zero (CI gate).
+- **`commands::common::resolve_project()`** shim (`crates/coral-cli/src/commands/common/mod.rs`): single entry point all CLI commands will use to resolve their `Project`. Honors `--wiki-root` exactly as v0.15 to preserve test-fixture and script compatibility.
+- **`commands::filters::RepoFilters`** (`crates/coral-cli/src/commands/filters.rs`): common parser for `--repo` / `--tag` / `--exclude`. In legacy projects every filter resolves to "the only repo is included", so single-repo workflows stay zero-friction. Wires onto `coral ingest`/`lint`/`query`/`status` in v0.16.x.
+- **`tests/bc_regression.rs`** (6 tests): pins v0.15 behavior — `coral init`, `coral status`, `coral lint`, `coral project list` against a legacy cwd. Runs on every PR via `cargo test --test bc_regression`.
+- **`tests/multi_repo_project.rs`** (5 tests): E2E coverage for `project new` → `add` × 3 → `lock` → `list` → `doctor` flow, including `depends_on` cycle detection.
+
+#### Notes — backward compatibility
+
+- v0.15 users see **zero behavior change**. No `coral.toml` → every command synthesizes a single-repo project from the cwd via `Project::synthesize_legacy`.
+- `coral init` is **not** renamed to `coral project new`. Both exist, both work, with no deprecation warning. Scripts that grep stderr won't break.
+- `--wiki-root <path>` keeps working — v0.15 fixture-based tests continue to pass.
+
+#### Notes — forward compatibility
+
+- A v0.15 binary cannot read multi-repo wikis once the index frontmatter migrates to `last_commit: { repo → sha }` (v0.16.x). Migration path: `coral migrate-back --to v0.15` will reduce a 1-repo map back to a scalar.
+
 ## [0.15.1] - 2026-05-02
 
 Patch release — provider-agnostic `RunnerError` messages.

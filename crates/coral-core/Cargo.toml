@@ -21,6 +21,7 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 rusqlite = { version = "0.32", features = ["bundled"] }
 fs4 = { workspace = true, features = ["sync"] }
+toml = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
