@@ -275,7 +275,27 @@ fn run_embeddings_sqlite(
     let mut index = SqliteEmbeddingsIndex::open(wiki_root)?;
     if index.dim == 0 || index.provider != model {
         let path = wiki_root.join(coral_core::embeddings_sqlite::SQLITE_FILENAME);
-        let _ = std::fs::remove_file(&path);
+        // Pre-v0.19.4 this was `let _ = std::fs::remove_file(&path)`. If
+        // the file was locked (parallel `coral search`), read-only (CI
+        // mounted volume), or under any permission failure, the stale
+        // DB silently survived and the next `open()` reused it,
+        // producing confusing "schema mismatch" or "no such column"
+        // errors with no breadcrumb back to the locked file as the
+        // root cause. NotFound is the only "this is fine" branch
+        // (first run, or two `coral search`es racing — both safe).
+        // Any other error gets surfaced. See GitHub issue #18.
+        match std::fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                anyhow::bail!(
+                    "failed to remove stale embeddings DB at {}: {e}. \
+                     The file is likely locked, read-only, or otherwise \
+                     unwriteable; remove it manually and retry.",
+                    path.display(),
+                );
+            }
+        }
         index = SqliteEmbeddingsIndex::open(wiki_root)?;
         index.set_provider_dim(model, provider.dim())?;
     }

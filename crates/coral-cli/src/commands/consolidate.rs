@@ -101,7 +101,7 @@ pub fn run_with_runner(
     // Parse and apply.
     let plan = parse_consolidate_plan(&out.stdout)
         .context("parsing consolidate YAML plan (LLM output below)")?;
-    let report = apply_consolidate_plan(&plan, &pages, args.rewrite_links)?;
+    let report = apply_consolidate_plan(&plan, &pages, &root, args.rewrite_links)?;
     println!("# Consolidation applied\n");
     println!("Retired: {} page(s)", report.retired.len());
     for slug in &report.retired {
@@ -265,9 +265,18 @@ pub(crate) fn parse_consolidate_plan(stdout: &str) -> Result<ConsolidatePlan> {
 /// retired source slug and rewritten to point at the merge target (or, for
 /// splits, the FIRST split target). See
 /// [`rewrite_outbound_links_to_merged_targets`] for details.
+///
+/// `wiki_root` is the absolute (or canonical relative) path to the
+/// `.wiki/` directory. v0.19.4 made it explicit (was previously
+/// inferred from the first page's path via `parent().parent()` —
+/// see GitHub issue #21). Threading the root from the caller avoids
+/// the empty-PathBuf foot-gun that surfaced when pages lived at
+/// `<wiki>/<slug>.md` (one level deep) instead of the typical
+/// `<wiki>/<type>/<slug>.md`.
 pub(crate) fn apply_consolidate_plan(
     plan: &ConsolidatePlan,
     pages: &[Page],
+    wiki_root: &Path,
     rewrite_links: bool,
 ) -> Result<ApplyReport> {
     let mut report = ApplyReport::default();
@@ -296,15 +305,18 @@ pub(crate) fn apply_consolidate_plan(
         report.retired.push(op.slug.clone());
     }
 
-    // Merges + splits need a wiki root for new-page creation. We recover it
-    // from any existing page's path: `<wiki_root>/<subdir>/<slug>.md` →
-    // `parent().parent()`. If pages is empty we cannot create new pages, so
-    // we error.
-    let wiki_root = if !plan.merges.is_empty() || !plan.splits.is_empty() {
-        Some(infer_wiki_root(pages)?)
+    // Merges + splits need a wiki root for new-page creation. The caller
+    // supplies it explicitly so we don't have to recover it from page
+    // layout heuristics. v0.19.3 and earlier called the now-removed
+    // `infer_wiki_root` here; that function did `pages.first().path.parent().parent()`
+    // and silently produced an empty PathBuf for flat-layout wikis,
+    // writing merge targets to `cwd` instead of `.wiki/`. See #21.
+    let wiki_root_opt = if !plan.merges.is_empty() || !plan.splits.is_empty() {
+        Some(wiki_root.to_path_buf())
     } else {
         None
     };
+    let wiki_root = wiki_root_opt;
     let now = chrono::Utc::now().to_rfc3339();
 
     let mut merge_outcomes: Vec<MergeOutcome> = Vec::new();
@@ -477,25 +489,6 @@ pub(crate) fn rewrite_outbound_links_to_merged_targets(
     }
 
     Ok(summaries)
-}
-
-/// Recovers the wiki root from any page path by stripping
-/// `<subdir>/<slug>.md`. Errors if `pages` is empty.
-fn infer_wiki_root(pages: &[Page]) -> Result<PathBuf> {
-    let first = pages.first().ok_or_else(|| {
-        anyhow::anyhow!("cannot apply merges/splits: no pages exist to infer wiki root from")
-    })?;
-    first
-        .path
-        .parent()
-        .and_then(|p| p.parent())
-        .map(Path::to_path_buf)
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "cannot infer wiki root from page path `{}`: missing parents",
-                first.path.display()
-            )
-        })
 }
 
 /// Materializes one merge entry: writes/updates the target page with
@@ -1055,7 +1048,7 @@ splits:
             retirements: vec![],
             splits: vec![],
         };
-        let report = apply_consolidate_plan(&plan, &[a.clone(), b.clone()], false).unwrap();
+        let report = apply_consolidate_plan(&plan, &[a.clone(), b.clone()], &wiki, false).unwrap();
 
         assert_eq!(report.merged.len(), 1);
         assert_eq!(report.merged[0].0, "a");
@@ -1125,7 +1118,7 @@ splits:
             retirements: vec![],
             splits: vec![],
         };
-        let report = apply_consolidate_plan(&plan, &[a.clone(), b.clone()], false).unwrap();
+        let report = apply_consolidate_plan(&plan, &[a.clone(), b.clone()], &wiki, false).unwrap();
         assert_eq!(report.merged.len(), 1);
         assert_eq!(report.merged[0].0, "ab");
 
@@ -1192,7 +1185,8 @@ splits:
             splits: vec![],
         };
         let report =
-            apply_consolidate_plan(&plan, &[a.clone(), b.clone(), target.clone()], false).unwrap();
+            apply_consolidate_plan(&plan, &[a.clone(), b.clone(), target.clone()], &wiki, false)
+                .unwrap();
         assert_eq!(report.merged.len(), 1);
         assert_eq!(report.merged[0].0, "existing-target");
 
@@ -1240,7 +1234,8 @@ splits:
             retirements: vec![],
             splits: vec![],
         };
-        let report = apply_consolidate_plan(&plan, std::slice::from_ref(&_seed), false).unwrap();
+        let report =
+            apply_consolidate_plan(&plan, std::slice::from_ref(&_seed), &wiki, false).unwrap();
         assert!(report.merged.is_empty());
         assert!(
             report.unknown_merge_targets.contains(&"x".to_string()),
@@ -1277,7 +1272,7 @@ splits:
             retirements: vec![],
             splits: vec![],
         };
-        let report = apply_consolidate_plan(&plan, std::slice::from_ref(&a), false).unwrap();
+        let report = apply_consolidate_plan(&plan, std::slice::from_ref(&a), &wiki, false).unwrap();
         assert!(report.merged.is_empty());
         assert!(report.unknown_merge_targets.contains(&"x".to_string()));
         let target_path = wiki.join("modules").join("x.md");
@@ -1308,7 +1303,8 @@ splits:
                 rationale: "covered two topics".into(),
             }],
         };
-        let report = apply_consolidate_plan(&plan, std::slice::from_ref(&too_big), false).unwrap();
+        let report =
+            apply_consolidate_plan(&plan, std::slice::from_ref(&too_big), &wiki, false).unwrap();
         assert_eq!(report.split.len(), 1);
         assert_eq!(report.split[0].0, "too-big");
         assert_eq!(
@@ -1385,7 +1381,8 @@ splits:
             }],
         };
         let report =
-            apply_consolidate_plan(&plan, &[too_big.clone(), part_a.clone()], false).unwrap();
+            apply_consolidate_plan(&plan, &[too_big.clone(), part_a.clone()], &wiki, false)
+                .unwrap();
         assert_eq!(report.split.len(), 1);
         assert_eq!(report.split[0].0, "too-big");
         // Only the newly-created `part-b` is reported.
@@ -1427,7 +1424,8 @@ splits:
                 rationale: String::new(),
             }],
         };
-        let report = apply_consolidate_plan(&plan, std::slice::from_ref(&seed), false).unwrap();
+        let report =
+            apply_consolidate_plan(&plan, std::slice::from_ref(&seed), &wiki, false).unwrap();
         assert!(report.split.is_empty());
         assert!(
             report.unknown_split_sources.contains(&"ghost".to_string()),
@@ -1460,7 +1458,8 @@ splits:
                 rationale: String::new(),
             }],
         };
-        let report = apply_consolidate_plan(&plan, std::slice::from_ref(&too_big), false).unwrap();
+        let report =
+            apply_consolidate_plan(&plan, std::slice::from_ref(&too_big), &wiki, false).unwrap();
         assert!(report.split.is_empty());
         assert!(
             report
@@ -1535,6 +1534,7 @@ splits:
         let report = apply_consolidate_plan(
             &plan,
             &[gone.clone(), a.clone(), b.clone(), too_big.clone()],
+            &wiki,
             false,
         )
         .unwrap();
@@ -1860,6 +1860,7 @@ splits:
         let report = apply_consolidate_plan(
             &plan,
             &[a.clone(), b.clone(), linker1.clone(), linker2.clone()],
+            &wiki,
             true,
         )
         .unwrap();
@@ -1934,7 +1935,7 @@ splits:
             }],
         };
         let report =
-            apply_consolidate_plan(&plan, &[too_big.clone(), linker.clone()], true).unwrap();
+            apply_consolidate_plan(&plan, &[too_big.clone(), linker.clone()], &wiki, true).unwrap();
 
         assert_eq!(report.split.len(), 1);
         assert_eq!(report.split[0].1, vec!["part-a", "part-b"]);
@@ -1997,7 +1998,8 @@ splits:
             splits: vec![],
         };
         let report =
-            apply_consolidate_plan(&plan, &[a.clone(), b.clone(), linker.clone()], true).unwrap();
+            apply_consolidate_plan(&plan, &[a.clone(), b.clone(), linker.clone()], &wiki, true)
+                .unwrap();
 
         // a is now stale (merge source), and its body's [[b]] reference is
         // NOT rewritten because `a` is in the skip set.
@@ -2049,6 +2051,79 @@ splits:
         assert!(
             msg.contains("--apply"),
             "error message must mention --apply, got: {msg}"
+        );
+    }
+
+    /// Regression for [#21](https://github.com/agustincbajo/Coral/issues/21):
+    /// the now-removed `infer_wiki_root` walked
+    /// `pages.first().path.parent().parent()` and silently produced an
+    /// empty PathBuf for flat-layout wikis (pages at `<wiki>/<slug>.md`,
+    /// no per-type subdir). Merge targets then landed at `cwd` instead
+    /// of `<wiki>/`. v0.19.4 takes the wiki root as an explicit
+    /// parameter, so flat layouts behave the same as nested.
+    ///
+    /// We construct a page directly under `<wiki>` (no `module/` subdir),
+    /// run a merge that needs to materialize a brand-new target page,
+    /// and assert the new file lands inside `<wiki>` (NOT cwd).
+    #[test]
+    fn apply_consolidate_plan_uses_explicit_wiki_root_for_flat_layout() {
+        let tmp = TempDir::new().unwrap();
+        let wiki = tmp.path().join(".wiki");
+        std::fs::create_dir_all(&wiki).unwrap();
+
+        // Hand-construct a flat-layout page: <wiki>/orphan.md
+        // No per-type subdirectory. This is the exact shape that
+        // pre-v0.19.4 caused infer_wiki_root to misbehave.
+        let flat_page = Page {
+            path: wiki.join("orphan.md"),
+            frontmatter: Frontmatter {
+                slug: "orphan".into(),
+                page_type: PageType::Module,
+                last_updated_commit: "abc".into(),
+                confidence: Confidence::try_new(0.8).unwrap(),
+                sources: vec![],
+                backlinks: vec![],
+                status: Status::Reviewed,
+                generated_at: None,
+                extra: Default::default(),
+            },
+            body: "Original orphan body".into(),
+        };
+        flat_page.write().unwrap();
+
+        // A merge plan whose target is a brand-new slug — forces
+        // `apply_merge_create_new` to build a path against `wiki_root`.
+        let plan = ConsolidatePlan {
+            merges: vec![MergeOp {
+                target: "consolidated".into(),
+                sources: vec!["orphan".into()],
+                rationale: "test".into(),
+            }],
+            retirements: vec![],
+            splits: vec![],
+        };
+
+        // Pass the wiki root explicitly — pre-v0.19.4 this was
+        // inferred (incorrectly) from the page path.
+        let report =
+            apply_consolidate_plan(&plan, std::slice::from_ref(&flat_page), &wiki, false).unwrap();
+        assert_eq!(report.merged.len(), 1);
+
+        // The merge target must NOT have landed at cwd.
+        assert!(
+            !std::path::Path::new("consolidated.md").exists(),
+            "merge target leaked to cwd — apply_consolidate_plan should not write outside wiki_root",
+        );
+
+        // The merge target SHOULD land somewhere under `wiki/`.
+        let in_wiki = walkdir::WalkDir::new(&wiki)
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .any(|e| e.file_name().to_string_lossy() == "consolidated.md");
+        assert!(
+            in_wiki,
+            "merge target was not written under wiki root {}",
+            wiki.display(),
         );
     }
 }

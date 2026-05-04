@@ -140,7 +140,16 @@ pub fn run_with_runner(
 
     if args.staged {
         let cwd = std::env::current_dir().context("getting cwd")?;
-        let staged = staged_wiki_paths(&cwd).context("listing staged files via git")?;
+        // `git diff --cached --name-only` always emits paths relative
+        // to the **git toplevel**, not to the user's `cwd`. Pre-v0.19.4
+        // we joined those paths against `cwd`, which silently dropped
+        // every staged issue when invoked from any subdirectory (the
+        // resulting absolute path didn't match anything in the in-memory
+        // pages set). Use `git rev-parse --show-toplevel` as the
+        // canonical join base so the filter works from any cwd.
+        // See GitHub issue #17.
+        let toplevel = git_toplevel(&cwd).unwrap_or_else(|_| cwd.clone());
+        let staged = staged_wiki_paths(&toplevel).context("listing staged files via git")?;
         let before = issues.len();
         issues = filter_issues_by_paths(issues, &staged);
         tracing::info!(
@@ -586,10 +595,10 @@ fn render_pages_for_prompt(pages: &[coral_core::page::Page], slugs: &[String]) -
 /// Return the set of `.wiki/**/*.md` paths currently staged for commit.
 /// Resolved against `cwd` so the comparison with `LintIssue::page` (also
 /// rooted there) lines up.
-fn staged_wiki_paths(cwd: &Path) -> Result<HashSet<PathBuf>> {
+fn staged_wiki_paths(toplevel: &Path) -> Result<HashSet<PathBuf>> {
     let output = std::process::Command::new("git")
         .args(["diff", "--cached", "--name-only", "--diff-filter=ACM"])
-        .current_dir(cwd)
+        .current_dir(toplevel)
         .output()
         .context("invoking git diff --cached (is git installed and is this a repo?)")?;
     if !output.status.success() {
@@ -600,18 +609,48 @@ fn staged_wiki_paths(cwd: &Path) -> Result<HashSet<PathBuf>> {
         );
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
-    Ok(parse_staged_wiki_paths(&stdout, cwd))
+    Ok(parse_staged_wiki_paths(&stdout, toplevel))
+}
+
+/// Resolve the git toplevel from any `cwd` inside a working tree.
+/// `lint --staged` joins the relative paths from `git diff --cached`
+/// against this directory; without it, invoking lint from any
+/// subdirectory (e.g. `cd .wiki/ && coral lint --staged`) would
+/// silently produce non-existent absolute paths and drop every issue.
+/// See GitHub issue #17.
+fn git_toplevel(cwd: &Path) -> Result<PathBuf> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(cwd)
+        .output()
+        .context("invoking git rev-parse --show-toplevel")?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "git rev-parse --show-toplevel failed (exit {:?}): {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    let raw = String::from_utf8_lossy(&output.stdout);
+    Ok(PathBuf::from(raw.trim()))
 }
 
 /// Pure parser for `git diff --cached --name-only` output: keep lines that
-/// look like `.wiki/**/*.md`, resolve them against `cwd`, return as a set.
-pub(crate) fn parse_staged_wiki_paths(stdout: &str, cwd: &Path) -> HashSet<PathBuf> {
+/// look like `.wiki/**/*.md`, resolve them against the **git toplevel**,
+/// return as a set.
+///
+/// The base argument is named `toplevel` (not `cwd`) to make the
+/// contract explicit: `git diff --cached --name-only` always emits paths
+/// relative to the repo root, never to the user's `cwd`. Joining
+/// against `cwd` would silently break filtering when `coral lint --staged`
+/// is invoked from a subdirectory. See GitHub issue #17.
+pub(crate) fn parse_staged_wiki_paths(stdout: &str, toplevel: &Path) -> HashSet<PathBuf> {
     stdout
         .lines()
         .map(str::trim)
         .filter(|l| !l.is_empty())
         .filter(|l| l.contains(".wiki/") && l.ends_with(".md"))
-        .map(|l| cwd.join(l))
+        .map(|l| toplevel.join(l))
         .collect()
 }
 
@@ -1296,6 +1335,32 @@ mod tests {
         assert!(got.contains(&cwd.join(".wiki/concepts/outbox.md")));
         assert!(got.contains(&cwd.join(".wiki/log.md")));
         assert!(!got.contains(&cwd.join("src/main.rs")));
+    }
+
+    /// Regression for [#17](https://github.com/agustincbajo/Coral/issues/17):
+    /// `git diff --cached --name-only` emits paths relative to the
+    /// **toplevel**, never to the user's `cwd`. Pre-v0.19.4 the
+    /// caller joined those paths against `cwd`, so invoking
+    /// `coral lint --staged` from any subdirectory silently produced
+    /// non-existent absolute paths and the filter dropped every issue.
+    /// The fix is to thread the toplevel through and join against it.
+    /// We exercise the parser directly with both forms — same staged
+    /// output, two different bases — to confirm the function is now
+    /// base-agnostic and the *caller* must pass the right one.
+    #[test]
+    fn parse_staged_wiki_paths_resolves_against_supplied_base() {
+        let stdout = ".wiki/modules/order.md\n";
+        // Suppose user runs from /repo/.wiki/. Pre-v0.19.4, the join
+        // base was the cwd (/repo/.wiki). Result was the absurd
+        // /repo/.wiki/.wiki/modules/order.md — non-existent path.
+        let wrong_cwd = PathBuf::from("/repo/.wiki");
+        let wrong = parse_staged_wiki_paths(stdout, &wrong_cwd);
+        assert!(wrong.contains(&PathBuf::from("/repo/.wiki/.wiki/modules/order.md")));
+        // Post-v0.19.4 the caller passes the toplevel — same git output,
+        // correct resolution to /repo/.wiki/modules/order.md.
+        let toplevel = PathBuf::from("/repo");
+        let right = parse_staged_wiki_paths(stdout, &toplevel);
+        assert!(right.contains(&PathBuf::from("/repo/.wiki/modules/order.md")));
     }
 
     fn issue(page: Option<&str>) -> LintIssue {

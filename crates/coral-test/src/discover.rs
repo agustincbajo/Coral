@@ -74,9 +74,25 @@ fn find_openapi_specs(project_root: &Path) -> TestResult<Vec<PathBuf>> {
                 None => continue,
             };
             if path.is_dir() {
+                // Skip directories that shouldn't contain API specs:
+                // - `.git`, `.coral`, `target`, `node_modules`, `vendor`,
+                //   `dist`, `build` — generated/scm/build state.
+                // - `.wiki` — Coral's own wiki tree. Pre-v0.19.4 a wiki
+                //   page literally named `openapi.yaml` would be picked
+                //   up as a "spec" and emit a bogus auto-generated
+                //   TestCase. The CHANGELOG had been claiming `.wiki` was
+                //   excluded since v0.18; the code lagged behind. See
+                //   GitHub issue #19.
                 if matches!(
                     name.as_str(),
-                    ".git" | ".coral" | "node_modules" | "target" | "vendor" | "dist" | "build"
+                    ".git"
+                        | ".coral"
+                        | ".wiki"
+                        | "node_modules"
+                        | "target"
+                        | "vendor"
+                        | "dist"
+                        | "build"
                 ) {
                     continue;
                 }
@@ -393,5 +409,55 @@ paths:
         let discovered = discover_openapi_in_project(dir.path()).unwrap();
         assert_eq!(discovered.len(), 1);
         assert!(discovered[0].case.id.contains("/h"));
+    }
+
+    /// Regression for [#19](https://github.com/agustincbajo/Coral/issues/19):
+    /// the discovery walk used to descend into `.wiki/`, so a wiki page
+    /// literally named `openapi.yaml` would emit a bogus auto-generated
+    /// TestCase. The CHANGELOG had been claiming `.wiki` was excluded
+    /// since v0.18; the code only catches up in v0.19.4.
+    #[test]
+    fn discover_skips_dot_wiki_tree() {
+        let dir = TempDir::new().unwrap();
+        // A real spec under repos/ that SHOULD be discovered.
+        let api_dir = dir.path().join("repos/api");
+        std::fs::create_dir_all(&api_dir).unwrap();
+        std::fs::write(
+            api_dir.join("openapi.yaml"),
+            r#"openapi: 3.0.0
+info: { title: real, version: 1.0 }
+paths:
+  /real:
+    get:
+      responses: { '200': { description: ok } }
+"#,
+        )
+        .unwrap();
+        // A page in .wiki/pages/ that just happens to be called openapi.yaml.
+        let wiki_pages = dir.path().join(".wiki/pages");
+        std::fs::create_dir_all(&wiki_pages).unwrap();
+        std::fs::write(
+            wiki_pages.join("openapi.yaml"),
+            r#"openapi: 3.0.0
+info: { title: bogus, version: 1.0 }
+paths:
+  /bogus:
+    get:
+      responses: { '200': { description: ok } }
+"#,
+        )
+        .unwrap();
+        let discovered = discover_openapi_in_project(dir.path()).unwrap();
+        assert_eq!(
+            discovered.len(),
+            1,
+            "expected only the real spec, got: {:?}",
+            discovered.iter().map(|d| &d.case.id).collect::<Vec<_>>(),
+        );
+        assert!(
+            discovered[0].case.id.contains("/real"),
+            "expected /real endpoint, got: {}",
+            discovered[0].case.id,
+        );
     }
 }

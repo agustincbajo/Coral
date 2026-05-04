@@ -198,11 +198,49 @@ fn update_existing(r#ref: &str, path: &Path) -> Result<SyncOutcome> {
     }
 
     // Try a fast-forward merge. If the ref is a tag or commit (no
-    // upstream), the merge is a no-op and we're done.
-    let _ = Command::new("git")
+    // upstream), the merge is a no-op and we're done; we don't treat
+    // either case as failure. Pre-v0.19.4 this was `let _ = …`
+    // entirely fire-and-forget — uncommitted work / merge conflicts
+    // / rev-walk failures all silently skipped, so users debugging
+    // "why is my clone not advancing?" had nothing to grep for. We
+    // now log every outcome at the right level so a `RUST_LOG=coral=debug`
+    // run carries a complete trail. See GitHub issue #22.
+    match Command::new("git")
         .current_dir(path)
         .args(["merge", "--ff-only", "--quiet"])
-        .output();
+        .output()
+    {
+        Ok(out) if out.status.success() => {
+            tracing::debug!(
+                path = %path.display(),
+                r#ref = %r#ref,
+                "git merge --ff-only succeeded (or was a no-op)"
+            );
+        }
+        Ok(out) => {
+            // Non-zero exit. Common reasons: branch already up-to-date
+            // (still exit 0 actually), upstream is behind/diverged,
+            // or no upstream tracking. Log at warn so users debugging
+            // sync drift see why the clone didn't advance.
+            tracing::warn!(
+                path = %path.display(),
+                r#ref = %r#ref,
+                stderr = %String::from_utf8_lossy(&out.stderr).trim(),
+                "git merge --ff-only did not progress; clone stays at the post-checkout sha"
+            );
+        }
+        Err(e) => {
+            // Couldn't even spawn git. The fetch/checkout steps above
+            // would normally have failed first with a clearer error,
+            // so this is rare — but log so we surface ANY git-spawn
+            // failure consistently.
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "git merge --ff-only failed to spawn; clone stays at the post-checkout sha"
+            );
+        }
+    }
 
     let sha = head_sha_at(path)?;
     Ok(SyncOutcome::Updated { sha })

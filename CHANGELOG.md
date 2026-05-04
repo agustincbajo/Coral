@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.4] - 2026-05-04
+
+Audit follow-up — closes the remaining 6 items from the v0.19.3 multi-agent code audit (3 Medium + 3 latent smells). Tracking issue [#23](https://github.com/agustincbajo/Coral/issues/23). The Critical and High tier shipped in v0.19.3; the audit punch list is now 100% resolved.
+
+### Fixed (Medium)
+
+- **`coral lint --staged` now resolves staged paths against the git toplevel instead of `cwd`** ([#17](https://github.com/agustincbajo/Coral/issues/17)). `git diff --cached --name-only` always emits paths relative to the repo root; pre-v0.19.4 the code joined them against `std::env::current_dir()`, so invoking `coral lint --staged` from any subdirectory (e.g. `cd .wiki/ && coral lint --staged`) silently produced non-existent absolute paths and the filter dropped every issue. New `git_toplevel(cwd)` helper resolves the join base via `git rev-parse --show-toplevel`. The pure parser parameter renamed from `cwd` to `toplevel` to make the contract explicit. Regression test pinned at the parser layer.
+- **`coral search` no longer silently reuses a stale sqlite embeddings DB when `remove_file` fails** ([#18](https://github.com/agustincbajo/Coral/issues/18)). The pre-v0.19.4 `let _ = std::fs::remove_file(&path)` swallowed lock contention, read-only filesystems, and any permission failure; the next `SqliteEmbeddingsIndex::open` reused the stale schema, producing confusing "schema mismatch" errors. `NotFound` is now the only soft-fail branch (first-run, race); any other error surfaces with a path + actionable hint.
+- **`coral test-discover` now skips `.wiki/`** ([#19](https://github.com/agustincbajo/Coral/issues/19)). The CHANGELOG had been claiming `.wiki` was excluded since v0.18, but the code only added `.git`, `.coral`, `node_modules`, `target`, `vendor`, `dist`, `build` to its skip list. A wiki page literally named `openapi.yaml` would emit a bogus auto-generated TestCase. Regression test pins the contract.
+
+### Fixed (latent smells)
+
+- **`Project::load_from_manifest` now routes through `coral_core::path::repo_root_from_wiki_root`** ([#20](https://github.com/agustincbajo/Coral/issues/20)). The open-coded `path.parent().unwrap_or(Path::new("."))` was the same trap that bit `coral status` in v0.19.2 (`Path::new("coral.toml").parent()` returns `Some("")`, not `None`). Calling `Project::load_from_manifest("coral.toml")` directly used to leak an empty PathBuf as `project.root`. Fix migrates to the centralized helper introduced in v0.19.3.
+- **`apply_consolidate_plan` now takes the wiki root as an explicit parameter** ([#21](https://github.com/agustincbajo/Coral/issues/21)). The removed `infer_wiki_root` walked `pages.first().path.parent().parent()` and silently produced an empty PathBuf for flat-layout wikis (pages at `<wiki>/<slug>.md`, no per-type subdirectory), causing merge targets to land at `cwd` instead of inside `.wiki/`. The caller already had the right path; v0.19.4 just threads it through. 12 test callers and the production caller updated; new regression test pins the flat-layout case.
+- **`git_remote.rs` now logs every outcome of `git merge --ff-only`** instead of fire-and-forget `let _ = ...` ([#22](https://github.com/agustincbajo/Coral/issues/22)). Success → `tracing::debug!`; non-zero exit (uncommitted work, divergent upstream, no tracking branch) → `tracing::warn!` with `stderr` tail; spawn failure → `tracing::warn!` with the IO error. Users debugging "why is my clone not advancing?" now have a complete trail under `RUST_LOG=coral=debug`.
+
+### Test counts
+
+- coral-core: 169 → 170 (+1, `load_from_relative_filename_resolves_root_to_dot`)
+- coral-test (lib): 89 → 90 (+1, `discover_skips_dot_wiki_tree`)
+- coral-cli (lib): 223 → 225 (+2, `apply_consolidate_plan_uses_explicit_wiki_root_for_flat_layout` + `parse_staged_wiki_paths_resolves_against_supplied_base`)
+- **Workspace total: 851 tests pass** (was 847). Zero clippy warnings, BC contract holds across all 6 v0.15 fixtures.
+
+### Closes
+
+- [#17](https://github.com/agustincbajo/Coral/issues/17) — `coral lint --staged` cwd resolution
+- [#18](https://github.com/agustincbajo/Coral/issues/18) — `coral search` silent embeddings DB recreation
+- [#19](https://github.com/agustincbajo/Coral/issues/19) — discovery walks `.wiki/`
+- [#20](https://github.com/agustincbajo/Coral/issues/20) — `Project::load_from_manifest` parent unwrap
+- [#21](https://github.com/agustincbajo/Coral/issues/21) — `consolidate::infer_wiki_root` empty-parent
+- [#22](https://github.com/agustincbajo/Coral/issues/22) — `git_remote.rs` fire-and-forget merge
+- [#23](https://github.com/agustincbajo/Coral/issues/23) — umbrella tracking issue (all sub-issues resolved)
+
 ## [0.19.3] - 2026-05-04
 
 Audit pass — multi-agent re-validation found **2 Critical + 6 High + 3 Medium** real bugs that v0.19.2 didn't cover. Round 1 (this release) fixes the Critical and High items; Medium items deferred to v0.19.4.
