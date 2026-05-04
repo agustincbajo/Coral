@@ -162,27 +162,22 @@ impl UserDefinedRunner {
         self
     }
 
-    /// Walk `<project_root>/.coral/tests/` for `*.yaml` and `*.yml`
-    /// files, parse them into TestCases.
+    /// Walk `<project_root>/.coral/tests/**` recursively for `*.yaml`
+    /// and `*.yml` files, parse them into TestCases.
+    ///
+    /// **Recursive walk is critical** — `coral test-discover --commit`
+    /// writes generated YAML under `.coral/tests/discovered/`, which
+    /// would be invisible to a non-recursive `read_dir`. See
+    /// `walk_tests::walk_tests_recursive` for the contract.
     pub fn discover_tests_dir(project_root: &Path) -> TestResult<Vec<(TestCase, YamlSuite)>> {
         let dir = project_root.join(".coral/tests");
-        if !dir.is_dir() {
-            return Ok(Vec::new());
-        }
-        let mut out = Vec::new();
-        for entry in std::fs::read_dir(&dir).map_err(|source| TestError::Io {
-            path: dir.clone(),
-            source,
-        })? {
-            let entry = entry.map_err(|source| TestError::Io {
+        let paths = crate::walk_tests::walk_tests_recursive(project_root, &["yaml", "yml"])
+            .map_err(|source| TestError::Io {
                 path: dir.clone(),
                 source,
             })?;
-            let path = entry.path();
-            let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
-            if !matches!(ext, "yaml" | "yml") {
-                continue;
-            }
+        let mut out = Vec::with_capacity(paths.len());
+        for path in paths {
             let raw = std::fs::read_to_string(&path).map_err(|source| TestError::Io {
                 path: path.clone(),
                 source,
@@ -824,5 +819,53 @@ steps:
         let (case, suite) = &pairs[0];
         assert_eq!(case.kind, TestKind::UserDefined);
         assert_eq!(suite.name, "api smoke");
+    }
+
+    /// Regression: pre-v0.19.3 the discovery walk was non-recursive, so
+    /// files committed by `coral test-discover --commit` (which writes
+    /// to `.coral/tests/discovered/<id>.yaml`) were silently invisible
+    /// to `coral test`. The subsequent `coral test --include-discovered`
+    /// flow re-generated tests in memory from the OpenAPI spec instead
+    /// of reading the user's curated YAML — meaning user edits to the
+    /// committed YAML had ZERO effect, in clear violation of the
+    /// advertised "discover → commit → run" workflow.
+    #[test]
+    fn discover_walks_recursively_into_subdirectories() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let nested = dir.path().join(".coral/tests/discovered");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(
+            nested.join("openapi_GET__users.yaml"),
+            r#"name: discovered users
+service: api
+steps:
+  - http: GET /users
+    expect:
+      status: 200
+"#,
+        )
+        .unwrap();
+        // Also a top-level file to confirm BOTH levels are walked, not
+        // a regression where the fix accidentally only walked subdirs.
+        std::fs::write(
+            dir.path().join(".coral/tests/manual.yaml"),
+            r#"name: manual case
+service: api
+steps:
+  - http: GET /health
+    expect:
+      status: 200
+"#,
+        )
+        .unwrap();
+        let pairs = UserDefinedRunner::discover_tests_dir(dir.path()).unwrap();
+        assert_eq!(
+            pairs.len(),
+            2,
+            "expected both manual and discovered, got {pairs:?}"
+        );
+        let names: Vec<&str> = pairs.iter().map(|(_, s)| s.name.as_str()).collect();
+        assert!(names.contains(&"discovered users"));
+        assert!(names.contains(&"manual case"));
     }
 }

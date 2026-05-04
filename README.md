@@ -123,7 +123,7 @@ Unit tests don't tell you if your microservices actually work together. End-to-e
 ### From a tagged release (recommended)
 
 ```bash
-cargo install --locked --git https://github.com/agustincbajo/Coral --tag v0.19.2 coral-cli
+cargo install --locked --git https://github.com/agustincbajo/Coral --tag v0.19.3 coral-cli
 ```
 
 ### From `main` (latest)
@@ -146,10 +146,10 @@ cargo build --release
 Each tagged release ships pre-built binaries for x86_64 Linux, x86_64 macOS, and aarch64 macOS (Apple Silicon) on the [Releases page](https://github.com/agustincbajo/Coral/releases). Download `coral-vX.Y.Z-<target>.tar.gz`, verify the SHA-256, extract the `coral` binary, place it on your `$PATH`.
 
 ```bash
-curl -L -o coral.tar.gz https://github.com/agustincbajo/Coral/releases/download/v0.19.2/coral-v0.19.2-aarch64-apple-darwin.tar.gz
+curl -L -o coral.tar.gz https://github.com/agustincbajo/Coral/releases/download/v0.19.3/coral-v0.19.3-aarch64-apple-darwin.tar.gz
 shasum -a 256 -c coral.tar.gz.sha256  # if you also downloaded the .sha256 sidecar
 tar -xzf coral.tar.gz
-sudo mv coral-v0.19.2-aarch64-apple-darwin/coral /usr/local/bin/
+sudo mv coral-v0.19.3-aarch64-apple-darwin/coral /usr/local/bin/
 coral --version
 ```
 
@@ -402,7 +402,7 @@ coral export-agents --format copilot         --write    # writes .github/copilot
 coral export-agents --format llms-txt        --write    # writes llms.txt
 ```
 
-**Why deterministic templates instead of LLM-generated?** Empirical work on context files (and [Anthropic's context-engineering guidance](https://www.anthropic.com/engineering/context-engineering)) has consistently found that LLM-synthesized `AGENTS.md` files degrade agent task success vs. human-curated or template-rendered ones. Coral's templates pull structured data from `coral.toml` and `[hooks]` — not synthesized prose.
+**Why deterministic templates instead of LLM-generated?** Empirical work on context files (and [Anthropic's context-engineering guidance](https://www.anthropic.com/engineering/context-engineering)) has consistently found that LLM-synthesized `AGENTS.md` files degrade agent task success vs. human-curated or template-rendered ones. Coral's templates pull structured data from `coral.toml` (project name, repos, dependencies) — not synthesized prose. Richer manifest blocks (`[project.agents_md]`, `[hooks]`) are on the v0.20+ roadmap; today the renderer reads only the fields that ship parsed.
 
 For prompt-paste workflows where you don't have an MCP-speaking client:
 

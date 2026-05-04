@@ -100,7 +100,21 @@ pub fn run_with_runner(
         }
     };
 
-    let head = gitdiff::head_sha(&cwd).unwrap_or_else(|_| "HEAD".to_string());
+    // Soft-fail with a loud WARN: pre-v0.19.3 a missing/broken git would
+    // silently poison every page's `last_updated_commit` to the literal
+    // string `"HEAD"`. Now we surface the underlying error so users at
+    // least understand why their pages got stamped that way.
+    let head = match gitdiff::head_sha(&cwd) {
+        Ok(sha) => sha,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                cwd = %cwd.display(),
+                "bootstrap: head_sha failed; pages will record `HEAD` as last_updated_commit"
+            );
+            "HEAD".to_string()
+        }
+    };
     let mut created = 0usize;
     let mut skipped: Vec<String> = Vec::new();
 

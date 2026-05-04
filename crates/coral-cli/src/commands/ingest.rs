@@ -63,10 +63,36 @@ pub fn run_with_runner(
             idx.last_commit
         }
     };
-    let head = gitdiff::head_sha(&cwd).unwrap_or_else(|_| "HEAD".to_string());
+    // Soft-fail: if git is missing or `cwd` isn't a repo, fall back to the
+    // literal `"HEAD"` and let downstream `git diff` decide how to behave.
+    // Surface the failure as a `WARN` rather than swallowing silently —
+    // pre-v0.19.3 the prompt would have ended up with a `from..HEAD` range
+    // and an empty diff, and the user would get a confused LLM response
+    // with no explanation.
+    let head = match gitdiff::head_sha(&cwd) {
+        Ok(sha) => sha,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                cwd = %cwd.display(),
+                "ingest: head_sha failed; range will use the literal `HEAD`"
+            );
+            "HEAD".to_string()
+        }
+    };
     let range = format!("{from}..{head}");
 
-    let entries = gitdiff::run(&cwd, &range).unwrap_or_default();
+    let entries = match gitdiff::run(&cwd, &range) {
+        Ok(entries) => entries,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                range = %range,
+                "ingest: gitdiff::run failed; LLM will see an empty diff context"
+            );
+            Vec::new()
+        }
+    };
     let summary = entries
         .iter()
         .map(|e| format!("{:?} {}", e.kind, e.path.display()))

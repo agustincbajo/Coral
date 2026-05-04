@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use clap::Args;
+use coral_core::path::repo_root_from_wiki_root;
 use coral_core::walk;
 use coral_lint::{
     LintCode, LintReport, LintSeverity, run_structural_with_root,
@@ -124,15 +125,9 @@ pub fn run_with_runner(
         // The repo root is the parent of `.wiki/` — the context-aware
         // structural checks (commit-in-git, source-exists) need this to
         // shell out to `git` and to resolve `sources:` paths against the
-        // workspace, not against `.wiki/`.
-        // `Path::parent()` returns `Some("")` for single-component
-        // relative paths like ".wiki" — that empty PathBuf would cause
-        // `Command::current_dir("")` to fail downstream. Treat empty
-        // as "current dir" explicitly.
-        let repo_root: PathBuf = match root.parent() {
-            Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
-            _ => PathBuf::from("."),
-        };
+        // workspace, not against `.wiki/`. See
+        // `coral_core::path::repo_root_from_wiki_root`.
+        let repo_root = repo_root_from_wiki_root(&root);
         let r = run_structural_with_root(&pages, &repo_root);
         issues.extend(r.issues);
     }
@@ -170,14 +165,7 @@ pub fn run_with_runner(
     // every `HighConfidenceWithoutSources` issue, regardless of any
     // active --rule / --severity filters used to gate CI noise).
     if args.suggest_sources && !full_report.issues.is_empty() {
-        // `Path::parent()` returns `Some("")` for single-component
-        // relative paths like ".wiki" — that empty PathBuf would cause
-        // `Command::current_dir("")` to fail downstream. Treat empty
-        // as "current dir" explicitly.
-        let repo_root: PathBuf = match root.parent() {
-            Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
-            _ => PathBuf::from("."),
-        };
+        let repo_root = repo_root_from_wiki_root(&root);
         let report = run_source_suggestion(&pages, &full_report, runner, args.apply, &repo_root)?;
         println!("{}", render_source_suggestion_report(&report));
     }
@@ -213,10 +201,7 @@ pub fn run_with_runner(
         // The repo root (parent of `.wiki/`) is needed for the
         // confidence-from-coverage rule which checks whether each
         // page's `sources:` paths still exist on disk.
-        let repo_root: PathBuf = root
-            .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        let repo_root = repo_root_from_wiki_root(&root);
         let fix_report = run_no_llm_fix(&pages, args.apply, &root, &repo_root)?;
         println!("{}", render_fix_report(&fix_report));
     }

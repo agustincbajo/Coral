@@ -24,28 +24,25 @@ use crate::user_defined_runner::{HttpExpect, HttpStep, YamlStep, YamlSuite};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-/// Top-level entry: walk `.coral/tests/` for `*.hurl` files, parse
-/// each, and return paired (TestCase, YamlSuite). The case is
-/// `kind = UserDefined` so `UserDefinedRunner` runs it — no extra
-/// runner needed.
+/// Top-level entry: walk `.coral/tests/**` recursively for `*.hurl`
+/// files, parse each, and return paired (TestCase, YamlSuite). The
+/// case is `kind = UserDefined` so `UserDefinedRunner` runs it — no
+/// extra runner needed.
+///
+/// **Recursive walk is critical** — see `user_defined_runner` for
+/// the same reasoning (committed `coral test-discover --commit` files
+/// land in `.coral/tests/discovered/`).
 pub fn discover_hurl_tests(project_root: &Path) -> TestResult<Vec<(TestCase, YamlSuite)>> {
     let dir = project_root.join(".coral/tests");
-    if !dir.is_dir() {
-        return Ok(Vec::new());
-    }
-    let mut out = Vec::new();
-    for entry in std::fs::read_dir(&dir).map_err(|source| TestError::Io {
-        path: dir.clone(),
-        source,
-    })? {
-        let entry = entry.map_err(|source| TestError::Io {
-            path: dir.clone(),
-            source,
+    let paths =
+        crate::walk_tests::walk_tests_recursive(project_root, &["hurl"]).map_err(|source| {
+            TestError::Io {
+                path: dir.clone(),
+                source,
+            }
         })?;
-        let path = entry.path();
-        if path.extension().and_then(|s| s.to_str()) != Some("hurl") {
-            continue;
-        }
+    let mut out = Vec::with_capacity(paths.len());
+    for path in paths {
         let raw = std::fs::read_to_string(&path).map_err(|source| TestError::Io {
             path: path.clone(),
             source,

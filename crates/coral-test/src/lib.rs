@@ -21,6 +21,7 @@ pub mod probe;
 pub mod report;
 pub mod spec;
 pub mod user_defined_runner;
+pub mod walk_tests;
 
 pub use contract_check::{
     ContractReport, Finding as ContractFinding, FindingKind as ContractFindingKind,

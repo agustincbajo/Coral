@@ -19,6 +19,7 @@ use anyhow::{Context, Result};
 use clap::Args;
 use coral_core::index::WikiIndex;
 use coral_core::log::WikiLog;
+use coral_core::path::repo_root_from_wiki_root;
 use coral_core::walk;
 use coral_lint::run_structural_with_root;
 use coral_stats::StatsReport;
@@ -117,19 +118,9 @@ fn render_once(args: &StatusArgs, root: &Path) -> Result<()> {
 
     // Lint counts via the FAST structural pass — no semantic LLM call.
     // Repo root = parent of `.wiki/` (matches `coral lint`'s convention).
-    //
-    // `Path::parent()` returns `Some("")` (NOT `None`) for single-component
-    // relative paths like `.wiki`. An empty `PathBuf` propagates downstream
-    // into `Command::current_dir("")`, which on macOS surfaces as
-    // `ENOENT` from `execvp` and shows up as the misleading `failed to
-    // invoke git: No such file or directory (os error 2) repo_root=`
-    // warning in `check_commit_in_git`. Mirror the fix already applied to
-    // `coral lint` (lint.rs:132-135): treat empty parent the same as
-    // missing parent and fall back to `.` (the current working dir).
-    let repo_root: PathBuf = match root.parent() {
-        Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
-        _ => PathBuf::from("."),
-    };
+    // See `coral_core::path::repo_root_from_wiki_root` for why this isn't
+    // just `wiki_root.parent().unwrap_or(...)`.
+    let repo_root = repo_root_from_wiki_root(root);
     let lint_report = run_structural_with_root(&pages, &repo_root);
 
     let stats = StatsReport::new(&pages);

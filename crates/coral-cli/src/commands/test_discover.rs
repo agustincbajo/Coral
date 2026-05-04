@@ -1,9 +1,16 @@
-//! `coral test discover [--emit yaml] [--commit]` — auto-generate
+//! `coral test-discover [--emit yaml] [--commit]` — auto-generate
 //! TestCases from OpenAPI specs found in the project's repos. No LLM.
 //!
 //! Default: print a markdown summary to stdout.
 //! `--emit yaml`: print the YAML test suites that would be written.
-//! `--commit`: write each suite under `.coral/tests/discovered/`.
+//! `--commit`: write each suite under `.coral/tests/discovered/<sanitized-id>.yaml`
+//!             (filename is `<sanitize_filename(case.id)>.yaml`, e.g.
+//!             `openapi_GET__users.yaml`). Earlier docstrings claimed
+//!             a `<service>.<sha8>.yaml` shape — that was aspirational
+//!             and never implemented; the sanitized-id form is what
+//!             readers (`UserDefinedRunner`, `HurlRunner`, contract
+//!             check) actually consume after the v0.19.3 recursive
+//!             walk fix.
 
 use anyhow::{Context, Result};
 use clap::Args;
@@ -19,7 +26,7 @@ pub struct DiscoverArgs {
     pub emit: Emit,
 
     /// Write the generated YAML test suites under
-    /// `.coral/tests/discovered/<service>.<sha8>.yaml`. Mutually
+    /// `.coral/tests/discovered/<sanitized-case-id>.yaml`. Mutually
     /// exclusive with `--emit yaml` (which prints to stdout).
     #[arg(long)]
     pub commit: bool,

@@ -11,6 +11,7 @@ pub mod gitdiff;
 pub mod index;
 pub mod log;
 pub mod page;
+pub mod path;
 pub mod project;
 pub mod search;
 pub mod walk;

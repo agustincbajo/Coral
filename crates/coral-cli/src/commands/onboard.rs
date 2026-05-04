@@ -163,8 +163,30 @@ pub(crate) fn persist_onboarding_page(
     Ok(page.path)
 }
 
+/// Resolve the repo root from the wiki root and return the HEAD SHA.
+///
+/// **Why this is its own helper:** the obvious one-liner
+/// `gitdiff::head_sha(root.parent().unwrap_or(root))` has a quiet bug
+/// — `Path::new(".wiki").parent()` returns `Some("")` (NOT `None`), so
+/// `unwrap_or(root)` does not fire and `head_sha` ends up running git
+/// in the empty `cwd`, producing an `ENOENT` from `execvp` on macOS.
+/// The pre-v0.19.3 bug silently corrupted `last_updated_commit` to
+/// `"unknown"` because the surrounding `.ok()` swallowed the error.
+/// Use the centralised `repo_root_from_wiki_root` helper to get the
+/// guard right.
 fn head_sha(root: &Path) -> Option<String> {
-    coral_core::gitdiff::head_sha(root.parent().unwrap_or(root)).ok()
+    let repo_root = coral_core::path::repo_root_from_wiki_root(root);
+    match coral_core::gitdiff::head_sha(&repo_root) {
+        Ok(sha) => Some(sha),
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                repo_root = %repo_root.display(),
+                "head_sha failed; onboarding page will record `unknown` for last_updated_commit"
+            );
+            None
+        }
+    }
 }
 
 const ONBOARD_SYSTEM_FALLBACK: &str =

@@ -360,34 +360,36 @@ fn is_http_method(s: &str) -> bool {
     )
 }
 
-/// Walk `<repo>/.coral/tests/*.{yaml,yml,hurl}` for HTTP step
-/// references — every `(method, path, expected_status)` becomes an
+/// Walk `<repo>/.coral/tests/**/*.{yaml,yml,hurl}` recursively for HTTP
+/// step references — every `(method, path, expected_status)` becomes an
 /// `EndpointReference`.
+///
+/// **Recursive walk is critical** — generated tests committed by
+/// `coral test-discover --commit` land in `.coral/tests/discovered/`,
+/// and a non-recursive `read_dir` would silently miss them. See
+/// `walk_tests::walk_tests_recursive` for the contract.
 pub fn parse_consumer_for_repo(
     repo_name: &str,
     repo_path: &Path,
 ) -> TestResult<Option<ConsumerExpectations>> {
     let tests_dir = repo_path.join(".coral/tests");
-    if !tests_dir.is_dir() {
-        return Ok(None);
-    }
+    let paths = crate::walk_tests::walk_tests_recursive(repo_path, &["yaml", "yml", "hurl"])
+        .map_err(|source| TestError::Io {
+            path: tests_dir.clone(),
+            source,
+        })?;
     let mut expectations = ConsumerExpectations {
         repo_name: repo_name.to_string(),
         references: Vec::new(),
     };
-    for entry in std::fs::read_dir(&tests_dir).map_err(|source| TestError::Io {
-        path: tests_dir.clone(),
-        source,
-    })? {
-        let entry = entry.map_err(|source| TestError::Io {
-            path: tests_dir.clone(),
-            source,
-        })?;
-        let path = entry.path();
-        let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
-        match ext {
-            "yaml" | "yml" => extract_from_yaml(&path, &mut expectations.references)?,
-            "hurl" => extract_from_hurl(&path, &mut expectations.references)?,
+    for path in paths {
+        let ext = path
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(str::to_ascii_lowercase);
+        match ext.as_deref() {
+            Some("yaml") | Some("yml") => extract_from_yaml(&path, &mut expectations.references)?,
+            Some("hurl") => extract_from_hurl(&path, &mut expectations.references)?,
             _ => continue,
         }
     }
