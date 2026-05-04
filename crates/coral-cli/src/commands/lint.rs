@@ -89,6 +89,12 @@ pub struct LintArgs {
     /// the same invocation.
     #[arg(long)]
     pub suggest_sources: bool,
+    /// v0.19.5 audit M6: scan page bodies for prompt-injection
+    /// patterns (fake system tokens, encoded headers, base64-shaped
+    /// runs, unicode bidi overrides). Surfaces a Warning so reviewers
+    /// can scrub before the page reaches an LLM context window.
+    #[arg(long)]
+    pub check_injection: bool,
 }
 
 pub fn run(args: LintArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
@@ -130,6 +136,11 @@ pub fn run_with_runner(
         let repo_root = repo_root_from_wiki_root(&root);
         let r = run_structural_with_root(&pages, &repo_root);
         issues.extend(r.issues);
+    }
+    if args.check_injection {
+        // v0.19.5 audit M6: opt-in injection scan.
+        let inj = coral_lint::structural::check_injection(&pages);
+        issues.extend(inj);
     }
     if do_semantic {
         let prompt_template =
@@ -238,6 +249,7 @@ const VALID_RULE_CODES: &[&str] = &[
     "unknown-extra-field",
     "contradiction",
     "obsolete-claim",
+    "injection-suspected",
 ];
 
 /// Parse a list of `--rule` values into an optional `LintCode` allowlist.
@@ -269,6 +281,7 @@ fn parse_rule_filters(rules: &[String]) -> Result<Option<HashSet<LintCode>>> {
             "unknown-extra-field" => LintCode::UnknownExtraField,
             "contradiction" => LintCode::Contradiction,
             "obsolete-claim" => LintCode::ObsoleteClaim,
+            "injection-suspected" => LintCode::InjectionSuspected,
             other => anyhow::bail!(
                 "unknown --rule value `{other}` (expected one of: {})",
                 VALID_RULE_CODES.join(", ")
@@ -340,6 +353,7 @@ pub(crate) fn lint_code_to_kebab(code: LintCode) -> &'static str {
         LintCode::UnknownExtraField => "unknown-extra-field",
         LintCode::Contradiction => "contradiction",
         LintCode::ObsoleteClaim => "obsolete-claim",
+        LintCode::InjectionSuspected => "injection-suspected",
     }
 }
 

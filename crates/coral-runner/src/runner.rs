@@ -54,6 +54,32 @@ pub(crate) fn is_auth_failure(text: &str) -> bool {
         || lower.contains("invalid authentication")
 }
 
+/// Scrub strings that look like API keys / bearer tokens from a
+/// runner's stdout/stderr before it lands in an error message.
+///
+/// v0.19.5 audit H8: providers occasionally echo the request headers
+/// they received in their error body (e.g. `"received Authorization:
+/// Bearer sk-…"`). Surfacing that verbatim in `RunnerError::AuthFailed`
+/// would leak the key into logs / error traces. Filter out a small
+/// allowlist of header-shaped substrings.
+pub(crate) fn scrub_secrets(text: &str) -> String {
+    use std::sync::OnceLock;
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| {
+        // (?i) for case-insensitive matching. Three forms we cover:
+        //   Authorization: Bearer <tok>
+        //   x-api-key: <tok>
+        //   Bearer <tok>     (bare; no Authorization: prefix)
+        // The trailing `(?:\s+\S+)?` consumes the secret token after
+        // the keyword. Swallowing too much is preferable to leaking;
+        // surrounding "innocuous text" can be reconstructed from the
+        // pre-redaction bug report.
+        regex::Regex::new(r"(?i)(?:authorization|x-api-key)\s*:\s*\S+(?:\s+\S+)?|bearer\s+\S+")
+            .expect("valid regex")
+    });
+    re.replace_all(text, "<redacted>").to_string()
+}
+
 /// Shared streaming runner used by Claude / Gemini / Local. Spawns the
 /// already-configured `Command`, reads stdout line-by-line in a worker
 /// thread, invokes `on_chunk` for each line, accumulates the full stdout
@@ -147,12 +173,15 @@ pub(crate) fn run_streaming_command(
 
     if !status.success() {
         let combined = combine_outputs(&accumulated, &stderr);
-        if is_auth_failure(&combined) {
-            return Err(RunnerError::AuthFailed(combined));
+        // v0.19.5 audit H8: scrub bearer/x-api-key substrings before
+        // surfacing the runner's stdout/stderr in our error envelope.
+        let scrubbed = scrub_secrets(&combined);
+        if is_auth_failure(&scrubbed) {
+            return Err(RunnerError::AuthFailed(scrubbed));
         }
         return Err(RunnerError::NonZeroExit {
             code: status.code(),
-            stderr: combined,
+            stderr: scrubbed,
         });
     }
 
@@ -298,12 +327,14 @@ impl Runner for ClaudeRunner {
             let stdout_str = String::from_utf8_lossy(&output.stdout);
             let stderr_str = String::from_utf8_lossy(&output.stderr);
             let combined = combine_outputs(&stdout_str, &stderr_str);
-            if is_auth_failure(&combined) {
-                return Err(RunnerError::AuthFailed(combined));
+            // v0.19.5 audit H8: scrub bearer/x-api-key substrings.
+            let scrubbed = scrub_secrets(&combined);
+            if is_auth_failure(&scrubbed) {
+                return Err(RunnerError::AuthFailed(scrubbed));
             }
             return Err(RunnerError::NonZeroExit {
                 code: output.status.code(),
-                stderr: combined,
+                stderr: scrubbed,
             });
         }
 
@@ -344,6 +375,30 @@ impl Runner for ClaudeRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// v0.19.5 audit H8: scrub_secrets removes bearer / x-api-key /
+    /// Authorization substrings from runner output before it lands in
+    /// an error message.
+    #[test]
+    fn scrub_secrets_redacts_bearer_token() {
+        let raw = "echoed your headers: Authorization: Bearer sk-test-abc and another";
+        let out = scrub_secrets(raw);
+        assert!(!out.contains("sk-test-abc"), "leaked token: {out}");
+        assert!(out.contains("<redacted>"), "no redaction marker: {out}");
+    }
+
+    #[test]
+    fn scrub_secrets_redacts_x_api_key() {
+        let raw = "got: x-api-key: super-secret-1234 (rejected)";
+        let out = scrub_secrets(raw);
+        assert!(!out.contains("super-secret-1234"), "leaked key: {out}");
+    }
+
+    #[test]
+    fn scrub_secrets_handles_no_match_idempotently() {
+        let raw = "innocuous text without anything sensitive";
+        assert_eq!(scrub_secrets(raw), raw);
+    }
 
     /// Returns a `(TempDir, PathBuf)` holding an executable shell script
     /// that ignores every CLI arg and writes `y\n` forever. Replaces

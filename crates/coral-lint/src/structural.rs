@@ -239,11 +239,95 @@ fn collect_git_commits(repo_root: &Path) -> std::result::Result<HashSet<String>,
 /// Sources that look like URLs (`http://` / `https://` prefix) are skipped —
 /// only filesystem paths are checked. Both files and directories are valid
 /// targets (`Path::exists()` is sufficient).
+/// v0.19.5 audit M6: minimal prompt-injection detector.
+///
+/// Scans page bodies for substrings that an attacker might use to
+/// hijack an LLM that consumes the wiki:
+///
+/// - `<|system|>` / `</user>` / `<|assistant|>` — fake chat
+///   delimiters used by some open models.
+/// - `Authorization` / `Bearer ` / `x-api-key` — header lines that
+///   look like the attacker is trying to leak a key.
+/// - Base64-shaped runs > 100 chars (heuristic; real source paths
+///   never look like this).
+/// - Unicode bidi-override characters (U+202E and the tags block
+///   U+E0000..U+E007F) — a common technique to hide content.
+///
+/// Reports a Warning so reviewers see it before `coral query` /
+/// `coral mcp serve` flushes the page into an agent.
+pub fn check_injection(pages: &[Page]) -> Vec<LintIssue> {
+    let mut issues = Vec::new();
+    for page in pages {
+        let body = &page.body;
+        let mut hits: Vec<&str> = Vec::new();
+        for marker in ["<|system|>", "</user>", "<|assistant|>", "x-api-key"] {
+            if body.contains(marker) {
+                hits.push(marker);
+            }
+        }
+        // Case-insensitive checks for header-shaped substrings.
+        let lower = body.to_lowercase();
+        if lower.contains("authorization:") {
+            hits.push("Authorization:");
+        }
+        if lower.contains("bearer ") {
+            hits.push("Bearer");
+        }
+        // Long base64-ish run.
+        if body
+            .split(|c: char| !c.is_ascii_alphanumeric() && c != '+' && c != '/' && c != '=')
+            .any(|run| run.len() > 100)
+        {
+            hits.push("base64-like-run");
+        }
+        // Unicode bidi-override / tag chars.
+        if body.chars().any(|c| {
+            let cp = c as u32;
+            cp == 0x202E || (0xE0000..=0xE007F).contains(&cp)
+        }) {
+            hits.push("unicode-bidi-or-tag");
+        }
+        if !hits.is_empty() {
+            issues.push(LintIssue {
+                code: LintCode::InjectionSuspected,
+                severity: LintSeverity::Warning,
+                page: Some(page.path.clone()),
+                message: format!(
+                    "page '{}' contains tokens that look like prompt-injection attempts: {}",
+                    page.frontmatter.slug,
+                    hits.join(", ")
+                ),
+                context: Some(hits.join(",")),
+            });
+        }
+    }
+    issues
+}
+
 pub fn check_source_exists(pages: &[Page], repo_root: &Path) -> Vec<LintIssue> {
     let mut issues = Vec::new();
     for page in pages {
         for src in &page.frontmatter.sources {
             if src.starts_with("http://") || src.starts_with("https://") {
+                continue;
+            }
+            // v0.19.5 audit M4: refuse to stat absolute paths or paths
+            // containing `..` — both shapes either escape the repo
+            // root or signal an attacker probing the filesystem.
+            // Surface as a warning rather than `not found` so the
+            // user sees the real reason.
+            if src.starts_with('/') || src.contains("..") {
+                issues.push(LintIssue {
+                    code: LintCode::SourceNotFound,
+                    severity: LintSeverity::Warning,
+                    page: Some(page.path.clone()),
+                    message: format!(
+                        "Source path '{}' for page '{}' is absolute or contains `..`; \
+                         refusing to probe outside the repo root",
+                        src, page.frontmatter.slug
+                    ),
+                    context: Some(src.clone()),
+                });
                 continue;
             }
             let full = repo_root.join(src);

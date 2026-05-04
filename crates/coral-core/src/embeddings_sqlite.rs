@@ -156,6 +156,17 @@ impl SqliteEmbeddingsIndex {
 
     /// Insert or replace the vector for a slug.
     pub fn upsert(&mut self, slug: &str, mtime_secs: i64, vector: Vec<f32>) -> Result<()> {
+        // v0.19.5 audit M2: refuse a vector whose length doesn't
+        // match `self.dim` so the caller fails loudly instead of
+        // shipping a corrupt SQLite cache that produces zero search
+        // results forever.
+        if vector.len() != self.dim {
+            return Err(crate::error::CoralError::Sqlite(format!(
+                "embeddings dim mismatch on upsert(`{slug}`): expected {}, got {}",
+                self.dim,
+                vector.len()
+            )));
+        }
         let bytes = encode_vec(&vector);
         self.conn
             .execute(

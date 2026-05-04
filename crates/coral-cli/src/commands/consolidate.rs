@@ -505,6 +505,13 @@ fn apply_merge(
     if merge.sources.is_empty() {
         return Ok(None);
     }
+    // v0.19.5 audit C5: refuse merge targets whose slug isn't safe for
+    // direct path interpolation. Without this an LLM emitting
+    // `target: ../etc/passwd` would write outside the wiki.
+    if !coral_core::slug::is_safe_filename_slug(&merge.target) {
+        tracing::warn!(slug = %merge.target, "skipping merge: unsafe target slug");
+        return Ok(None);
+    }
 
     // Resolve every source slug we can find. Sources we can't resolve are
     // dropped silently (the target body just won't include them).
@@ -776,6 +783,14 @@ fn apply_split(
 
     let subdir = page_type_subdir(source.frontmatter.page_type);
     for target_slug in &split.targets {
+        // v0.19.5 audit C5: refuse split targets whose slug isn't safe
+        // for direct path interpolation. An LLM emitting
+        // `targets: [../etc/passwd]` would otherwise escape wiki_root.
+        if !coral_core::slug::is_safe_filename_slug(target_slug) {
+            tracing::warn!(slug = %target_slug, "skipping split target: unsafe slug");
+            skipped_targets.push(target_slug.clone());
+            continue;
+        }
         if pages.iter().any(|p| p.frontmatter.slug == *target_slug) {
             skipped_targets.push(target_slug.clone());
             continue;

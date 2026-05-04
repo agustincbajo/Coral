@@ -14,6 +14,7 @@ pub mod page;
 pub mod path;
 pub mod project;
 pub mod search;
+pub mod slug;
 pub mod walk;
 pub mod wikilinks;
 

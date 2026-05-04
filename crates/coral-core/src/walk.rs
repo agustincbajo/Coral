@@ -109,6 +109,21 @@ pub fn read_pages(root: impl AsRef<Path>) -> Result<Vec<Page>> {
                 Err(_) => p.to_string_lossy().into_owned(),
             };
             let mtime = WalkCache::mtime_of(p);
+            // v0.19.5 audit N3: cap per-file read at 32 MiB. Wiki
+            // pages are markdown, not large media; anything bigger is
+            // either a mistake (a binary checked in) or a DoS vector.
+            const MAX_PAGE_BYTES: u64 = 32 * 1024 * 1024;
+            if let Ok(meta) = fs::metadata(p)
+                && meta.len() > MAX_PAGE_BYTES
+            {
+                tracing::warn!(
+                    path = %p.display(),
+                    bytes = meta.len(),
+                    cap = MAX_PAGE_BYTES,
+                    "skipping page: file exceeds 32 MiB cap"
+                );
+                return None;
+            }
             let content = match fs::read_to_string(p) {
                 Ok(c) => c,
                 Err(e) => {

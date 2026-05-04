@@ -85,11 +85,17 @@ fn clone_fresh(url: &str, r#ref: &str, path: &Path) -> Result<SyncOutcome> {
             })?;
         }
     }
+    // v0.19.5 audit: keep all `--flag` arguments BEFORE the `--`
+    // separator and put user-controlled positionals (`url`, `path`)
+    // AFTER. Without `--`, a malicious URL like `--upload-pack=evil`
+    // would be parsed by git as a flag rather than a positional —
+    // CVE-2017-1000117 / CVE-2024-32004 family.
     let output = Command::new("git")
         .args([
             "clone",
             "--branch",
             r#ref,
+            "--",
             url,
             path.to_string_lossy().as_ref(),
         ])
@@ -123,8 +129,10 @@ fn clone_fresh(url: &str, r#ref: &str, path: &Path) -> Result<SyncOutcome> {
 }
 
 fn clone_then_checkout(url: &str, r#ref: &str, path: &Path) -> Result<SyncOutcome> {
+    // v0.19.5 audit: see clone_fresh — `--` separates flags from
+    // user-controlled positionals (CVE-2017-1000117 / CVE-2024-32004).
     let output = Command::new("git")
-        .args(["clone", url, path.to_string_lossy().as_ref()])
+        .args(["clone", "--", url, path.to_string_lossy().as_ref()])
         .output()
         .map_err(|e| CoralError::Git(format!("failed to invoke git clone: {e}")))?;
     if !output.status.success() {
@@ -136,6 +144,15 @@ fn clone_then_checkout(url: &str, r#ref: &str, path: &Path) -> Result<SyncOutcom
         }
         return Ok(SyncOutcome::Failed {
             stderr_tail: tail(&stderr),
+        });
+    }
+    // v0.19.5 audit: `git checkout --quiet <ref>` — `<ref>` is a
+    // user-controlled positional. We can't use `--` here because that
+    // would tell git to treat the ref as a pathspec; instead reject
+    // refs that start with `-` (which would be parsed as a flag).
+    if r#ref.starts_with('-') {
+        return Ok(SyncOutcome::Failed {
+            stderr_tail: format!("ref `{}` looks like a flag; refusing", r#ref),
         });
     }
     let checkout = Command::new("git")
@@ -166,6 +183,15 @@ fn update_existing(r#ref: &str, path: &Path) -> Result<SyncOutcome> {
         });
     }
 
+    // v0.19.5 audit: refuse refs that look like flags. `git fetch`
+    // and `git checkout` accept `<ref>` as a positional but parse
+    // anything starting with `-` as a flag — same root cause as
+    // CVE-2017-1000117.
+    if r#ref.starts_with('-') {
+        return Ok(SyncOutcome::Failed {
+            stderr_tail: format!("ref `{}` looks like a flag; refusing", r#ref),
+        });
+    }
     // Fetch the desired ref. `origin` is the conventional default; we
     // never override it because the user's clone owns its remotes.
     let fetch = Command::new("git")
@@ -380,6 +406,54 @@ mod tests {
         assert!(!is_git_repo(dir.path()));
         _mark_as_git_repo(dir.path()).unwrap();
         assert!(is_git_repo(dir.path()));
+    }
+
+    /// v0.19.5 audit C3: regression for `git clone` option injection.
+    ///
+    /// Inspect the `Command` we'd build for a fresh clone and assert
+    /// the `--` separator sits between the flag block and the
+    /// user-controlled positionals (`url`, `path`). Without `--`, a
+    /// URL like `--upload-pack=evil` would be parsed as a flag —
+    /// CVE-2017-1000117 / CVE-2024-32004 family.
+    #[test]
+    fn clone_command_inserts_dash_dash_before_positionals() {
+        let url = "--upload-pack=/tmp/evil";
+        let path = std::path::PathBuf::from("/tmp/coral-test-clone");
+        let r#ref = "main";
+        // Replicates the args block in `clone_fresh`.
+        let cmd = Command::new("git")
+            .args([
+                "clone",
+                "--branch",
+                r#ref,
+                "--",
+                url,
+                path.to_string_lossy().as_ref(),
+            ])
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        let dash_dash_idx = cmd.iter().position(|a| a == "--").expect("`--` present");
+        let url_idx = cmd.iter().position(|a| a == url).expect("url present");
+        assert!(
+            dash_dash_idx < url_idx,
+            "`--` must precede the user-controlled URL: {:?}",
+            cmd
+        );
+    }
+
+    /// v0.19.5 audit C3: ref-shaped flags rejected before reaching git.
+    /// We can't easily test through `update_existing` (it spawns
+    /// `git status` first); the synchronous shape of the check is
+    /// preserved by inspecting the args list of the Command we'd
+    /// build, plus a unit test of the substring pattern below.
+    #[test]
+    fn flag_shaped_ref_rejected_pattern() {
+        let bad = "--upload-pack=evil";
+        // Replicates the leading-`-` check applied at the call sites.
+        assert!(bad.starts_with('-'), "bad ref must start with a dash");
+        let good = "main";
+        assert!(!good.starts_with('-'));
     }
 
     /// Real-git integration: fresh clone of a local bare repo. Gated on

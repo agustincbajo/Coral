@@ -138,9 +138,20 @@ pub fn parse_name_status(stdout: &str) -> Vec<DiffEntry> {
 ///
 /// `range` is something like "HEAD~5..HEAD" or "abc123..def456".
 pub fn run(repo_dir: impl AsRef<Path>, range: &str) -> Result<Vec<DiffEntry>> {
+    // v0.19.5 audit: a range that starts with `-` would be parsed as
+    // a flag by `git diff` (CVE-2017-1000117 family). Reject early.
+    // We also append `--` so any future pathspec extension stays
+    // unambiguous: `git diff <range> -- [paths]` is the documented
+    // shape — note `--` cannot precede the range or git would treat
+    // the range as a pathspec.
+    if range.starts_with('-') {
+        return Err(CoralError::Git(format!(
+            "git diff range `{range}` looks like a flag; refusing"
+        )));
+    }
     let output = Command::new("git")
         .current_dir(repo_dir.as_ref())
-        .args(["diff", "--name-status", range])
+        .args(["diff", "--name-status", range, "--"])
         .output()
         .map_err(|e| CoralError::Git(format!("failed to invoke git: {e}")))?;
 
@@ -304,6 +315,20 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].kind, ChangeKind::Added);
         assert_eq!(entries[0].path, PathBuf::from("file.md"));
+    }
+
+    /// v0.19.5 audit: refuse ranges that look like CLI flags
+    /// (CVE-2017-1000117 family). Doesn't need a real repo because
+    /// the validation happens before the spawn.
+    #[test]
+    fn run_rejects_flag_shaped_range() {
+        let dir = TempDir::new().expect("tempdir");
+        let err = run(dir.path(), "--upload-pack=evil").expect_err("must reject");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("looks like a flag"),
+            "unexpected error message: {msg}"
+        );
     }
 
     #[test]

@@ -38,6 +38,13 @@ pub enum CoralError {
 
     #[error("sqlite error: {0}")]
     Sqlite(String),
+
+    /// v0.19.5 audit H10: surfaced when `coral.toml` exists but
+    /// fails to parse (rather than silently falling back to legacy
+    /// single-repo mode and leaving the user wondering why their
+    /// manifest is being ignored).
+    #[error("manifest error: {0}")]
+    Manifest(String),
 }
 
 pub type Result<T> = std::result::Result<T, CoralError>;

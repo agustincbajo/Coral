@@ -57,6 +57,15 @@ fn readme_project_example_parses_and_validates() {
 /// Healthcheck timing-as-subtable shape from the v0.19 README. The
 /// previous shape (`timing = { … }` inline) was a known foot-gun in
 /// TOML; the `[…]` subtable form is the one we want users to copy.
+///
+/// v0.19.5 audit C8: the README example previously used
+/// `[environments.dev.services.api]` which lifts to a different TOML
+/// path than `[[environments]]` declares. The `parse_toml` step
+/// happily accepted it, but `EnvironmentSpec::try_into` erupted with
+/// `missing field 'services'` at runtime. The working shape is
+/// `[environments.services.api]` — TOML treats the `[[environments]]`
+/// header as the currently-open array entry, so any `environments.*`
+/// subtable applies to it.
 const README_ENVIRONMENT_HEALTHCHECK_SUBTABLE: &str = r#"
 apiVersion = "coral.dev/v1"
 
@@ -74,17 +83,17 @@ mode            = "managed"
 compose_command = "auto"
 production      = false
 
-[environments.dev.services.api]
+[environments.services.api]
 kind  = "real"
 repo  = "api"
 ports = [3000]
 
-[environments.dev.services.api.healthcheck]
+[environments.services.api.healthcheck]
 kind          = "http"
 path          = "/health"
 expect_status = 200
 
-[environments.dev.services.api.healthcheck.timing]
+[environments.services.api.healthcheck.timing]
 interval_s     = 2
 timeout_s      = 5
 retries        = 5
@@ -101,6 +110,26 @@ fn readme_environment_healthcheck_subtable_example_parses() {
     manifest
         .validate()
         .expect("README environment example must validate");
+    // v0.19.5 audit C8: pin that the environment block has a
+    // `services` table at the right TOML path. The previous test
+    // stopped at `validate()`, which only catches manifest-level
+    // errors — the runtime `missing field 'services'` from
+    // `EnvironmentSpec::try_into` ducked under it because the
+    // README's `[environments.dev.services.*]` shape lifted services
+    // to the wrong path. The deeper deserialization assertion
+    // (`EnvironmentSpec` round-trip) lives in
+    // `crates/coral-env/tests/readme_environment_e2e.rs`.
+    assert_eq!(
+        manifest.environments_raw.len(),
+        1,
+        "expected one environment"
+    );
+    let raw = &manifest.environments_raw[0];
+    let services = raw
+        .get("services")
+        .and_then(|v| v.as_table())
+        .expect("environment must have a `services` table at the array-entry path");
+    assert!(services.contains_key("api"), "expected api service");
 }
 
 /// Pin the contract-check shape from README "Multi-repo interface

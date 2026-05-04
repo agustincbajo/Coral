@@ -25,6 +25,7 @@
 
 use crate::runner::{
     Prompt, RunOutput, Runner, RunnerError, RunnerResult, combine_outputs, is_auth_failure,
+    scrub_secrets,
 };
 use serde::{Deserialize, Serialize};
 use std::process::Command;
@@ -125,6 +126,42 @@ pub(crate) fn build_payload(prompt: &Prompt) -> Result<String, serde_json::Error
     serde_json::to_string(&req)
 }
 
+/// Build the curl invocation for a given prompt + body. Public to
+/// the crate so tests can assert the argv shape (audit H5/H6) without
+/// spawning a real process.
+pub(crate) fn build_curl(runner: &HttpRunner, prompt: &Prompt, body: &str) -> Command {
+    let mut cmd = Command::new("curl");
+    cmd.args([
+        "-s",
+        "--fail-with-body",
+        "-X",
+        "POST",
+        runner.endpoint.as_str(),
+        "-H",
+        "Content-Type: application/json",
+    ]);
+    // v0.19.5 audit H5: honour `prompt.timeout` by translating it to
+    // curl's `--max-time`. Previously the timeout field on `Prompt`
+    // was silently ignored, so callers wiring a deadline (e.g. `coral
+    // test` cells) would still hang indefinitely.
+    if let Some(t) = prompt.timeout {
+        let secs = (t.as_secs_f64()).max(1.0);
+        cmd.args(["--max-time", &format!("{secs:.0}")]);
+    }
+    // v0.19.5 audit H6: pipe Authorization via stdin so the key never
+    // appears in argv (where it would be readable by every process
+    // via `ps` / `/proc/<pid>/cmdline`). curl's `@-` form tells `-H`
+    // to read header lines from stdin.
+    if runner.api_key.is_some() {
+        cmd.args(["-H", "@-"]);
+    }
+    cmd.args(["-d", body]);
+    cmd.stdin(std::process::Stdio::piped());
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    cmd
+}
+
 impl Runner for HttpRunner {
     fn run(&self, prompt: &Prompt) -> RunnerResult<RunOutput> {
         let start = Instant::now();
@@ -138,40 +175,40 @@ impl Runner for HttpRunner {
             "POST chat-completions"
         );
 
-        let mut cmd = Command::new("curl");
-        cmd.args([
-            "-s",
-            "--fail-with-body",
-            "-X",
-            "POST",
-            self.endpoint.as_str(),
-            "-H",
-            "Content-Type: application/json",
-        ]);
-        if let Some(key) = &self.api_key {
-            cmd.args(["-H", &format!("Authorization: Bearer {key}")]);
-        }
-        cmd.args(["-d", &body]);
+        let mut cmd = build_curl(self, prompt, &body);
 
-        let output = match cmd.output() {
-            Ok(o) => o,
+        let mut child = match cmd.spawn() {
+            Ok(c) => c,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 return Err(RunnerError::NotFound);
             }
             Err(e) => return Err(RunnerError::Io(e)),
         };
+        if let Some(key) = &self.api_key
+            && let Some(mut stdin) = child.stdin.take()
+        {
+            let header_line = format!("Authorization: Bearer {key}\n");
+            std::io::Write::write_all(&mut stdin, header_line.as_bytes()).map_err(|e| {
+                RunnerError::Io(std::io::Error::other(format!(
+                    "writing auth header to curl stdin: {e}"
+                )))
+            })?;
+        }
+        let output = child.wait_with_output().map_err(RunnerError::Io)?;
         let duration = start.elapsed();
 
         if !output.status.success() {
             let stdout_str = String::from_utf8_lossy(&output.stdout);
             let stderr_str = String::from_utf8_lossy(&output.stderr);
             let combined = combine_outputs(&stdout_str, &stderr_str);
-            if is_auth_failure(&combined) {
-                return Err(RunnerError::AuthFailed(combined));
+            // v0.19.5 audit H8: scrub bearer/x-api-key substrings.
+            let scrubbed = scrub_secrets(&combined);
+            if is_auth_failure(&scrubbed) {
+                return Err(RunnerError::AuthFailed(scrubbed));
             }
             return Err(RunnerError::NonZeroExit {
                 code: output.status.code(),
-                stderr: combined,
+                stderr: scrubbed,
             });
         }
 
@@ -407,5 +444,58 @@ mod tests {
         let r = HttpRunner::new("http://example.invalid/v1/chat/completions")
             .with_api_key("sk-test-1234");
         assert_eq!(r.api_key.as_deref(), Some("sk-test-1234"));
+    }
+
+    /// v0.19.5 audit H6: regression — `Authorization: Bearer …` must
+    /// not appear in argv. The header instead arrives via stdin.
+    #[test]
+    fn build_curl_does_not_put_bearer_in_argv() {
+        let r = HttpRunner::new("http://example.invalid/v1/chat/completions")
+            .with_api_key("sk-test-secret");
+        let prompt = Prompt {
+            user: "hi".into(),
+            ..Default::default()
+        };
+        let cmd = build_curl(&r, &prompt, "{}");
+        let argv: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            argv.iter().all(|a| !a.contains("sk-test-secret")),
+            "argv leaked the bearer token: {argv:?}"
+        );
+        assert!(
+            argv.iter().all(|a| !a.starts_with("Authorization:")),
+            "argv contained a header line for Authorization: {argv:?}"
+        );
+        // The `@-` sentinel is what tells curl to read the header
+        // from stdin instead. Pin it so future refactors don't drop
+        // the indirection.
+        assert!(
+            argv.iter().any(|a| a == "@-"),
+            "missing @- sentinel: {argv:?}"
+        );
+    }
+
+    /// v0.19.5 audit H5: regression — `prompt.timeout` translates to
+    /// curl's `--max-time`.
+    #[test]
+    fn build_curl_propagates_prompt_timeout() {
+        let r = HttpRunner::new("http://example.invalid/v1/chat/completions");
+        let prompt = Prompt {
+            user: "hi".into(),
+            timeout: Some(std::time::Duration::from_secs(7)),
+            ..Default::default()
+        };
+        let cmd = build_curl(&r, &prompt, "{}");
+        let argv: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            argv.iter().any(|a| a == "--max-time"),
+            "expected --max-time arg: {argv:?}"
+        );
     }
 }

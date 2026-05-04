@@ -69,7 +69,7 @@ Plus:
 - **5 export formats** for the wiki (`markdown-bundle`, `json`, `notion-json`, `jsonl`, `html`).
 - **5 export formats** for AI agent instructions (`agents-md`, `claude-md`, `cursor-rules`, `copilot`, `llms-txt`) — manifest-driven, NOT LLM-driven.
 - **9 `TestKind` variants** (`Healthcheck`, `UserDefined`, `LlmGenerated`, `Contract`, `PropertyBased`, `Recorded`, `Event`, `Trace`, `E2eBrowser`).
-- **6 MCP resources + 8 tools + 3 prompts** exposed via JSON-RPC 2.0 stdio.
+- **6 MCP resources + 5 read-only tools (3 more behind `--allow-write-tools`) + 3 prompts** exposed via JSON-RPC 2.0 stdio.
 - **End-to-end concurrency safety**: atomic writes (`tmp + rename`), cross-process `flock(2)` locking, race-free parallel `coral ingest`.
 - **Backward-compat guarantee**: every v0.15 single-repo workflow keeps working — pinned by a dedicated `bc-regression` test job that runs on every PR.
 
@@ -123,7 +123,7 @@ Unit tests don't tell you if your microservices actually work together. End-to-e
 ### From a tagged release (recommended)
 
 ```bash
-cargo install --locked --git https://github.com/agustincbajo/Coral --tag v0.19.4 coral-cli
+cargo install --locked --git https://github.com/agustincbajo/Coral --tag v0.19.5 coral-cli
 ```
 
 ### From `main` (latest)
@@ -146,10 +146,10 @@ cargo build --release
 Each tagged release ships pre-built binaries for x86_64 Linux, x86_64 macOS, and aarch64 macOS (Apple Silicon) on the [Releases page](https://github.com/agustincbajo/Coral/releases). Download `coral-vX.Y.Z-<target>.tar.gz`, verify the SHA-256, extract the `coral` binary, place it on your `$PATH`.
 
 ```bash
-curl -L -o coral.tar.gz https://github.com/agustincbajo/Coral/releases/download/v0.19.4/coral-v0.19.4-aarch64-apple-darwin.tar.gz
+curl -L -o coral.tar.gz https://github.com/agustincbajo/Coral/releases/download/v0.19.5/coral-v0.19.5-aarch64-apple-darwin.tar.gz
 shasum -a 256 -c coral.tar.gz.sha256  # if you also downloaded the .sha256 sidecar
 tar -xzf coral.tar.gz
-sudo mv coral-v0.19.4-aarch64-apple-darwin/coral /usr/local/bin/
+sudo mv coral-v0.19.5-aarch64-apple-darwin/coral /usr/local/bin/
 coral --version
 ```
 
@@ -262,27 +262,33 @@ mode            = "managed"              # managed: Coral generates docker-compo
 compose_command = "auto"                 # auto-detects docker compose v2 / docker-compose v1 / podman compose
 production      = false                  # set true to require --yes on `down`/`exec`/destructive ops
 
-[environments.dev.services.api]
+# Services hang off `[environments.services.<name>]` — note the
+# parent table name is `environments` (NOT `environments.dev`)
+# because `[[environments]]` already opened the dev block.
+
+[environments.services.api]
 kind       = "real"
 repo       = "api"                       # references [[repos]].name
 build      = { dockerfile = "Dockerfile", target = "dev" }
 ports      = [3000]
 depends_on = ["db"]
 
-[environments.dev.services.api.healthcheck]
+[environments.services.api.healthcheck]
 kind = "http"
 path = "/health"
 expect_status = 200
 
-[environments.dev.services.db]
+[environments.services.db]
 kind  = "real"
 image = "postgres:16"
 ports = [5432]
 
-[environments.dev.services.db.healthcheck]
+[environments.services.db.healthcheck]
 kind = "tcp"
 port = 5432
 ```
+
+For multiple environments, repeat the `[[environments]]` block (each entry gets its own `name`); the `[environments.services.*]` tables apply to whichever array entry is currently open.
 
 Then bring it up and run tests:
 
@@ -428,7 +434,7 @@ The loader uses TF-IDF ranking + backlink BFS + greedy fill under your token bud
 | `coral lint [--structural\|--semantic\|--all] [--fix] [--rule R]` | 9 structural + 1 LLM semantic check, optional auto-fix. Exit 1 on critical. | Optional |
 | `coral consolidate [--apply]` | Suggest merges, retirements, splits. Output YAML — caller decides. | Yes |
 | `coral stats [--format markdown\|json]` | Health dashboard. JSON validates against `docs/schemas/stats.schema.json`. | No |
-| `coral search <q> [--engine tfidf\|embeddings] [--limit N]` | TF-IDF default; Voyage embeddings opt-in. Top-N pages with score + snippet. | No (TF-IDF) / Voyage key (embeddings) |
+| `coral search <q> [--engine tfidf\|embeddings] [--algorithm tfidf\|bm25] [--limit N]` | TF-IDF default; Voyage embeddings opt-in. `--algorithm bm25` switches the offline ranker (better precision on 100+ page wikis). Top-N pages with score + snippet. | No (TF-IDF/BM25) / Voyage key (embeddings) |
 | `coral sync [--version V] [--remote]` | Lay subagents/prompts/workflow into `<cwd>/template/`. Per-file pinning via `.coral-pins.toml`. | No |
 | `coral export --format <markdown-bundle\|json\|notion-json\|jsonl\|html> [--out FILE] [--qa]` | Export the wiki. With `--qa`, jsonl emits LLM-generated Q/A pairs. | Optional |
 | `coral notion-push [--type T]` | Push pages to a Notion database via curl. Reads `NOTION_TOKEN` + `CORAL_NOTION_DB`. | No |
@@ -474,7 +480,7 @@ The loader uses TF-IDF ranking + backlink BFS + greedy fill under your token bud
 
 | Command | Purpose |
 |---|---|
-| `coral mcp serve [--transport stdio] [--read-only] [--allow-write-tools]` | MCP server (JSON-RPC 2.0 stdio, MCP 2025-11-25). Exposes 6 resources, 8 tools, 3 prompts. Read-only by default. |
+| `coral mcp serve [--transport stdio] [--read-only true|false] [--allow-write-tools]` | MCP server (JSON-RPC 2.0 stdio, MCP 2025-11-25). Exposes 6 resources, 3 prompts, and 5 read-only tools (`query`, `search`, `find_backlinks`, `affected_repos`, `verify`); the 3 write tools (`run_test`, `up`, `down`) require `--allow-write-tools`. Read-only by default — pass `--read-only false` to disable. |
 | `coral export-agents --format <agents-md\|claude-md\|cursor-rules\|copilot\|llms-txt> [--write] [--out PATH]` | Manifest-driven instruction file emission. **NOT LLM-driven** — see [Anthropic's context-engineering guidance](https://www.anthropic.com/engineering/context-engineering) for why deterministic templates beat synthesized ones. |
 | `coral context-build --query <q> --budget <tokens> [--format markdown\|json] [--seeds N]` | Smart context loader. TF-IDF rank + backlink BFS + greedy fill under token budget. |
 
@@ -491,9 +497,9 @@ type: flow                          # module | concept | entity | flow | decisio
 last_updated_commit: a1b2c3d
 confidence: 0.85                    # 0.0..1.0; pages with confidence >= 0.7 must cite >=1 source
 status: reviewed                    # draft | reviewed | verified | stale | archived | reference
-sources:
-  - { type: code, path: src/auth.rs, lines: "12-87" }
-  - { type: pr, ref: "#142" }
+sources:                            # plain strings (path:line-range or PR ref)
+  - "src/auth.rs:12-87"
+  - "PR #142"
 backlinks:
   - login-handler
   - jwt-verification
@@ -559,7 +565,7 @@ compose_command = "auto"                  # auto | docker | podman
 production      = false
 env_file        = "env/dev.env"           # optional: load env vars from this file
 
-[environments.dev.services.api]
+[environments.services.api]
 kind       = "real"
 repo       = "api"
 build      = { context = ".", dockerfile = "Dockerfile", target = "dev" }
@@ -567,13 +573,13 @@ ports      = [3000]
 env        = { DATABASE_URL = "postgres://db:5432/app" }
 depends_on = ["db"]
 
-[environments.dev.services.api.healthcheck]
+[environments.services.api.healthcheck]
 kind          = "http"
 path          = "/health"
 expect_status = 200
 headers       = { "X-Internal-Auth" = "${HEALTHCHECK_TOKEN}" }
 
-[environments.dev.services.api.healthcheck.timing]
+[environments.services.api.healthcheck.timing]
 interval_s           = 2
 timeout_s            = 5
 retries              = 5
@@ -581,16 +587,16 @@ start_period_s       = 30
 start_interval_s     = 1
 consecutive_failures = 3
 
-[environments.dev.services.db]
+[environments.services.db]
 kind  = "real"
 image = "postgres:16"
 ports = [5432]
 
-[environments.dev.services.db.healthcheck]
+[environments.services.db.healthcheck]
 kind = "tcp"
 port = 5432
 
-[environments.dev.services.db.healthcheck.timing]
+[environments.services.db.healthcheck.timing]
 interval_s           = 5
 timeout_s            = 3
 retries              = 6
@@ -1028,7 +1034,7 @@ By design (PRD risk #10). Sync prints a `⚠ skipped (auth)` per failed repo and
 
 ### `coral mcp serve` says "tool 'X' is not wired in this build"
 
-The default MCP build ships a `NoOpDispatcher` that returns scripted "skip" responses. Tool wiring (delegating to `coral query` / `coral search` / `coral verify`) lands in v0.19.x. The MCP server itself works — `initialize`, `resources/list`, `tools/list`, `prompts/list`, `prompts/get` all return real data; only `tools/call` is partial.
+v0.19.5+ ships a real dispatcher: `search`, `find_backlinks`, and `affected_repos` return live data. `query` is intentionally deferred — it requires an LLM provider key and streaming, which doesn't fit the JSON-RPC tools/call envelope; use the CLI `coral query` for those. `verify`, `run_test`, `up`, `down` still return a `Skip` (the env-touching tools need wiring through `coral-env`); they're the next batch.
 
 ### `coral test --include-discovered` finds my OpenAPI but generates 0 cases
 

@@ -74,18 +74,22 @@ pub fn run(args: NotionPushArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
     for (i, body) in bodies.iter().enumerate() {
         let slug = &pages[i].frontmatter.slug;
         let json_string = serde_json::to_string(body)?;
-        let output = std::process::Command::new("curl")
+        // v0.19.5 audit H4 + H6: capture the response body (drop
+        // `-o /dev/null`) so non-2xx errors surface the Notion API's
+        // error JSON rather than a bare status code. Pipe the
+        // Authorization header via stdin (`@-`) so the secret never
+        // appears in argv (visible to other processes via /proc).
+        let auth_header = format!("Authorization: Bearer {token}\n");
+        let mut child = std::process::Command::new("curl")
             .args([
                 "-s",
-                "-o",
-                "/dev/null",
                 "-w",
-                "%{http_code}",
+                "\nHTTP_CODE:%{http_code}",
                 "-X",
                 "POST",
                 "https://api.notion.com/v1/pages",
                 "-H",
-                &format!("Authorization: Bearer {token}"),
+                "@-",
                 "-H",
                 "Notion-Version: 2022-06-28",
                 "-H",
@@ -93,15 +97,37 @@ pub fn run(args: NotionPushArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
                 "-d",
                 &json_string,
             ])
-            .output()
-            .context("invoking curl (is it in PATH?)")?;
-        let http_code = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .context("spawning curl (is it in PATH?)")?;
+        if let Some(mut stdin) = child.stdin.take() {
+            std::io::Write::write_all(&mut stdin, auth_header.as_bytes())
+                .context("writing auth header to curl stdin")?;
+        }
+        let output = child.wait_with_output().context("awaiting curl")?;
+        if !output.status.success() {
+            fail += 1;
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            eprintln!("FAIL {slug}: curl exited {:?} ({stderr})", output.status);
+            continue;
+        }
+        let combined = String::from_utf8_lossy(&output.stdout);
+        let (response_body, http_code) = match combined.rsplit_once("\nHTTP_CODE:") {
+            Some((body, code)) => (body.to_string(), code.trim().to_string()),
+            None => (String::new(), combined.trim().to_string()),
+        };
         if http_code.starts_with('2') {
             ok += 1;
             tracing::info!(slug = %slug, http = %http_code, "notion push ok");
         } else {
             fail += 1;
-            eprintln!("FAIL {slug}: HTTP {http_code}");
+            // Show the API's error body — it usually carries a
+            // `code` + `message` field that's more useful than the
+            // raw HTTP status alone.
+            let body_excerpt: String = response_body.chars().take(400).collect();
+            eprintln!("FAIL {slug}: HTTP {http_code} — {body_excerpt}");
         }
     }
     println!("Pushed: {ok} ok, {fail} failed.");

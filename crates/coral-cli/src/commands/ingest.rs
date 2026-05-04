@@ -140,13 +140,15 @@ pub fn run_with_runner(
     };
 
     let idx_path = root.join("index.md");
-    let idx_content = std::fs::read_to_string(&idx_path).context("reading .wiki/index.md")?;
-    let mut index = WikiIndex::parse(&idx_content)?;
 
+    // Collect per-page IndexEntry rows OUTSIDE the index lock — each
+    // page write is still atomic via Page::write() so a partial run
+    // leaves consistent on-disk state.
     let mut created = 0usize;
     let mut updated = 0usize;
     let mut retired = 0usize;
     let mut warnings: Vec<String> = Vec::new();
+    let mut upserts: Vec<IndexEntry> = Vec::new();
 
     for entry in &plan.plan {
         match entry.action {
@@ -159,7 +161,7 @@ pub fn run_with_runner(
                     }
                 };
                 page.write()?;
-                index.upsert(IndexEntry {
+                upserts.push(IndexEntry {
                     slug: page.frontmatter.slug.clone(),
                     page_type: page.frontmatter.page_type,
                     path: relative_path(page.frontmatter.page_type, &page.frontmatter.slug),
@@ -183,7 +185,7 @@ pub fn run_with_runner(
                 let mut page = Page::from_file(&path)?;
                 page.bump_last_commit(head.clone());
                 page.write()?;
-                index.upsert(IndexEntry {
+                upserts.push(IndexEntry {
                     slug: page.frontmatter.slug.clone(),
                     page_type: page.frontmatter.page_type,
                     path: relative_path(page.frontmatter.page_type, &page.frontmatter.slug),
@@ -207,7 +209,7 @@ pub fn run_with_runner(
                 let mut page = Page::from_file(&path)?;
                 page.frontmatter.status = Status::Stale;
                 page.write()?;
-                index.upsert(IndexEntry {
+                upserts.push(IndexEntry {
                     slug: page.frontmatter.slug.clone(),
                     page_type: page.frontmatter.page_type,
                     path: relative_path(page.frontmatter.page_type, &page.frontmatter.slug),
@@ -220,16 +222,23 @@ pub fn run_with_runner(
         }
     }
 
-    // The index write happens INSIDE an exclusive flock so concurrent
-    // `coral ingest` invocations against the same wiki serialize
-    // properly (closes the lost-update race documented in v0.14).
-    // Note: the LOAD above (line 118) runs OUTSIDE the lock — it's a
-    // best-effort prefix and the LLM-driven plan was already built
-    // from that snapshot. Future v0.16 work could move the entire
-    // load+plan+save under the lock if multi-process concurrent
-    // ingest becomes a real workload.
-    index.bump_last_commit(head.clone());
+    // v0.19.5 audit H7: read-modify-write of `.wiki/index.md` MUST
+    // happen inside the exclusive flock to avoid a lost-update race
+    // when two `coral ingest --apply` invocations interleave.
+    // Pre-v0.19.5 the read happened OUTSIDE the lock, the mutation
+    // was applied to that stale snapshot, and the write inside the
+    // lock clobbered concurrent additions.
     coral_core::atomic::with_exclusive_lock(&idx_path, || {
+        let raw =
+            std::fs::read_to_string(&idx_path).map_err(|e| coral_core::error::CoralError::Io {
+                path: idx_path.clone(),
+                source: e,
+            })?;
+        let mut index = WikiIndex::parse(&raw)?;
+        for u in &upserts {
+            index.upsert(u.clone());
+        }
+        index.bump_last_commit(head.clone());
         coral_core::atomic::atomic_write_string(&idx_path, &index.to_string()?)
     })
     .context("writing .wiki/index.md")?;

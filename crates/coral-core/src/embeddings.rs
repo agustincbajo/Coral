@@ -84,8 +84,24 @@ impl EmbeddingsIndex {
     }
 
     pub fn upsert(&mut self, slug: impl Into<String>, mtime_secs: i64, vector: Vec<f32>) {
+        let slug: String = slug.into();
+        // v0.19.5 audit M2: silently accepting a vector whose length
+        // doesn't match `self.dim` was the cause of "search returns
+        // nothing" bug reports — search() returns early when dims
+        // mismatch and a corrupt cache spreads to all callers.
+        // Refuse the upsert with a tracing::warn so the caller can
+        // fail loudly upstream rather than ship a half-populated cache.
+        if vector.len() != self.dim {
+            tracing::warn!(
+                %slug,
+                expected = self.dim,
+                actual = vector.len(),
+                "embeddings::upsert refused: dim mismatch"
+            );
+            return;
+        }
         self.entries
-            .insert(slug.into(), IndexedVector { mtime_secs, vector });
+            .insert(slug, IndexedVector { mtime_secs, vector });
     }
 
     /// Returns true if the entry's mtime matches `mtime_secs`.

@@ -14,7 +14,9 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 chrono = { workspace = true }
+toml = { workspace = true }
 coral-core = { workspace = true }
+coral-stats = { workspace = true }
 
 # rmcp v1.6 (May 2026) is the official Anthropic Rust SDK for the
 # Model Context Protocol. v0.19 wave 2 will pin this dependency; v0.19

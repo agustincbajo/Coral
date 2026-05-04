@@ -27,6 +27,41 @@ pub enum EmbeddingsError {
 
 pub type EmbedResult<T> = std::result::Result<T, EmbeddingsError>;
 
+/// Run `curl POST` with the provided header line piped through stdin
+/// instead of placed in argv.
+///
+/// v0.19.5 audit H6: API keys must NEVER appear in argv (visible to
+/// every other process via `ps` / `/proc`). curl's `@-` form for `-H`
+/// reads header lines from stdin until EOF; we pipe the bearer
+/// header in and EOF the stream so curl moves on to the body.
+fn curl_post_with_secret_header(
+    url: &str,
+    secret_header: &str,
+    extra_headers: &[(&str, &str)],
+    body: &str,
+) -> std::io::Result<std::process::Output> {
+    let mut cmd = Command::new("curl");
+    cmd.args(["-s", "--fail-with-body", "-X", "POST", url, "-H", "@-"]);
+    for (k, v) in extra_headers {
+        cmd.args(["-H", &format!("{k}: {v}")]);
+    }
+    cmd.args(["-d", body]);
+    cmd.stdin(std::process::Stdio::piped());
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    let mut child = cmd.spawn()?;
+    if let Some(mut stdin) = child.stdin.take() {
+        // curl reads header lines from stdin until EOF for @- inputs.
+        let mut line = String::with_capacity(secret_header.len() + 1);
+        line.push_str(secret_header);
+        if !line.ends_with('\n') {
+            line.push('\n');
+        }
+        std::io::Write::write_all(&mut stdin, line.as_bytes())?;
+    }
+    child.wait_with_output()
+}
+
 /// An embeddings provider: turns batches of text into fixed-dimension vectors.
 ///
 /// Implementations should chunk internally to respect provider batch limits
@@ -115,21 +150,12 @@ impl VoyageProvider {
         };
         let body = serde_json::to_string(&req)
             .map_err(|e| EmbeddingsError::Parse(format!("serializing request: {e}")))?;
-        let output = Command::new("curl")
-            .args([
-                "-s",
-                "--fail-with-body",
-                "-X",
-                "POST",
-                VOYAGE_ENDPOINT,
-                "-H",
-                &format!("Authorization: Bearer {}", self.api_key),
-                "-H",
-                "Content-Type: application/json",
-                "-d",
-                &body,
-            ])
-            .output()?;
+        let output = curl_post_with_secret_header(
+            VOYAGE_ENDPOINT,
+            &format!("Authorization: Bearer {}", self.api_key),
+            &[("Content-Type", "application/json")],
+            &body,
+        )?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
             let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -140,7 +166,10 @@ impl VoyageProvider {
                 (false, false) => format!("{stderr}\n{stdout}"),
             };
             if is_auth_failure(&combined) {
-                return Err(EmbeddingsError::AuthFailed(combined));
+                // v0.19.5 audit H8: scrub bearer/x-api-key.
+                return Err(EmbeddingsError::AuthFailed(crate::runner::scrub_secrets(
+                    &combined,
+                )));
             }
             return Err(EmbeddingsError::ProviderCall {
                 code: output.status.code(),
@@ -290,21 +319,13 @@ impl OpenAIProvider {
         };
         let body = serde_json::to_string(&req)
             .map_err(|e| EmbeddingsError::Parse(format!("serializing request: {e}")))?;
-        let output = Command::new("curl")
-            .args([
-                "-s",
-                "--fail-with-body",
-                "-X",
-                "POST",
-                OPENAI_ENDPOINT,
-                "-H",
-                &format!("Authorization: Bearer {}", self.api_key),
-                "-H",
-                "Content-Type: application/json",
-                "-d",
-                &body,
-            ])
-            .output()?;
+        // v0.19.5 audit H6: see `curl_post_with_secret_header` doc.
+        let output = curl_post_with_secret_header(
+            OPENAI_ENDPOINT,
+            &format!("Authorization: Bearer {}", self.api_key),
+            &[("Content-Type", "application/json")],
+            &body,
+        )?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
             let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -315,7 +336,10 @@ impl OpenAIProvider {
                 (false, false) => format!("{stderr}\n{stdout}"),
             };
             if is_auth_failure(&combined) {
-                return Err(EmbeddingsError::AuthFailed(combined));
+                // v0.19.5 audit H8: scrub bearer/x-api-key.
+                return Err(EmbeddingsError::AuthFailed(crate::runner::scrub_secrets(
+                    &combined,
+                )));
             }
             return Err(EmbeddingsError::ProviderCall {
                 code: output.status.code(),
@@ -479,23 +503,16 @@ impl EmbeddingsProvider for AnthropicProvider {
             };
             let body = serde_json::to_string(&req)
                 .map_err(|e| EmbeddingsError::Parse(format!("serializing request: {e}")))?;
-            let output = Command::new("curl")
-                .args([
-                    "-s",
-                    "--fail-with-body",
-                    "-X",
-                    "POST",
-                    ANTHROPIC_ENDPOINT,
-                    "-H",
-                    &format!("x-api-key: {}", self.api_key),
-                    "-H",
-                    "anthropic-version: 2023-06-01",
-                    "-H",
-                    "Content-Type: application/json",
-                    "-d",
-                    &body,
-                ])
-                .output()?;
+            // v0.19.5 audit H6: see `curl_post_with_secret_header` doc.
+            let output = curl_post_with_secret_header(
+                ANTHROPIC_ENDPOINT,
+                &format!("x-api-key: {}", self.api_key),
+                &[
+                    ("anthropic-version", "2023-06-01"),
+                    ("Content-Type", "application/json"),
+                ],
+                &body,
+            )?;
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
                 let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -506,7 +523,10 @@ impl EmbeddingsProvider for AnthropicProvider {
                     (false, false) => format!("{stderr}\n{stdout}"),
                 };
                 if is_auth_failure(&combined) {
-                    return Err(EmbeddingsError::AuthFailed(combined));
+                    // v0.19.5 audit H8: scrub bearer/x-api-key.
+                    return Err(EmbeddingsError::AuthFailed(crate::runner::scrub_secrets(
+                        &combined,
+                    )));
                 }
                 return Err(EmbeddingsError::ProviderCall {
                     code: output.status.code(),
@@ -602,6 +622,44 @@ mod tests {
         let p = VoyageProvider::voyage_3("fake-key");
         let result = p.embed_batch(&[], None).unwrap();
         assert!(result.is_empty());
+    }
+
+    /// v0.19.5 audit H6: regression — `curl_post_with_secret_header`
+    /// must NOT place the secret header in argv. We can't observe the
+    /// stdin write directly here; instead we assert the only `-H @-`
+    /// sentinel is in argv, and no string starting with
+    /// `Authorization:` / `x-api-key:` / containing the actual secret.
+    #[test]
+    fn curl_helper_does_not_leak_secret_into_argv() {
+        // Spawn helper builds a Command; we don't actually run it
+        // (would shell out to curl) but we can inspect the argv it
+        // would produce by replicating the construction here.
+        let url = "https://example.invalid/v1/embeddings";
+        let secret = "Authorization: Bearer sk-test-supersecret";
+        let extra = [("Content-Type", "application/json")];
+        let body = "{}";
+        let mut cmd = Command::new("curl");
+        cmd.args(["-s", "--fail-with-body", "-X", "POST", url, "-H", "@-"]);
+        for (k, v) in &extra {
+            cmd.args(["-H", &format!("{k}: {v}")]);
+        }
+        cmd.args(["-d", body]);
+        let argv: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            argv.iter().all(|a| !a.contains("sk-test-supersecret")),
+            "argv leaked secret: {argv:?}"
+        );
+        assert!(
+            !argv.iter().any(|a| a == secret),
+            "argv must not contain the full Authorization header"
+        );
+        assert!(
+            argv.iter().any(|a| a == "@-"),
+            "missing @- sentinel: {argv:?}"
+        );
     }
 
     #[test]

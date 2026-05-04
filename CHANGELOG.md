@@ -7,6 +7,74 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.5] - 2026-05-04
+
+Audit pass — multi-agent code audit on v0.19.4 found ~30 real bugs across the workspace, ranging from prompt-injection / path-traversal / argv-leaked-secrets in the Critical tier down to README example drift and lint info-disclosure in the Medium / Notable tiers. Closes the entire audit punch list. The MCP server transitioned from a wave-1 stub (every `read()` returned `None`) to a wired implementation that actually reads pages, tools delegate to the existing core helpers, and per-call audit lines land in `.coral/audit.log`.
+
+### Fixed (Critical)
+
+- **C1. MCP server is a stub. Now wired.** v0.19 wave 1 advertised six resources and eight tools but every `WikiResourceProvider::read()` returned `None` and every `tools/call` got a `NoOpDispatcher` "skip". v0.19.5 ships a real `WikiResourceProvider::read()` that materialises every advertised URI (`coral://manifest`, `coral://lock`, `coral://graph`, `coral://wiki/_index`, `coral://stats`, `coral://test-report/latest`) plus per-page `coral://wiki/<slug>` resources via `walk::read_pages`, and a `CoralToolDispatcher` (in `coral-cli`) that delegates `search` / `find_backlinks` / `affected_repos` to the core helpers. New `crates/coral-mcp/tests/mcp_resources_e2e.rs` boots the provider against a tmpdir fixture and asserts every URI returns non-empty JSON / Markdown.
+- **C2. `Resource.mime_type` was emitted as snake_case on the wire.** MCP clients expect `mimeType` (camelCase per the spec); the missing `#[serde(rename = "mimeType")]` made every client silently fall back to `text/plain`, losing our `application/json` hint. New unit test pins the wire shape.
+- **C3. `git clone` option injection (CVE-2017-1000117 / CVE-2024-32004 family).** `coral project sync` shelled out as `git clone --branch <ref> <url> <path>`; a malicious `url` like `--upload-pack=/tmp/evil` would have been parsed as a flag. v0.19.5 inserts `--` before the user-controlled positionals (`git clone --branch <ref> -- <url> <path>`) and rejects refs that start with `-`. Same treatment applied to `gitdiff::run`'s range. Regression test inspects the built `Command` argv to confirm the `--` separator sits between flags and positionals.
+- **C4. LLM-emitted slug → path traversal in `plan::build_page`.** A `create` plan entry with `slug: ../../etc/passwd` would have escaped `wiki_root` on `coral ingest --apply`. New `coral_core::slug::is_safe_filename_slug` allowlist (`[a-zA-Z0-9_-]`, length ≤ 200, no leading `.` or `-`) is checked before any path interpolation. Builds error out instead of writing.
+- **C5. Slug path traversal in `consolidate::apply_merge` / `apply_split` / `export::render_html_multi`.** Same root cause as C4 across three more LLM-driven write paths. Each site now validates the target slug; unsafe entries are skipped with a `tracing::warn!`. Regression tests assert no file lands outside the wiki / `out_dir`.
+- **C6. `coral export-agents --format claude-md` emitted AGENTS.md content.** The CLAUDE.md file's first line was `# AGENTS.md` and its generation marker pointed at `--format agents-md`; both now correctly identify the claude-md format. Regression test pins the H1 + marker shape.
+- **C7. README frontmatter `sources:` example didn't parse.** README L487-505 used inline-table sources (`- { type: code, path: src/auth.rs, lines: "12-87" }`); the actual parser is `pub sources: Vec<String>`. Updated example to plain strings; the bundled `template/schema/SCHEMA.base.md` was already correct.
+- **C8. README `[[environments]]` example didn't deserialize at runtime.** README L257-285 used `[environments.dev.services.api]` which TOML lifts to a path the `EnvironmentSpec` struct doesn't recognise (`missing field 'services'` at runtime). Working idiom is `[environments.services.api]` — the `[[environments]]` array entry is the implicit parent. Strengthened `crates/coral-core/tests/readme_examples_parse.rs` to assert the `services` table sits at the right TOML path; new `crates/coral-env/tests/readme_environment_e2e.rs` deserializes the block all the way to `EnvironmentSpec`.
+
+### Fixed (High)
+
+- **H3. `coral mcp serve --read-only false` was rejected by clap.** `ArgAction::SetTrue` doesn't accept a value, so users couldn't disable read-only without `--allow-write-tools`. Switched to `ArgAction::Set` with `default_missing_value = "true"`. Regression test: `--read-only false --help` doesn't error.
+- **H4. `coral notion-push --apply` swallowed Notion API error bodies.** Pre-v0.19.5 `curl -s -o /dev/null -w '%{http_code}'` discarded the response body, so users saw `FAIL slug: HTTP 400` with no actionable detail. Now we capture stdout, surface the first 400 chars of the body on non-2xx, and propagate `output.status.success() == false` distinctly from HTTP failure.
+- **H5. `HttpRunner::run` ignored `prompt.timeout`.** The `Prompt::timeout` field was wired everywhere except the HTTP runner — calls hung indefinitely even with an explicit deadline. Now translated to curl's `--max-time`. Regression test inspects the built `Command` argv.
+- **H6. API keys leaked into argv at 5 sites** (`Voyage` / `OpenAI` / `Anthropic` embeddings, `HttpRunner`, `notion-push`). Argv is readable by every other process via `ps` / `/proc/<pid>/cmdline`. Migrated to curl's `@-` form: the secret header is written to stdin instead of placed in argv. New `curl_post_with_secret_header` helper centralises the pattern. Regression tests assert `Bearer <token>` doesn't appear in `cmd.get_args()`.
+- **H7. `coral ingest --apply` lost-update race on `.wiki/index.md`.** The pre-v0.19.5 flow read the index OUTSIDE the flock, mutated it in memory, and wrote it BACK inside the flock — concurrent invocations clobbered each other's additions. v0.19.5 moves the read into the locked closure. Hardens the same invariant the v0.15 atomic-write pass landed.
+- **H8. `RunnerError::AuthFailed` exposed provider stdout/stderr verbatim.** Some providers echo the request headers in error responses; surfacing that in our error envelope leaked the API key into logs and traces. New `runner::scrub_secrets` (regex-driven, case-insensitive over `Authorization` / `x-api-key` / bare `Bearer`) replaces token-shaped substrings with `<redacted>` before they land in `AuthFailed` / `NonZeroExit` payloads. Applied at every error-construction site in `runner.rs`, `http.rs`, and `embeddings.rs`.
+- **H9. `compose.rs` wrote the generated YAML non-atomically.** A `docker compose up` racing the writer could see a half-written file. Migrated to `coral_core::atomic::atomic_write_string` (temp + rename).
+- **H10. Malformed `coral.toml` was silenced as legacy.** A `coral.toml` that doesn't parse as TOML at all used to fall back to `synthesize_legacy()`, leaving the user wondering why their manifest was ignored. New `Project::discover` distinguishes "no manifest found" from "found but malformed"; the second case surfaces as `CoralError::Manifest(...)` with the file path.
+- **H11. README claim "8 MCP tools" was misleading.** Default install ships 5 read-only tools (`query`, `search`, `find_backlinks`, `affected_repos`, `verify`); the 3 write tools (`run_test`, `up`, `down`) require `--allow-write-tools`. README updated.
+
+### Fixed (Medium)
+
+- **M1. `coral context-build --budget` overshot.** Budget check ran AFTER `chars_used += page.body.len()`, so the page that broke the budget was still included. Now checked BEFORE acceptance.
+- **M2. Embeddings `upsert` accepted dim-mismatched vectors.** Both backends (in-memory + SQLite) silently stored vectors of the wrong length, causing `search()` to return zero hits forever after a corrupt cache load. Both `upsert` paths now reject the mismatched vector — JSON backend logs and skips, SQLite returns an error.
+- **M3. `gitdiff::run` git option injection.** Covered by C3.
+- **M4. `coral_lint::structural::check_source_exists` info disclosure.** Sources containing `..` or starting with `/` would `Path::join(repo_root, src)` and stat outside the repo root. Now refused with a clear warning before the filesystem probe runs.
+- **M5. `.coral/audit.log` was documented but not written.** Wired up: every MCP `tools/call` invocation appends a `{ts, tool, args, result_summary}` line via `OpenOptions::append`.
+- **M6. `coral lint --check-injection` was documented but not implemented.** New flag added; `coral_lint::structural::check_injection` scans page bodies for fake chat tokens, header-shaped substrings, base64-shaped runs > 100 chars, and unicode bidi-override / tag characters. Surfaces a Warning so reviewers scrub before pages reach an LLM context window.
+- **M9. `--algorithm bm25` undocumented in README.** Added to the `coral search` subcommand reference.
+
+### Fixed (Notable)
+
+- **N1. `Pins::save` was non-atomic.** Migrated to `atomic_write_string`.
+- **N3. File-size caps in `walk::read_pages`.** Wiki pages are markdown, not large media; pages > 32 MiB are now skipped with a `tracing::warn!` rather than read into memory.
+
+### Skipped
+
+- **M7. `*.lock.lock` zero-byte cleanup** — explored, but unlinking the sentinel after release reopens the cross-process lost-update race the `cross_process_lock_serializes_n_subprocess_increments` test pins. Documented as intentional in the `with_exclusive_lock` docstring; users can `.gitignore` `*.lock` instead.
+- **M8. README "4 groupers → 5"** — claim doesn't appear in the README at all.
+- **M10. `EnvError` Display nesting** — reviewed; the install hint sits in the leaf variant's `#[error]` template, no `#[from]` wrapping involved. No change.
+- **N2. `WikiLog` regex op shape** — relaxing the regex would change the log format; documented at the call sites instead.
+
+### MCP wiring details
+
+- New `coral-mcp` deps: `coral-stats` (for `stats` resource), `toml` (for `lock` resource).
+- New `WikiResourceProvider` helpers: `render_manifest`, `render_lock`, `render_stats`, `render_aggregate_index`, `render_repo_index`, `render_page`. Every helper is best-effort — a malformed wiki returns useful JSON instead of bubbling up an error to the JSON-RPC envelope.
+- Path traversal guard: per-page `coral://wiki/<slug>` URIs run each path segment through `is_safe_filename_slug` before any `fs::read`.
+- The `query` tool intentionally returns `Skip` over MCP — it requires LLM streaming + provider keys that don't fit the JSON-RPC `tools/call` envelope. CLI `coral query` is the entry point; this is documented in the Troubleshooting section of the README.
+
+### Test counts
+
+- coral-core: 181 → 187 (+6, slug allowlist + git separator regression + manifest H10 + walk N3)
+- coral-mcp: 14 → 20 (+6, mimeType serde + 9 e2e resource reads)
+- coral-runner: 67 → 70 (+3, scrub_secrets + curl-no-leak + max-time)
+- coral-cli: lib + integration grew with C4/C5/C6/M5 + claude-md + path-traversal regression
+- **Workspace total: 887 tests pass** (was 851; +36). Zero clippy warnings, BC contract holds across all 6 v0.15 fixtures.
+
+### Closes
+
+- v0.19.5 audit punch list (~30 findings, all closed except the 4 documented as intentional).
+
 ## [0.19.4] - 2026-05-04
 
 Audit follow-up — closes the remaining 6 items from the v0.19.3 multi-agent code audit (3 Medium + 3 latent smells). Tracking issue [#23](https://github.com/agustincbajo/Coral/issues/23). The Critical and High tier shipped in v0.19.3; the audit punch list is now 100% resolved.

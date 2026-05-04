@@ -44,10 +44,36 @@ impl Project {
     pub fn discover(cwd: impl AsRef<Path>) -> Result<Self> {
         let cwd = cwd.as_ref();
         if let Some(manifest_path) = find_manifest_upwards(cwd) {
-            Self::load_from_manifest(&manifest_path)
-        } else {
-            Ok(Self::synthesize_legacy(cwd))
+            return Self::load_from_manifest(&manifest_path);
         }
+        // v0.19.5 audit H10: distinguish "no `coral.toml` found" from
+        // "found but malformed". The legacy fallback is the right
+        // behavior for v0.15 single-repo users who have no manifest;
+        // it's the WRONG behavior when the user has a `coral.toml`
+        // sitting at the project root that doesn't parse — they need
+        // a parse error, not silent legacy mode.
+        if let Some(broken) = find_unparseable_manifest_upwards(cwd) {
+            // We already tried (no `[project]` token), so this is
+            // either truly unrelated (e.g. a docs example) or
+            // malformed. Distinguish by attempting a TOML parse: if
+            // the bytes parse as TOML at all, treat as unrelated; if
+            // they don't parse, surface the error.
+            let raw = std::fs::read_to_string(&broken).map_err(|source| CoralError::Io {
+                path: broken.clone(),
+                source,
+            })?;
+            if toml::from_str::<toml::Value>(&raw).is_err() {
+                return Err(CoralError::Manifest(format!(
+                    "found `coral.toml` at {} but it failed to parse as TOML; \
+                     fix the syntax or remove the file. \
+                     If this is unrelated to Coral, rename it.",
+                    broken.display()
+                )));
+            }
+            // Parses as TOML but has no `[project]` → unrelated, fall
+            // through to the legacy synthesis.
+        }
+        Ok(Self::synthesize_legacy(cwd))
     }
 
     /// Build a single-repo project rooted at `cwd`. The repo `name` is the
@@ -167,6 +193,22 @@ fn find_manifest_upwards(start: &Path) -> Option<PathBuf> {
     }
 }
 
+/// v0.19.5 audit H10: locate the nearest `coral.toml` regardless of
+/// whether it has a `[project]` section. Used to surface "found but
+/// malformed" errors instead of silently falling back to legacy mode.
+fn find_unparseable_manifest_upwards(start: &Path) -> Option<PathBuf> {
+    let mut current = start.to_path_buf();
+    loop {
+        let candidate = current.join(MANIFEST_FILENAME);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+        if !current.pop() {
+            return None;
+        }
+    }
+}
+
 /// A `coral.toml` may exist for unrelated reasons (e.g. an example file in
 /// docs). To avoid false positives we require a real `[project]` section to
 /// claim the file as the project manifest.
@@ -275,6 +317,26 @@ url  = "git@github.com:acme/worker.git"
         .unwrap();
         let p = Project::discover(dir.path()).unwrap();
         assert!(p.is_legacy());
+    }
+
+    /// v0.19.5 audit H10: a `coral.toml` that's completely malformed
+    /// (not even valid TOML) must surface as an error rather than a
+    /// silent legacy fallback.
+    #[test]
+    fn discover_errors_on_malformed_coral_toml() {
+        let dir = TempDir::new().unwrap();
+        // Bytes that won't parse as TOML at all.
+        std::fs::write(
+            dir.path().join("coral.toml"),
+            "garbage = \"unterminated\nbroken[\n",
+        )
+        .unwrap();
+        let err = Project::discover(dir.path()).expect_err("must error");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("manifest"),
+            "expected manifest error, got: {msg}"
+        );
     }
 
     #[test]

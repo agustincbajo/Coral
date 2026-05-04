@@ -51,6 +51,13 @@ pub enum LintCode {
     Contradiction,
     /// Reserved for semantic lint.
     ObsoleteClaim,
+    /// v0.19.5 audit M6: a page body contains tokens that look like
+    /// prompt-injection attempts — fake system prompts, encoded auth
+    /// headers, very long base64 chunks, or unicode bidi-override
+    /// characters that hide content from human reviewers. Surfaces a
+    /// Warning so the maintainer reviews before the page reaches an
+    /// LLM context window.
+    InjectionSuspected,
 }
 
 /// A single lint finding emitted by a check. `page` is `None` for global
@@ -350,7 +357,7 @@ mod tests {
         }
 
         // Mirrors the snake_case rename of every LintCode variant.
-        let expected: [&str; 11] = [
+        let expected: [&str; 12] = [
             "broken_wikilink",
             "orphan_page",
             "low_confidence",
@@ -362,6 +369,7 @@ mod tests {
             "unknown_extra_field",
             "contradiction",
             "obsolete_claim",
+            "injection_suspected",
         ];
         for variant in expected {
             assert!(

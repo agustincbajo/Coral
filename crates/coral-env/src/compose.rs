@@ -106,9 +106,19 @@ impl ComposeBackend {
             path: dir.clone(),
             source,
         })?;
-        std::fs::write(&path, yaml).map_err(|source| EnvError::Io {
-            path: path.clone(),
-            source,
+        // v0.19.5 audit H9: write atomically (temp + rename) so a
+        // concurrent reader (e.g. `docker compose up` racing this
+        // process) sees either the OLD or the NEW YAML, never a
+        // half-written file. The bytes round-trip identically because
+        // atomic_write_string just defers to fs::write under the hood.
+        coral_core::atomic::atomic_write_string(&path, &yaml).map_err(|e| match e {
+            coral_core::error::CoralError::Io { path: p, source } => {
+                EnvError::Io { path: p, source }
+            }
+            other => EnvError::Io {
+                path: path.clone(),
+                source: std::io::Error::other(other.to_string()),
+            },
         })?;
         Ok((path, hash))
     }

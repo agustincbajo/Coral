@@ -432,6 +432,14 @@ pub(crate) fn render_html_multi(pages: &[Page], out_dir: &Path) -> Result<usize>
     for p in pages {
         let ty = page_type_name(&p.frontmatter);
         let slug = &p.frontmatter.slug;
+        // v0.19.5 audit C5: refuse to materialize a page whose
+        // frontmatter slug isn't safe for direct path interpolation.
+        // Without this guard, a poisoned `slug: ../../etc/passwd`
+        // would escape `out_dir` on `coral export-multi`.
+        if !coral_core::slug::is_safe_filename_slug(slug) {
+            tracing::warn!(slug = %slug, "skipping export: unsafe slug");
+            continue;
+        }
         let type_dir = out_dir.join(ty);
         std::fs::create_dir_all(&type_dir)
             .with_context(|| format!("creating {}", type_dir.display()))?;
@@ -862,6 +870,27 @@ mod tests {
         let order_html = std::fs::read_to_string(out_dir.join("module/order.html")).unwrap();
         assert!(order_html.contains("href=\"../style.css\""));
         assert!(order_html.contains("href=\"../index.html\""));
+    }
+
+    /// v0.19.5 audit C5: `coral export-multi` must refuse to write a
+    /// page whose frontmatter slug isn't safe for path interpolation.
+    /// Without the guard, a poisoned `slug: ../../etc/passwd` would
+    /// escape `out_dir`.
+    #[test]
+    fn export_html_multi_skips_unsafe_slugs() {
+        let pages = vec![
+            page("legit", PageType::Module, "# Legit"),
+            page("../escape", PageType::Module, "# Evil"),
+        ];
+        let tmp = tempfile::TempDir::new().unwrap();
+        let out_dir = tmp.path().join("public");
+        let written = render_html_multi(&pages, &out_dir).unwrap();
+        assert!(out_dir.join("module/legit.html").exists());
+        // Nothing escaped.
+        assert!(!tmp.path().join("escape.html").exists());
+        assert!(!out_dir.join("module/../escape.html").exists());
+        // Only the legit page (1) + index.html + style.css = 3 files.
+        assert_eq!(written, 3, "unsafe slug page must be skipped");
     }
 
     #[test]

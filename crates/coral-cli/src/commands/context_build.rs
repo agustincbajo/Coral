@@ -79,10 +79,20 @@ pub fn run(args: ContextBuildArgs, wiki_root: Option<&Path>) -> Result<ExitCode>
             Some(p) => p,
             None => continue,
         };
-        chars_used += page.body.len();
-        if chars_used >= budget_chars {
-            break;
+        // v0.19.5 audit M1: check the budget BEFORE accepting the
+        // page, otherwise the iteration that overshoots the budget
+        // still gets included (and its backlinks expanded). Skip a
+        // page whose body would push us past `budget_chars`. We keep
+        // pages strictly below the budget — strict equality is
+        // accepted (chars_used == budget_chars is fine).
+        if chars_used + page.body.len() > budget_chars {
+            // Drop this slug from the included set so the eventual
+            // result_pages filter doesn't carry it through.
+            included.remove(&slug);
+            // Don't add this page's backlinks; we're already over.
+            continue;
         }
+        chars_used += page.body.len();
         for backlink in &page.frontmatter.backlinks {
             if !included.contains(backlink) {
                 included.insert(backlink.clone());

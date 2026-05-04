@@ -56,10 +56,16 @@ impl Pins {
     }
 
     /// Serialize and write to `<cwd>/.coral-pins.toml`. Returns the written path.
+    ///
+    /// v0.19.5 audit N1: writes atomically (temp + rename) so a
+    /// concurrent reader (e.g. another invocation of `coral validate-pin`)
+    /// sees either the OLD or the NEW content, never a half-written
+    /// file.
     pub fn save(&self, cwd: &Path) -> Result<PathBuf> {
         let path = cwd.join(Self::FILENAME);
         let content = toml::to_string_pretty(self).context("serializing pins TOML")?;
-        std::fs::write(&path, content).with_context(|| format!("writing {}", path.display()))?;
+        coral_core::atomic::atomic_write_string(&path, &content)
+            .with_context(|| format!("writing {}", path.display()))?;
         Ok(path)
     }
 

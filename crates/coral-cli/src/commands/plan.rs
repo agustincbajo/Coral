@@ -83,7 +83,19 @@ pub(crate) fn strip_yaml_fence(s: &str) -> &str {
 }
 
 /// Builds a Page in memory from a `create` PlanEntry. Caller writes to disk.
+///
+/// v0.19.5 audit C4: validate the slug against
+/// [`coral_core::slug::is_safe_filename_slug`] before any path
+/// interpolation. The slug arrives from the LLM and was previously
+/// joined into `wiki_root` directly — `slug: ../etc/passwd` would
+/// have escaped the wiki.
 pub fn build_page(entry: &PlanEntry, head_sha: &str, wiki_root: &Path) -> CoralResult<Page> {
+    if !coral_core::slug::is_safe_filename_slug(&entry.slug) {
+        return Err(CoralError::Git(format!(
+            "create entry slug `{}` is not a safe filename slug; refusing to build page",
+            entry.slug
+        )));
+    }
     let page_type = entry.r#type.ok_or_else(|| {
         CoralError::Git(format!(
             "create entry for `{}` missing `type` field",
@@ -271,6 +283,28 @@ plan:
         let err = build_page(&entry, "abc", Path::new(".wiki")).expect_err("must error");
         match err {
             CoralError::Git(msg) => assert!(msg.contains("rogue")),
+            other => panic!("expected Git error, got {other:?}"),
+        }
+    }
+
+    /// v0.19.5 audit C4: a malicious LLM-emitted slug must NOT escape
+    /// the wiki root via path traversal.
+    #[test]
+    fn build_page_rejects_path_traversal_slug() {
+        let entry = PlanEntry {
+            slug: "../etc/passwd".to_string(),
+            action: Action::Create,
+            r#type: Some(PageType::Module),
+            confidence: Some(0.5),
+            rationale: "evil".to_string(),
+            body: Some("body".to_string()),
+        };
+        let err = build_page(&entry, "abc", Path::new(".wiki")).expect_err("must error");
+        match err {
+            CoralError::Git(msg) => assert!(
+                msg.contains("not a safe filename slug"),
+                "unexpected error: {msg}"
+            ),
             other => panic!("expected Git error, got {other:?}"),
         }
     }

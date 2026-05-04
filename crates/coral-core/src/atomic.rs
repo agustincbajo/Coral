@@ -132,6 +132,11 @@ pub fn atomic_write_string(path: impl AsRef<Path>, content: &str) -> Result<()> 
 /// place (it's empty, ~0 bytes) is the conventional pattern. Add
 /// `*.lock` to `.gitignore` if it shows up in `git status`.
 ///
+/// v0.19.5 audit M7 considered cleanup but rejected it after the
+/// `cross_process_lock_serializes_n_subprocess_increments` test
+/// surfaced lost-update behavior under contention. The artefact is
+/// intentional.
+///
 /// Errors from `f` propagate as-is; lock release is best-effort but
 /// happens automatically on `File` drop even if explicit unlock fails.
 pub fn with_exclusive_lock<F, T>(path: impl AsRef<Path>, f: F) -> Result<T>
