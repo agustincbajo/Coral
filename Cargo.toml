@@ -3,7 +3,7 @@ members = ["crates/*"]
 resolver = "2"
 
 [workspace.package]
-version = "0.19.6"
+version = "0.19.7"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT"
@@ -33,13 +33,13 @@ fs4 = "0.13"
 predicates = "3"
 assert_cmd = "2"
 schemars = { version = "0.8", features = ["chrono"] }
-coral-core = { path = "crates/coral-core", version = "0.19.6" }
-coral-env = { path = "crates/coral-env", version = "0.19.6" }
-coral-lint = { path = "crates/coral-lint", version = "0.19.6" }
-coral-runner = { path = "crates/coral-runner", version = "0.19.6" }
-coral-stats = { path = "crates/coral-stats", version = "0.19.6" }
-coral-test = { path = "crates/coral-test", version = "0.19.6" }
-coral-mcp = { path = "crates/coral-mcp", version = "0.19.6" }
+coral-core = { path = "crates/coral-core", version = "0.19.7" }
+coral-env = { path = "crates/coral-env", version = "0.19.7" }
+coral-lint = { path = "crates/coral-lint", version = "0.19.7" }
+coral-runner = { path = "crates/coral-runner", version = "0.19.7" }
+coral-stats = { path = "crates/coral-stats", version = "0.19.7" }
+coral-test = { path = "crates/coral-test", version = "0.19.7" }
+coral-mcp = { path = "crates/coral-mcp", version = "0.19.7" }
 
 [profile.release]
 lto = "thin"

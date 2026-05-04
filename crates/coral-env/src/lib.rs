@@ -15,6 +15,7 @@ pub mod compose;
 pub mod compose_yaml;
 pub mod error;
 pub mod healthcheck;
+pub mod import;
 pub mod mock;
 pub mod plan;
 pub mod spec;

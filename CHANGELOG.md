@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.7] - 2026-05-04
+
+Small patch release closing the two N2 follow-up issues from v0.19.6's validator review and adding `coral env import` (a deferred onboarding feature from the v0.19 PRD). 928 tests pass (was 908; +20).
+
+### Fixed
+
+- **`HttpRunner` request-body tempfile is now created with mode 0600 on Unix.** Pre-v0.19.7 the file went out at the umask default (typically 0644), which restricted WRITE but not READ. On Linux multi-tenant hosts where `/tmp` is shared across UIDs, any local user could `cat` the in-flight prompt body — defeating the v0.19.6 N2 fix that explicitly moved the body off argv to keep it private from `ps`. macOS is unaffected because `$TMPDIR` is per-user under `/var/folders/<hash>/T/`. The fix uses `OpenOptions` with `create_new(true)` (defense-in-depth against a pre-positioned symlink at the target) and `mode(0o600)` on Unix. Closes [#24](https://github.com/agustincbajo/Coral/issues/24).
+- **`HttpRunner` request-body tempfile cleanup is now uniform across all return paths.** Pre-v0.19.7 the cleanup was hand-rolled at three of the four return paths; the fourth (header-write fail / body-write fail / wait-output fail) leaked the file. New `TempFileGuard` RAII wrapper handles cleanup on every return path including panic-unwind. Doc comment updated — no longer claims "best-effort". Closes [#25](https://github.com/agustincbajo/Coral/issues/25).
+
+### Added
+
+- **`coral env import <compose.yml>` — deferred from v0.19 PRD.** Convert an existing `docker-compose.yml` into a `coral.toml` `[[environments]]` block. Output is conservative and advisory: only fields that round-trip cleanly through `EnvironmentSpec` are emitted; anything Coral can't translate (long-form `depends_on`, list-form `environment`, port ranges, unrecognized fields) surfaces as a `# TODO:` comment so users see the gaps. Heuristics: `CMD ["curl", "-f", "http://...//health"]` infers `kind = "http" + path = "/health" + expect_status = 200`; `CMD-SHELL <line>` becomes `kind = "exec", cmd = ["sh", "-c", <line>]`. Compose duration strings (`5s`, `1m30s`, `2h`) parse to seconds. New `coral_env::import` module; new `crates/coral-env/src/import.rs` + 16 unit tests including a round-trip-through-`EnvironmentSpec` pin so the emitted TOML is always runtime-valid.
+
+### Internal
+
+- New `coral_core::slug::is_safe_repo_name` reused in the import module's env-name and service-name validation, keeping the same allowlist that v0.19.6's H1 fix introduced for repo names.
+
 ## [0.19.6] - 2026-05-04
 
 Third-cycle audit follow-up. A re-validation pass on v0.19.5 surfaced 8 real bugs across `coral-mcp`, `coral-core`, `coral-runner`, `coral-cli`, and `coral-test`, plus 4 Notable polish items. All shipped here. Headline: the MCP `resources/read` response no longer hardcodes `text/markdown` (every JSON resource was being silently mislabeled), `WikiLog::append_atomic`'s first-create path is now race-free under contending writers, and `coral project sync`'s lockfile write serializes cross-process via the same flock primitive `ingest` and `index.md` already use.

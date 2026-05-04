@@ -33,6 +33,28 @@ pub enum EnvCmd {
     Logs(LogsArgs),
     /// Run a command inside a service container.
     Exec(ExecArgs),
+    /// Convert a `docker-compose.yml` into a `coral.toml`
+    /// `[[environments]]` block. Output is advisory — review before
+    /// committing.
+    Import(ImportArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct ImportArgs {
+    /// Path to the existing `docker-compose.yml` (or compatible).
+    pub compose_path: std::path::PathBuf,
+    /// Name to give the resulting environment block. Default: `dev`.
+    #[arg(long, default_value = "dev")]
+    pub env: String,
+    /// Write the result to `<dir>/coral.env-import.toml` instead of
+    /// stdout. Use `--out` to override the path. The flag exists so
+    /// `coral env import compose.yml --write` is the obvious shape.
+    #[arg(long)]
+    pub write: bool,
+    /// Override the destination path (only meaningful with `--write`).
+    /// Default: `coral.env-import.toml` under the current dir.
+    #[arg(long)]
+    pub out: Option<std::path::PathBuf>,
 }
 
 #[derive(Args, Debug)]
@@ -75,6 +97,7 @@ pub fn run(args: EnvArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
         EnvCmd::Status(a) => status(a, wiki_root),
         EnvCmd::Logs(a) => logs(a, wiki_root),
         EnvCmd::Exec(a) => exec(a, wiki_root),
+        EnvCmd::Import(a) => import(a),
     }
 }
 
@@ -124,6 +147,40 @@ fn exec(args: ExecArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
     } else {
         Ok(ExitCode::FAILURE)
     }
+}
+
+fn import(args: ImportArgs) -> Result<ExitCode> {
+    let yaml = std::fs::read_to_string(&args.compose_path)
+        .with_context(|| format!("reading compose file at {}", args.compose_path.display()))?;
+    let result = coral_env::import::import_compose_to_toml(&yaml, &args.env)
+        .map_err(|e| anyhow::anyhow!("importing compose file: {e}"))?;
+
+    if args.write {
+        let dest = args
+            .out
+            .unwrap_or_else(|| std::path::PathBuf::from("coral.env-import.toml"));
+        std::fs::write(&dest, &result.toml)
+            .with_context(|| format!("writing {}", dest.display()))?;
+        eprintln!("✔ wrote {}", dest.display());
+        eprintln!(
+            "  paste the contents into your `coral.toml` (top-level), then review the\n\
+             `# TODO:` comments before running `coral up`."
+        );
+    } else {
+        print!("{}", result.toml);
+    }
+
+    if !result.warnings.is_empty() {
+        eprintln!();
+        eprintln!(
+            "⚠ {} warning(s) — fields Coral didn't translate cleanly:",
+            result.warnings.len()
+        );
+        for w in &result.warnings {
+            eprintln!("  - {w}");
+        }
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 fn build_backend(
