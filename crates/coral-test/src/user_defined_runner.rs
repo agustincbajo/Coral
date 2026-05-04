@@ -488,28 +488,59 @@ fn retry_backoff(retry: &RetryPolicy, attempt: u32) -> std::time::Duration {
 /// vars are left intact (no panic, no error) so missing captures
 /// produce visible URL/string fragments rather than silent empty
 /// strings.
+///
+/// v0.19.6 audit M1: previously this walked `input.as_bytes()` and did
+/// `out.push(bytes[i] as char)`, which corrupted multi-byte UTF-8
+/// (e.g. `é = 0xC3 0xA9` became Latin-1 `Ã©`). The implementation
+/// below walks `char_indices()` and only enters the `${…}` fast path
+/// when the current ASCII byte is `$` — every other char is appended
+/// verbatim, preserving multi-byte sequences.
 fn substitute_vars(input: &str, captures: &BTreeMap<String, String>) -> String {
     if !input.contains("${") {
         return input.to_string();
     }
     let mut out = String::with_capacity(input.len());
-    let bytes = input.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if i + 2 < bytes.len() && bytes[i] == b'$' && bytes[i + 1] == b'{' {
-            if let Some(end) = input[i + 2..].find('}') {
-                let key = &input[i + 2..i + 2 + end];
+    let mut iter = input.char_indices().peekable();
+    while let Some((i, ch)) = iter.next() {
+        // Only ASCII `$` followed by ASCII `{` triggers the
+        // substitution path. Every other char (including multi-byte
+        // sequences like `é`) is appended as-is.
+        if ch == '$' && iter.peek().map(|&(_, c)| c == '{').unwrap_or(false) {
+            // Skip the `{`.
+            let _ = iter.next();
+            // Find the matching `}` in the rest of `input`. Search by
+            // byte offset is safe because `}` is a single-byte char
+            // and `find` returns byte offsets.
+            let body_start = i + 2; // bytes for `${`
+            if let Some(rel_end) = input[body_start..].find('}') {
+                let body_end = body_start + rel_end;
+                let key = &input[body_start..body_end];
                 if let Some(val) = captures.get(key) {
                     out.push_str(val);
                 } else {
-                    out.push_str(&input[i..i + 2 + end + 1]);
+                    // Echo the unknown placeholder back verbatim so
+                    // tests fail loudly with a visible `${name}` in
+                    // the URL / payload.
+                    out.push_str(&input[i..body_end + 1]);
                 }
-                i += 2 + end + 1;
+                // Advance the iterator past the `}` we just consumed.
+                while let Some(&(j, _)) = iter.peek() {
+                    if j > body_end {
+                        break;
+                    }
+                    let _ = iter.next();
+                }
                 continue;
             }
+            // Unterminated `${…}` — copy the literal `${` and let the
+            // outer loop continue from the char after it. (This also
+            // matches the pre-fix behavior of failing-open instead of
+            // panicking.)
+            out.push('$');
+            out.push('{');
+            continue;
         }
-        out.push(bytes[i] as char);
-        i += 1;
+        out.push(ch);
     }
     out
 }
@@ -702,6 +733,30 @@ steps:
         caps.insert("a".into(), "1".into());
         caps.insert("b".into(), "2".into());
         assert_eq!(substitute_vars("a=${a},b=${b}", &caps), "a=1,b=2");
+    }
+
+    /// v0.19.6 audit M1: pre-fix the function walked the byte stream
+    /// and did `out.push(bytes[i] as char)`, treating each `u8` as a
+    /// codepoint. A multi-byte UTF-8 sequence (`é = 0xC3 0xA9`)
+    /// emerged as `Ã©`. Pin char-aware behavior here.
+    #[test]
+    fn substitute_vars_preserves_multibyte_utf8() {
+        let mut caps = BTreeMap::new();
+        caps.insert("name".into(), "test".into());
+        // `café` contains the 2-byte UTF-8 sequence `0xC3 0xA9` for `é`.
+        assert_eq!(
+            substitute_vars("café ${name}", &caps),
+            "café test",
+            "non-ASCII chars must round-trip through substitute_vars"
+        );
+        // Without any placeholder the fast-path returns the input
+        // unchanged — that path has always been correct.
+        assert_eq!(
+            substitute_vars("naïve résumé 日本", &caps),
+            "naïve résumé 日本"
+        );
+        // Mixed: emoji + multi-byte + placeholder.
+        assert_eq!(substitute_vars("👋 ${name} naïve", &caps), "👋 test naïve");
     }
 
     #[test]

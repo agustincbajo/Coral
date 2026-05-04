@@ -60,18 +60,16 @@ impl WalkCache {
 
     pub fn save(&self, wiki_root: &Path) -> Result<PathBuf> {
         let path = wiki_root.join(Self::FILENAME);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(|e| CoralError::Io {
-                path: parent.to_path_buf(),
-                source: e,
-            })?;
-        }
+        // v0.19.6 audit N1: use the shared atomic-write helper so a
+        // crash mid-save can't leave a half-written `.coral-cache.json`
+        // — the next `coral lint` / `coral stats` would then either
+        // bail on JSON parse error or, worse, treat the truncated
+        // entries as authoritative and re-parse every page.
+        // `atomic_write_string` itself creates parent dirs, so we
+        // skip the explicit `create_dir_all` here.
         let content = serde_json::to_string_pretty(self)
             .map_err(|e| CoralError::Walk(format!("cache serialize error: {e}")))?;
-        fs::write(&path, content).map_err(|e| CoralError::Io {
-            path: path.clone(),
-            source: e,
-        })?;
+        crate::atomic::atomic_write_string(&path, &content)?;
         Ok(path)
     }
 
@@ -224,5 +222,33 @@ mod tests {
     fn mtime_of_missing_file_returns_none() {
         let p = PathBuf::from("/definitely/does/not/exist/file-xyz.md");
         assert!(WalkCache::mtime_of(&p).is_none());
+    }
+
+    /// v0.19.6 audit N1: under N concurrent `save` calls, every reader
+    /// must see a parseable cache — never an empty / torn file. This
+    /// is the same property that `atomic_write_string` provides; the
+    /// test pins the migration to it by hammering save concurrently
+    /// and checking the on-disk shape after every write storm.
+    #[test]
+    fn save_concurrent_never_writes_torn_cache() {
+        let tmp = TempDir::new().unwrap();
+        let wiki_root = tmp.path().to_path_buf();
+
+        const N: usize = 10;
+        std::thread::scope(|s| {
+            for i in 0..N {
+                let wiki_root = wiki_root.clone();
+                s.spawn(move || {
+                    let mut cache = WalkCache::default_v1();
+                    cache.insert(format!("file-{i}.md"), 1000 + i as i64, sample_fm("x"));
+                    cache.save(&wiki_root).expect("save");
+                });
+            }
+        });
+
+        // Every successive read must parse cleanly. A torn write would
+        // surface as a JSON parse error on `WalkCache::load`.
+        let cache = WalkCache::load(&wiki_root).expect("load after storm must parse");
+        assert_eq!(cache.version, WalkCache::SCHEMA_VERSION);
     }
 }

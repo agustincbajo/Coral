@@ -158,6 +158,19 @@ impl Project {
                     repo.name
                 )));
             }
+            // v0.19.6 audit H1: a malicious or copy-pasted manifest
+            // could put `name = "../escape"` here. `Project::resolved_path`
+            // would then produce `<project_root>/repos/../escape`, and
+            // `coral project sync` would `git clone` outside the project
+            // root. Reject anything that's not a plain ASCII slug.
+            if !crate::slug::is_safe_repo_name(&repo.name) {
+                return Err(CoralError::Walk(format!(
+                    "invalid repo name '{}' in coral.toml: \
+                     names must be ASCII alphanumeric plus `-`/`_`, \
+                     no path separators, no leading `.` or `-`",
+                    repo.name
+                )));
+            }
             if repo.url.is_none() && repo.remote.is_none() && self.defaults.remote.is_none() {
                 // The legacy single-repo case has `path = "."`. Allow
                 // it; the user hasn't asked Coral to resolve a URL.
@@ -586,6 +599,39 @@ depends_on = ["api"]
         p.root = PathBuf::from("/work");
         let err = p.validate().unwrap_err();
         assert!(format!("{}", err).contains("duplicate repo name"));
+    }
+
+    /// v0.19.6 audit H1: a `[[repos]]` block with a path-traversal
+    /// `name` must be rejected at validate-time. Prior to this fix
+    /// `Project::resolved_path` would happily produce
+    /// `<project_root>/repos/../escape` and `coral project sync`
+    /// would clone there.
+    #[test]
+    fn validate_rejects_path_traversal_in_repo_name() {
+        let mut p = make_project_with_repos(&["../escape"]);
+        p.root = PathBuf::from("/work");
+        let err = p.validate().unwrap_err();
+        let msg = format!("{}", err);
+        assert!(
+            msg.contains("invalid repo name") && msg.contains("../escape"),
+            "expected invalid-name error naming the offending repo, got: {msg}"
+        );
+    }
+
+    /// v0.19.6 audit H1: also reject obvious siblings — leading dot,
+    /// path separator, whitespace.
+    #[test]
+    fn validate_rejects_other_unsafe_repo_names() {
+        for bad in &[".hidden", "foo/bar", "foo bar", "-flag"] {
+            let mut p = make_project_with_repos(&[bad]);
+            p.root = PathBuf::from("/work");
+            let err = p.validate().expect_err("must reject unsafe name");
+            let msg = format!("{}", err);
+            assert!(
+                msg.contains("invalid repo name") && msg.contains(*bad),
+                "expected invalid-name error for {bad:?}, got: {msg}"
+            );
+        }
     }
 
     #[test]

@@ -195,4 +195,68 @@ mod tests {
         let lock = Lockfile::load_or_default(&path).unwrap();
         assert!(lock.repos.is_empty());
     }
+
+    /// v0.19.6 audit H3 regression: under concurrent load+upsert+write
+    /// against the same `coral.lock`, BOTH writers' upserts must
+    /// persist. Pre-fix the second writer's `load_or_default` ran after
+    /// the first writer's `write_atomic` had committed — but ALSO read
+    /// the OLD bytes if the two ran fully interleaved (read both old →
+    /// modify both → write both, where the second write clobbered the
+    /// first writer's entry). This reproduces the wrap-in-flock fix
+    /// applied to `coral project sync`.
+    ///
+    /// Note: the closure body uses `atomic_write_string` directly
+    /// rather than `Lockfile::write_atomic` because the latter would
+    /// re-enter `with_exclusive_lock` from a fresh FD on the same
+    /// inode, which can self-deadlock from a single process. The CLI
+    /// `coral project sync` makes the same choice — see the comment
+    /// over the `with_exclusive_lock` block in
+    /// `crates/coral-cli/src/commands/project/sync.rs`.
+    #[test]
+    fn lockfile_concurrent_upsert_under_lock_preserves_both_entries() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("coral.lock");
+        // Seed an empty lockfile so both writers see the same starting
+        // state.
+        Lockfile::new().write_atomic(&path).unwrap();
+
+        const N: usize = 8;
+        std::thread::scope(|s| {
+            for i in 0..N {
+                let path = path.clone();
+                s.spawn(move || {
+                    crate::atomic::with_exclusive_lock(&path, || {
+                        let mut lock = Lockfile::load_or_default(&path).expect("load");
+                        lock.upsert(
+                            format!("repo-{i}"),
+                            RepoLockEntry {
+                                url: format!("git@example.com:acme/repo-{i}.git"),
+                                r#ref: "main".to_string(),
+                                sha: format!("sha-{i:03}"),
+                                synced_at: fixed_time(),
+                            },
+                        );
+                        crate::atomic::atomic_write_string(&path, &lock.to_string())
+                    })
+                    .expect("under lock");
+                });
+            }
+        });
+
+        let raw = std::fs::read_to_string(&path).expect("read final");
+        let final_lock = Lockfile::parse(&raw).expect("parse final");
+        assert_eq!(
+            final_lock.repos.len(),
+            N,
+            "lost-update under concurrent sync; got {} entries, expected {N}; raw:\n{raw}",
+            final_lock.repos.len()
+        );
+        for i in 0..N {
+            let name = format!("repo-{i}");
+            assert!(
+                final_lock.repos.contains_key(&name),
+                "missing {name} after concurrent upsert"
+            );
+        }
+    }
 }

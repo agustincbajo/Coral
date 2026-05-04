@@ -20,7 +20,7 @@
 
 use crate::runner::{
     Prompt, RunOutput, Runner, RunnerError, RunnerResult, combine_outputs, is_auth_failure,
-    run_streaming_command,
+    run_streaming_command, scrub_secrets,
 };
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -125,15 +125,22 @@ impl Runner for LocalRunner {
             let stdout_str = String::from_utf8_lossy(&output.stdout);
             let stderr_str = String::from_utf8_lossy(&output.stderr);
             let combined = combine_outputs(&stdout_str, &stderr_str);
-            // Local runners don't auth, but the helper is conservative — if
-            // an auth-shaped error somehow appears (e.g. a wrapper that hits
-            // a hosted endpoint), surface it.
-            if is_auth_failure(&combined) {
-                return Err(RunnerError::AuthFailed(combined));
+            // v0.19.6 audit H2: scrub bearer/x-api-key substrings before
+            // surfacing the runner's stdout/stderr in our error envelope.
+            // Local runners typically don't auth, but the helper is
+            // conservative — a wrapper script that hits a hosted endpoint
+            // (or a misconfigured llama.cpp pointed at an auth proxy) can
+            // still echo back an `Authorization: Bearer …` header.
+            // Without scrubbing, the key would land in CI logs / stack
+            // traces. Sister of v0.19.5's H8 fix that already covered
+            // http.rs / runner.rs / embeddings.rs.
+            let scrubbed = scrub_secrets(&combined);
+            if is_auth_failure(&scrubbed) {
+                return Err(RunnerError::AuthFailed(scrubbed));
             }
             return Err(RunnerError::NonZeroExit {
                 code: output.status.code(),
-                stderr: combined,
+                stderr: scrubbed,
             });
         }
 
@@ -269,6 +276,48 @@ mod tests {
             })
             .unwrap_err();
         assert!(matches!(err, RunnerError::NonZeroExit { .. }));
+    }
+
+    /// v0.19.6 audit H2: stderr that contains a bearer-shaped header
+    /// must be scrubbed before being wrapped in `RunnerError::*`.
+    /// We exercise this end-to-end by pointing the runner at a tiny
+    /// shell script that prints a fake `Authorization: Bearer …` line
+    /// and exits non-zero — the resulting `RunnerError::NonZeroExit`'s
+    /// stderr must NOT contain the secret.
+    #[test]
+    fn local_runner_non_zero_scrubs_bearer_token_from_error() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let script = dir.path().join("fake-llama.sh");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\n\
+             echo 'request failed; received Authorization: Bearer sk-ant-secret-xxx' 1>&2\n\
+             exit 1\n",
+        )
+        .expect("write");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&script).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&script, perms).unwrap();
+        }
+        let r = LocalRunner::with_binary(&script);
+        let err = r
+            .run(&Prompt {
+                user: "x".into(),
+                ..Default::default()
+            })
+            .unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(
+            !msg.contains("sk-ant-secret-xxx"),
+            "RunnerError leaked the bearer token: {msg}"
+        );
+        assert!(
+            msg.contains("<redacted>"),
+            "expected redaction marker: {msg}"
+        );
     }
 
     /// Real smoke against an installed `llama-cli`. Marked `#[ignore]`

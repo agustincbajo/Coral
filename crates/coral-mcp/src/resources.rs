@@ -32,9 +32,18 @@ pub struct Resource {
 pub trait ResourceProvider: Send + Sync {
     /// List all resources the server is willing to expose.
     fn list(&self) -> Vec<Resource>;
-    /// Read the body of one resource by URI. `None` when the URI
+    /// Read the body of one resource by URI plus the MIME type the
+    /// server should advertise to the client. `None` when the URI
     /// doesn't match any known resource.
-    fn read(&self, uri: &str) -> Option<String>;
+    ///
+    /// v0.19.6 audit C1: the second tuple field replaces a previous
+    /// hardcoded `text/markdown` in `server.rs`. JSON resources
+    /// (`coral://manifest`, `coral://lock`, `coral://stats`, etc.)
+    /// declare `application/json` in their `Resource` catalog entry —
+    /// the dispatcher MUST forward that hint to the client so it
+    /// parses the body correctly instead of treating every payload as
+    /// markdown.
+    fn read(&self, uri: &str) -> Option<(String, String)>;
 }
 
 /// Production implementation: reads the wiki + manifest + lock off
@@ -175,6 +184,17 @@ impl WikiResourceProvider {
     }
 
     fn render_repo_index(&self, repo: &str) -> Option<String> {
+        // v0.19.6 audit N4: validate the `<repo>` segment before it
+        // ever gets reflected back in the response. Without this an
+        // attacker who controls the URI (e.g. via an MCP client
+        // they've coaxed Claude into invoking) could embed arbitrary
+        // text in the URI's repo segment and have it echoed back as
+        // the `repo` field — useful as part of a chained injection.
+        // `_default` is the legacy single-repo wildcard and stays
+        // allowlisted explicitly.
+        if repo != "_default" && !coral_core::slug::is_safe_filename_slug(repo) {
+            return None;
+        }
         let pages = self.read_pages();
         let prefix = format!("{repo}/");
         let entries: Vec<serde_json::Value> = pages
@@ -232,26 +252,45 @@ impl ResourceProvider for WikiResourceProvider {
         let mut out = Self::static_catalog();
         // Append per-page resources so agents can `resources/read`
         // a specific slug directly. v0.19.5 audit: previously empty.
+        // v0.19.6 audit C1: tag as `application/json` so it matches
+        // the actual envelope body shape `render_page` returns
+        // (slug + frontmatter + body fields). Earlier `text/markdown`
+        // hint was inconsistent with the JSON-encoded payload and
+        // confused clients trying to parse the response.
         let pages = self.read_pages();
         for p in &pages {
             out.push(Resource {
                 uri: format!("coral://wiki/{}", p.frontmatter.slug),
                 name: p.frontmatter.slug.clone(),
                 description: format!("{:?} page", p.frontmatter.page_type),
-                mime_type: "text/markdown".into(),
+                mime_type: "application/json".into(),
             });
         }
         out
     }
 
-    fn read(&self, uri: &str) -> Option<String> {
+    fn read(&self, uri: &str) -> Option<(String, String)> {
         // v0.19.5 audit C1: previous wave 1 stub returned None for
         // every URI, which broke every MCP client trying to actually
         // consume the resources. The dispatch below is data-driven —
         // each URI maps to a single render_* helper.
-        match uri {
-            "coral://manifest" => self.render_manifest(),
-            "coral://lock" => self.render_lock(),
+        //
+        // v0.19.6 audit C1: returns `(body, mime_type)`. The mime
+        // type is sourced ONCE from the same catalog `list()`
+        // advertises, so `resources/list` and `resources/read` can
+        // never disagree — the previous server was hardcoding
+        // `text/markdown` for every read, silently relabeling
+        // `application/json` resources as markdown.
+        //
+        // Each render_* helper returns just the body string; the
+        // mime type is looked up via `mime_for_uri` below. Per-page
+        // URIs aren't in the static catalog (they're discovered at
+        // list-time); their JSON envelope payload is tagged
+        // `application/json` to match what `render_page` actually
+        // returns.
+        let body = match uri {
+            "coral://manifest" => self.render_manifest()?,
+            "coral://lock" => self.render_lock()?,
             "coral://graph" => {
                 // The graph is a thin slice of the manifest; lift it
                 // out so consumers don't have to re-deserialize.
@@ -271,26 +310,43 @@ impl ResourceProvider for WikiResourceProvider {
                         })
                     })
                     .collect();
-                Some(serde_json::json!({ "nodes": nodes }).to_string())
+                serde_json::json!({ "nodes": nodes }).to_string()
             }
-            "coral://wiki/_index" => self.render_aggregate_index(),
-            "coral://stats" => self.render_stats(),
+            "coral://wiki/_index" => self.render_aggregate_index()?,
+            "coral://stats" => self.render_stats()?,
             "coral://test-report/latest" => {
                 let report_path = self.project_root.join(".coral").join("test-report.json");
-                std::fs::read_to_string(&report_path).ok().or_else(|| {
-                    Some(serde_json::json!({"status": "no test report yet"}).to_string())
-                })
+                std::fs::read_to_string(&report_path)
+                    .ok()
+                    .unwrap_or_else(|| {
+                        serde_json::json!({"status": "no test report yet"}).to_string()
+                    })
             }
             other => {
                 // `coral://wiki/<rest>` — rest may be `_index`, a
                 // bare slug, or `<repo>/<slug>` etc.
                 let rest = other.strip_prefix("coral://wiki/")?;
                 if let Some(repo) = rest.strip_suffix("/_index") {
-                    return self.render_repo_index(repo);
+                    return Some((
+                        self.render_repo_index(repo)?,
+                        "application/json".to_string(),
+                    ));
                 }
-                self.render_page(rest)
+                // Per-page payload is the JSON envelope built in
+                // `render_page` (slug + frontmatter + body). It IS
+                // JSON, so we tag it as such — clients that want the
+                // raw markdown extract the `body` field.
+                return Some((self.render_page(rest)?, "application/json".to_string()));
             }
-        }
+        };
+        // Look up the catalog entry for the canonical URIs above so
+        // `resources/list` and `resources/read` agree on mimeType.
+        let mime = Self::static_catalog()
+            .into_iter()
+            .find(|r| r.uri == uri)
+            .map(|r| r.mime_type)
+            .unwrap_or_else(|| "application/json".to_string());
+        Some((body, mime))
     }
 }
 

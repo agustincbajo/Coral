@@ -6,6 +6,13 @@
 //! All three now route through [`is_safe_filename_slug`] before the
 //! slug is interpolated into a path.
 //!
+//! v0.19.6 audit H1 added [`is_safe_repo_name`] for repo names from
+//! `coral.toml` — a sibling check with the SAME allowlist (kebab /
+//! snake / ASCII alphanum). Before this, `name = "../escape"` in a
+//! `[[repos]]` block produced `<project_root>/repos/../escape` for
+//! `resolved_path`, and `coral project sync` then `git clone`d into
+//! that escaped path.
+//!
 //! The allowlist is intentionally tighter than POSIX would require —
 //! we only accept what kebab/snake-cased slugs need (`[a-zA-Z0-9_-]`)
 //! so any path-traversal or shell-metachar surprise is rejected at
@@ -46,6 +53,24 @@ pub fn is_safe_filename_slug(s: &str) -> bool {
         }
     }
     true
+}
+
+/// Returns `true` when `s` is a safe repo name suitable for direct
+/// path interpolation in `<project_root>/<path_template>` (where
+/// `path_template` substitutes `{name}` with this string).
+///
+/// Same allowlist as [`is_safe_filename_slug`]: ASCII alphanumeric
+/// plus `_`/`-`, length 1..=200, no leading `.` or `-`.
+///
+/// Kept as a separate function (with its own name) so future
+/// divergence (e.g. allowing `/` in scoped names like `scope/repo`)
+/// doesn't have to thread through every slug call site.
+///
+/// v0.19.6 audit H1: `coral project sync` would otherwise run
+/// `git clone <url> <project_root>/repos/<name>`, and
+/// `<name> = "../escape"` would write outside the project root.
+pub fn is_safe_repo_name(s: &str) -> bool {
+    is_safe_filename_slug(s)
 }
 
 #[cfg(test)]
@@ -109,6 +134,31 @@ mod tests {
             "foo'bar", "foo\"bar",
         ] {
             assert!(!is_safe_filename_slug(s), "should reject {s:?}");
+        }
+    }
+
+    /// v0.19.6 audit H1: the repo-name allowlist must reject
+    /// path-traversal segments like `..`, `../escape`, `foo/bar`.
+    #[test]
+    fn repo_name_rejects_traversal_and_separators() {
+        for bad in [
+            "../escape",
+            "..",
+            "foo/bar",
+            "foo\\bar",
+            ".hidden",
+            "-flag",
+            "",
+            "foo bar",
+        ] {
+            assert!(!is_safe_repo_name(bad), "should reject {bad:?}");
+        }
+    }
+
+    #[test]
+    fn repo_name_accepts_typical_names() {
+        for ok in ["api", "worker", "shared-types", "Foo_42", "x"] {
+            assert!(is_safe_repo_name(ok), "should accept {ok:?}");
         }
     }
 }

@@ -127,9 +127,25 @@ pub(crate) fn build_payload(prompt: &Prompt) -> Result<String, serde_json::Error
 }
 
 /// Build the curl invocation for a given prompt + body. Public to
-/// the crate so tests can assert the argv shape (audit H5/H6) without
-/// spawning a real process.
-pub(crate) fn build_curl(runner: &HttpRunner, prompt: &Prompt, body: &str) -> Command {
+/// the crate so tests can assert the argv shape (audit H5/H6/N2)
+/// without spawning a real process.
+///
+/// v0.19.6 audit N2: the prompt body is now piped through stdin
+/// (when no API key is set) or written to a sibling temp file and
+/// referenced via `--data-binary @<path>` (when an API key is also
+/// set, since `-H @-` already consumes all of stdin). Either way
+/// the body text never lands in argv where `ps` / `/proc/<pid>/cmdline`
+/// would expose it.
+///
+/// `body_path` is a per-call temp file path resolved by
+/// [`runner_body_tempfile_path`] (or `None` when stdin can carry the
+/// body). Caller is responsible for writing the body to that path
+/// BEFORE spawning, and for removing it after `wait_with_output`.
+pub(crate) fn build_curl(
+    runner: &HttpRunner,
+    prompt: &Prompt,
+    body_path: Option<&std::path::Path>,
+) -> Command {
     let mut cmd = Command::new("curl");
     cmd.args([
         "-s",
@@ -155,11 +171,38 @@ pub(crate) fn build_curl(runner: &HttpRunner, prompt: &Prompt, body: &str) -> Co
     if runner.api_key.is_some() {
         cmd.args(["-H", "@-"]);
     }
-    cmd.args(["-d", body]);
+    // v0.19.6 audit N2: body source. With an API key we already
+    // consumed stdin for headers — fall through to `--data-binary
+    // @<temp-file>`. Without an API key, stream the body via stdin
+    // so we don't touch the disk at all.
+    if let Some(p) = body_path {
+        // `@<path>` arg form: still leaks the path itself (which is a
+        // tmpfile name), but NOT the body contents.
+        cmd.args(["--data-binary", &format!("@{}", p.display())]);
+    } else {
+        cmd.args(["--data-binary", "@-"]);
+    }
     cmd.stdin(std::process::Stdio::piped());
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
     cmd
+}
+
+/// Resolve a per-call temp file path for the curl request body.
+/// Pid + nanos + random suffix keeps it unique without bringing in a
+/// new dep. Created/removed by the caller; see `build_curl` doc.
+///
+/// v0.19.6 audit N2.
+fn runner_body_tempfile_path() -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static N: AtomicU64 = AtomicU64::new(0);
+    let counter = N.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    std::env::temp_dir().join(format!("coral-runner-body-{pid}-{nanos}-{counter}.json"))
 }
 
 impl Runner for HttpRunner {
@@ -175,26 +218,76 @@ impl Runner for HttpRunner {
             "POST chat-completions"
         );
 
-        let mut cmd = build_curl(self, prompt, &body);
+        // v0.19.6 audit N2: route the body away from argv. When no API
+        // key is set, stdin is free → stream the body there. When an
+        // API key IS set, the H6 fix already claimed stdin for the
+        // header — write the body to a per-call temp file and pass it
+        // via `--data-binary @<path>`. Either way the body bytes never
+        // appear in `ps` / `/proc/<pid>/cmdline`.
+        let (body_path, body_via_stdin) = if self.api_key.is_some() {
+            let p = runner_body_tempfile_path();
+            std::fs::write(&p, body.as_bytes()).map_err(|e| {
+                RunnerError::Io(std::io::Error::other(format!(
+                    "writing request body to {}: {e}",
+                    p.display()
+                )))
+            })?;
+            (Some(p), false)
+        } else {
+            (None, true)
+        };
+
+        let mut cmd = build_curl(self, prompt, body_path.as_deref());
 
         let mut child = match cmd.spawn() {
             Ok(c) => c,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                if let Some(p) = &body_path {
+                    let _ = std::fs::remove_file(p);
+                }
                 return Err(RunnerError::NotFound);
             }
-            Err(e) => return Err(RunnerError::Io(e)),
+            Err(e) => {
+                if let Some(p) = &body_path {
+                    let _ = std::fs::remove_file(p);
+                }
+                return Err(RunnerError::Io(e));
+            }
         };
-        if let Some(key) = &self.api_key
-            && let Some(mut stdin) = child.stdin.take()
-        {
-            let header_line = format!("Authorization: Bearer {key}\n");
-            std::io::Write::write_all(&mut stdin, header_line.as_bytes()).map_err(|e| {
-                RunnerError::Io(std::io::Error::other(format!(
-                    "writing auth header to curl stdin: {e}"
-                )))
-            })?;
+        if let Some(mut stdin) = child.stdin.take() {
+            use std::io::Write;
+            // v0.19.5 audit H6: header via stdin so the bearer token
+            // never lands in argv.
+            if let Some(key) = &self.api_key {
+                let header_line = format!("Authorization: Bearer {key}\n");
+                stdin.write_all(header_line.as_bytes()).map_err(|e| {
+                    RunnerError::Io(std::io::Error::other(format!(
+                        "writing auth header to curl stdin: {e}"
+                    )))
+                })?;
+            }
+            // v0.19.6 audit N2: body via stdin only when there's no
+            // API key (since `-H @-` already consumed stdin).
+            if body_via_stdin {
+                stdin.write_all(body.as_bytes()).map_err(|e| {
+                    RunnerError::Io(std::io::Error::other(format!(
+                        "writing request body to curl stdin: {e}"
+                    )))
+                })?;
+            }
+            // Drop stdin so curl sees EOF and the request actually
+            // sends. Without this the child blocks waiting for more
+            // bytes from us.
+            drop(stdin);
         }
         let output = child.wait_with_output().map_err(RunnerError::Io)?;
+        if let Some(p) = &body_path {
+            // Best-effort cleanup. The body has restricted write
+            // permissions anyway (default umask), and tmp dirs get
+            // cleaned periodically by the OS, so a missed unlink is
+            // a small leak rather than a security regression.
+            let _ = std::fs::remove_file(p);
+        }
         let duration = start.elapsed();
 
         if !output.status.success() {
@@ -456,7 +549,9 @@ mod tests {
             user: "hi".into(),
             ..Default::default()
         };
-        let cmd = build_curl(&r, &prompt, "{}");
+        // With API key set, body goes via tempfile path.
+        let body_path = std::path::PathBuf::from("/tmp/coral-runner-test-body.json");
+        let cmd = build_curl(&r, &prompt, Some(&body_path));
         let argv: Vec<String> = cmd
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
@@ -488,7 +583,8 @@ mod tests {
             timeout: Some(std::time::Duration::from_secs(7)),
             ..Default::default()
         };
-        let cmd = build_curl(&r, &prompt, "{}");
+        // No API key → body via stdin.
+        let cmd = build_curl(&r, &prompt, None);
         let argv: Vec<String> = cmd
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
@@ -496,6 +592,72 @@ mod tests {
         assert!(
             argv.iter().any(|a| a == "--max-time"),
             "expected --max-time arg: {argv:?}"
+        );
+    }
+
+    /// v0.19.6 audit N2: regression — the prompt body itself must NOT
+    /// appear in argv. Pre-fix the JSON-serialized request body sat on
+    /// the command line as `-d <body>`, exposing it to every other
+    /// process via `ps` / `/proc/<pid>/cmdline`.
+    #[test]
+    fn build_curl_does_not_put_body_in_argv() {
+        let r = HttpRunner::new("http://example.invalid/v1/chat/completions")
+            .with_api_key("sk-test-secret");
+        let prompt = Prompt {
+            user: "the secret prompt content sentinel: pineapple-42".into(),
+            ..Default::default()
+        };
+        let body = build_payload(&prompt).expect("serialize");
+        // With API key set, run() routes body via tempfile.
+        let body_path = std::path::PathBuf::from("/tmp/coral-runner-test-body-2.json");
+        let cmd = build_curl(&r, &prompt, Some(&body_path));
+        let argv: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            argv.iter().all(|a| !a.contains("pineapple-42")),
+            "argv leaked the prompt content: {argv:?}"
+        );
+        assert!(
+            argv.iter().all(|a| !a.contains(body.as_str())),
+            "argv leaked the JSON body verbatim: {argv:?}"
+        );
+        // Body should be referenced via `--data-binary @<path>`.
+        assert!(
+            argv.iter().any(|a| a.starts_with('@')),
+            "missing @<path> body reference: {argv:?}"
+        );
+        // No bare `-d` arg should remain — the migration to
+        // `--data-binary` is intentional.
+        assert!(
+            !argv.iter().any(|a| a == "-d"),
+            "argv still contains `-d`; body migration to --data-binary missing: {argv:?}"
+        );
+    }
+
+    /// v0.19.6 audit N2: when no API key is set, the body is streamed
+    /// via stdin (`--data-binary @-`) instead of a tempfile. Either
+    /// way it stays out of argv.
+    #[test]
+    fn build_curl_streams_body_via_stdin_when_no_api_key() {
+        let r = HttpRunner::new("http://example.invalid/v1/chat/completions");
+        let prompt = Prompt {
+            user: "secret-no-key-12345".into(),
+            ..Default::default()
+        };
+        let cmd = build_curl(&r, &prompt, None);
+        let argv: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            argv.iter().any(|a| a == "@-"),
+            "expected `@-` stdin sentinel for body: {argv:?}"
+        );
+        assert!(
+            argv.iter().all(|a| !a.contains("secret-no-key-12345")),
+            "argv leaked the prompt content: {argv:?}"
         );
     }
 }

@@ -128,11 +128,20 @@ impl CoralToolDispatcher {
         // v0.19.5 audit M5: per-tool audit trail. Best-effort append;
         // the .coral dir might not exist yet (legacy projects), in
         // which case we skip silently rather than break the call.
+        //
+        // v0.19.6 audit M2: rotate the file once it crosses the cap so
+        // long-running MCP servers don't grow `.coral/audit.log` past
+        // the user's disk budget. Single-rotation is intentionally
+        // simple — `.coral/audit.log.1` holds the previous epoch and
+        // the active file restarts fresh. Users who need longer
+        // retention can wire up logrotate externally; a single rolled
+        // file keeps the binary policy-free.
         let dir = self.project_root.join(".coral");
         if std::fs::create_dir_all(&dir).is_err() {
             return;
         }
         let path = dir.join("audit.log");
+        Self::rotate_audit_log_if_needed(&path);
         let entry = serde_json::json!({
             "ts": chrono::Utc::now().to_rfc3339(),
             "tool": tool,
@@ -145,6 +154,37 @@ impl CoralToolDispatcher {
             .append(true)
             .open(&path)
             .and_then(|mut f| std::io::Write::write_all(&mut f, line.as_bytes()));
+    }
+
+    /// Maximum size of the active audit log before it's rotated to
+    /// `audit.log.1`. v0.19.6 audit M2: 16 MiB is the cap chosen so a
+    /// busy day's worth of MCP traffic still fits in one file (~150 KB
+    /// per call × 100k calls would still be under the cap), and so the
+    /// rotated `audit.log.1` doesn't grow large enough to cost much
+    /// disk.
+    const AUDIT_LOG_MAX_BYTES: u64 = 16 * 1024 * 1024;
+
+    /// If the active audit log exceeds `AUDIT_LOG_MAX_BYTES`, rename it
+    /// to `audit.log.1` (replacing any prior rolled file). Best-effort:
+    /// any I/O error is swallowed because audit logging must never
+    /// fail a tool call.
+    fn rotate_audit_log_if_needed(path: &Path) {
+        let size = match std::fs::metadata(path) {
+            Ok(m) => m.len(),
+            Err(_) => return, // file doesn't exist yet (or unreadable)
+        };
+        if size < Self::AUDIT_LOG_MAX_BYTES {
+            return;
+        }
+        // Determine sibling rolled path: `<name>.1`.
+        let mut rolled = path.as_os_str().to_os_string();
+        rolled.push(".1");
+        let rolled = std::path::PathBuf::from(rolled);
+        // `rename` replaces the target on POSIX; on Windows it errors
+        // if the target exists, so remove first. Both paths are
+        // best-effort.
+        let _ = std::fs::remove_file(&rolled);
+        let _ = std::fs::rename(path, &rolled);
     }
 }
 
@@ -328,5 +368,53 @@ mod tests {
         let log = std::fs::read_to_string(dir.path().join(".coral/audit.log"))
             .expect("audit log written");
         assert!(log.contains("\"tool\":\"search\""), "log was: {log}");
+    }
+
+    /// v0.19.6 audit M2: when `.coral/audit.log` crosses the cap, it
+    /// is rotated to `.coral/audit.log.1` and the active file restarts
+    /// fresh. Verifies single-rotation semantics — a second rotation
+    /// replaces the first.
+    #[test]
+    fn audit_log_rotates_at_size_cap() {
+        let dir = TempDir::new().unwrap();
+        make_project(dir.path());
+        let coral_dir = dir.path().join(".coral");
+        std::fs::create_dir_all(&coral_dir).unwrap();
+        let active = coral_dir.join("audit.log");
+        // Pre-seed the active log past the cap with a marker we can
+        // recognize after rotation.
+        let marker = "OLD-EPOCH-MARKER";
+        let mut content = String::new();
+        content.push_str(marker);
+        content.push('\n');
+        // Pad up to just over the cap.
+        while (content.len() as u64) < CoralToolDispatcher::AUDIT_LOG_MAX_BYTES + 1 {
+            content.push_str("padding-padding-padding-padding\n");
+        }
+        std::fs::write(&active, &content).unwrap();
+        let pre_size = std::fs::metadata(&active).unwrap().len();
+        assert!(pre_size > CoralToolDispatcher::AUDIT_LOG_MAX_BYTES);
+
+        // First call after the cap is exceeded must rotate.
+        let d = CoralToolDispatcher::new(dir.path().to_path_buf());
+        let _ = d.call("search", &serde_json::json!({"q": "Order"}));
+
+        let rolled = coral_dir.join("audit.log.1");
+        assert!(rolled.exists(), "audit.log.1 (rolled) must exist");
+        let rolled_content = std::fs::read_to_string(&rolled).unwrap();
+        assert!(
+            rolled_content.contains(marker),
+            "rolled file must contain the pre-rotation content"
+        );
+        // Active file restarted fresh — it contains only the new line.
+        let new_active = std::fs::read_to_string(&active).unwrap();
+        assert!(
+            !new_active.contains(marker),
+            "active log must be fresh after rotation; got:\n{new_active}"
+        );
+        assert!(
+            new_active.contains("\"tool\":\"search\""),
+            "post-rotation entry should land in the active file: {new_active}"
+        );
     }
 }

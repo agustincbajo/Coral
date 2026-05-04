@@ -148,16 +148,35 @@ pub fn parse(content: &str, path: impl Into<PathBuf>) -> Result<(Frontmatter, St
 /// in a previous invocation. Returns the empty string if the frontmatter
 /// block is unterminated; returns the original content if there's no
 /// frontmatter at all.
+///
+/// v0.19.6 audit N3: also recognizes CRLF (`\r\n`) line endings. Pages
+/// authored on Windows or pasted from Office tools commonly arrive
+/// with CRLF, and the previous LF-only fast path silently treated
+/// them as "no frontmatter" — the body field then ended up containing
+/// the YAML, causing the walk cache to disagree with the slow
+/// `parse()` path's output.
 pub fn body_after_frontmatter(content: &str) -> String {
-    if !content.starts_with("---\n") {
+    // Identify the opener (`---\n` for LF, `---\r\n` for CRLF) and the
+    // matching closer. Pick whichever line terminator the file uses
+    // and stick with it — mixed line endings inside a single
+    // frontmatter block aren't a real-world shape we need to handle.
+    let (open_len, close_seq, close_seq_len) = if content.starts_with("---\r\n") {
+        (5usize, "\r\n---\r\n", 7usize)
+    } else if content.starts_with("---\n") {
+        (4usize, "\n---\n", 5usize)
+    } else {
         return content.to_string();
-    }
-    let after_open = &content[4..];
-    if let Some(close_pos) = after_open.find("\n---\n") {
-        let body_start = 4 + close_pos + 5;
+    };
+    let after_open = &content[open_len..];
+    if let Some(close_pos) = after_open.find(close_seq) {
+        let body_start = open_len + close_pos + close_seq_len;
         let mut body = &content[body_start..];
-        if body.starts_with('\n') {
-            body = &body[1..];
+        // Drop ONE blank line after the closing `---` (canonical
+        // separator). Handle both LF and CRLF.
+        if let Some(rest) = body.strip_prefix("\r\n") {
+            body = rest;
+        } else if let Some(rest) = body.strip_prefix('\n') {
+            body = rest;
         }
         return body.to_string();
     }
@@ -439,6 +458,27 @@ body line 2
         let content = "---\nslug: x\nbody started\nno closing fence ever\n";
         let body = body_after_frontmatter(content);
         assert_eq!(body, "");
+    }
+
+    /// v0.19.6 audit N3: CRLF-line-ended pages must be parsed
+    /// correctly. Pre-fix the fast path's `starts_with("---\n")` check
+    /// rejected `\r\n`-terminated openers, the function silently
+    /// returned the entire CRLF document as "body", and the walk
+    /// cache's body diverged from the slow `parse()` path's body.
+    #[test]
+    fn body_after_frontmatter_handles_crlf_line_endings() {
+        let content = "---\r\nslug: x\r\ntype: module\r\n---\r\n\r\nbody line 1\r\nbody line 2\r\n";
+        let body = body_after_frontmatter(content);
+        assert_eq!(body, "body line 1\r\nbody line 2\r\n");
+    }
+
+    /// v0.19.6 audit N3: also handle CRLF documents with no blank
+    /// line after the close fence.
+    #[test]
+    fn body_after_frontmatter_handles_crlf_without_blank_separator() {
+        let content = "---\r\nslug: x\r\n---\r\nbody starts immediately\r\n";
+        let body = body_after_frontmatter(content);
+        assert_eq!(body, "body starts immediately\r\n");
     }
 
     #[test]

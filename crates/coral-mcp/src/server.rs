@@ -108,7 +108,9 @@ impl McpHandler {
 
     /// Run the stdio loop. Reads one JSON-RPC message per line until
     /// stdin closes. Each response is written to stdout followed by
-    /// a newline.
+    /// a newline. Notifications (requests with no `id`) are dispatched
+    /// for side effects but no response is emitted to stdout, per
+    /// JSON-RPC 2.0 §4.1.
     pub fn serve_stdio(&self) -> std::io::Result<()> {
         let stdin = std::io::stdin();
         let stdout = std::io::stdout();
@@ -121,10 +123,16 @@ impl McpHandler {
             if line.trim().is_empty() {
                 continue;
             }
-            let response = self.handle_line(&line);
-            let serialized = serde_json::to_string(&response).unwrap_or_else(|_| "{}".into());
-            writeln!(handle, "{serialized}")?;
-            handle.flush()?;
+            // v0.19.6 audit M3: `handle_line` now returns `Option<…>`
+            // — `None` for JSON-RPC notifications (no `id` field).
+            // Skip emitting anything for notifications so we don't
+            // confuse strict JSON-RPC clients that don't expect a
+            // response.
+            if let Some(response) = self.handle_line(&line) {
+                let serialized = serde_json::to_string(&response).unwrap_or_else(|_| "{}".into());
+                writeln!(handle, "{serialized}")?;
+                handle.flush()?;
+            }
         }
         Ok(())
     }
@@ -132,24 +140,34 @@ impl McpHandler {
     /// Public for tests: handle a single JSON-RPC line and return the
     /// response value (so we can exercise the dispatch matrix without
     /// stdin/stdout).
-    pub fn handle_line(&self, line: &str) -> serde_json::Value {
+    ///
+    /// v0.19.6 audit M3: returns `None` for JSON-RPC notifications
+    /// (requests without an `id` field). Per JSON-RPC 2.0 §4.1 the
+    /// server MUST NOT reply to a notification — even with an error.
+    /// Side effects (the actual handler dispatch) still run.
+    /// Parse errors and version errors STILL produce a response with
+    /// `id: null` because there's no way to know whether the malformed
+    /// payload was intended as a notification.
+    pub fn handle_line(&self, line: &str) -> Option<serde_json::Value> {
         let request: JsonRpcRequest = match serde_json::from_str(line) {
             Ok(r) => r,
             Err(e) => {
-                return serde_json::to_value(JsonRpcResponse {
-                    jsonrpc: "2.0",
-                    id: None,
-                    result: None,
-                    error: Some(JsonRpcError {
-                        code: -32700,
-                        message: format!("parse error: {e}"),
-                    }),
-                })
-                .unwrap();
+                return Some(
+                    serde_json::to_value(JsonRpcResponse {
+                        jsonrpc: "2.0",
+                        id: None,
+                        result: None,
+                        error: Some(JsonRpcError {
+                            code: -32700,
+                            message: format!("parse error: {e}"),
+                        }),
+                    })
+                    .unwrap(),
+                );
             }
         };
         if request.jsonrpc != "2.0" {
-            return error_response(request.id, -32600, "jsonrpc must be '2.0'");
+            return Some(error_response(request.id, -32600, "jsonrpc must be '2.0'"));
         }
         let result = match request.method.as_str() {
             "initialize" => self.method_initialize(),
@@ -162,10 +180,13 @@ impl McpHandler {
             "ping" => Ok(serde_json::json!({})),
             _ => Err(format!("unknown method: {}", request.method)),
         };
-        match result {
+        // Notifications: side effects ran above, but we MUST NOT emit
+        // a response — JSON-RPC 2.0 §4.1.
+        request.id.as_ref()?;
+        Some(match result {
             Ok(value) => ok_response(request.id, value),
             Err(message) => error_response(request.id, -32601, &message),
-        }
+        })
     }
 
     fn method_initialize(&self) -> std::result::Result<serde_json::Value, String> {
@@ -198,13 +219,19 @@ impl McpHandler {
             .get("uri")
             .and_then(|v| v.as_str())
             .ok_or_else(|| "missing required parameter `uri`".to_string())?;
-        let body = self
+        // v0.19.6 audit C1: forward the provider-supplied mimeType
+        // instead of hardcoding `text/markdown`. Hardcoding was
+        // silently mislabeling every JSON resource in the catalog
+        // (`coral://manifest`, `coral://lock`, `coral://stats`, etc.)
+        // as markdown — clients then either fell back to plain text or
+        // failed to parse the JSON body.
+        let (body, mime_type) = self
             .resources
             .read(uri)
             .ok_or_else(|| format!("resource not found: {uri}"))?;
         Ok(serde_json::json!({
             "contents": [
-                { "uri": uri, "mimeType": "text/markdown", "text": body }
+                { "uri": uri, "mimeType": mime_type, "text": body }
             ]
         }))
     }
@@ -368,6 +395,7 @@ mod tests {
             "params": params
         });
         h.handle_line(&req.to_string())
+            .expect("requests with `id` must produce a response")
     }
 
     #[test]
@@ -480,8 +508,7 @@ mod tests {
     fn invalid_jsonrpc_version_returns_error() {
         let h = handler(true);
         let line = r#"{"jsonrpc":"1.0","id":1,"method":"ping"}"#;
-        let resp: serde_json::Value =
-            serde_json::from_value(h.handle_line(line)).unwrap_or(serde_json::Value::Null);
+        let resp = h.handle_line(line).expect("expected response");
         assert!(
             resp["error"]["message"]
                 .as_str()
@@ -493,8 +520,36 @@ mod tests {
     #[test]
     fn malformed_json_returns_parse_error() {
         let h = handler(true);
-        let resp: serde_json::Value =
-            serde_json::from_value(h.handle_line("not json")).unwrap_or(serde_json::Value::Null);
+        let resp = h.handle_line("not json").expect("expected response");
         assert_eq!(resp["error"]["code"], -32700);
+    }
+
+    /// v0.19.6 audit M3: a JSON-RPC request without `id` is a
+    /// notification — server MUST NOT reply (JSON-RPC 2.0 §4.1).
+    /// Verifies handle_line returns `None` even on a known method.
+    #[test]
+    fn notification_without_id_produces_no_response() {
+        let h = handler(true);
+        // ping with no `id` → notification.
+        let line = r#"{"jsonrpc":"2.0","method":"ping"}"#;
+        assert!(
+            h.handle_line(line).is_none(),
+            "notification must produce no response"
+        );
+    }
+
+    /// v0.19.6 audit M3: notifications for unknown methods also stay
+    /// silent. The dispatcher records the side-effect-free error
+    /// internally but the wire stays empty — a misnamed `tools/call`
+    /// notification shouldn't spam stdout with an error envelope the
+    /// client never asked for.
+    #[test]
+    fn notification_for_unknown_method_produces_no_response() {
+        let h = handler(true);
+        let line = r#"{"jsonrpc":"2.0","method":"frobnicate","params":{}}"#;
+        assert!(
+            h.handle_line(line).is_none(),
+            "unknown-method notification must produce no response"
+        );
     }
 }

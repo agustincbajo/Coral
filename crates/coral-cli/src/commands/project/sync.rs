@@ -88,56 +88,75 @@ pub fn run(args: SyncArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
     };
 
     let lockfile_path = project.lockfile_path();
-    let mut lock = Lockfile::load_or_default(&lockfile_path)
-        .with_context(|| format!("loading {}", lockfile_path.display()))?;
     let now = Utc::now();
 
+    // v0.19.6 audit H3: the load+modify+save sequence below was racy
+    // under concurrent `coral project sync --repo A` / `--repo B`
+    // invocations — both processes would `load_or_default` outside any
+    // lock, mutate their own in-memory copy, then `Lockfile::write_atomic`
+    // would clobber. Same shape as the v0.19.5 H7 ingest-race fix
+    // against `index.md`. Wrap the whole upsert+prune+write in
+    // `with_exclusive_lock` so cross-process syncs serialize.
+    //
+    // We re-read INSIDE the lock so the second writer picks up the
+    // first writer's freshly-persisted entries before applying its own
+    // upserts. We call `atomic_write_string` directly (rather than
+    // `Lockfile::write_atomic`) — `Lockfile::write_atomic` itself
+    // acquires the same flock from a fresh FD, which on Linux/macOS
+    // can self-deadlock when re-entered from the same process.
     let mut failed = 0usize;
     let mut succeeded = 0usize;
     let mut skipped = 0usize;
-    for (plan, outcome) in &outcomes {
-        match outcome {
-            Ok(o) => {
-                report_one(&plan.name, o);
-                if let Some(sha) = o.sha() {
-                    lock.upsert(
-                        &plan.name,
-                        RepoLockEntry {
-                            url: plan.url.clone(),
-                            r#ref: plan.r#ref.clone(),
-                            sha: sha.to_string(),
-                            synced_at: now,
-                        },
-                    );
-                    succeeded += 1;
-                } else if o.is_skipped() {
-                    skipped += 1;
-                } else {
+    let manifest_names: std::collections::BTreeSet<String> =
+        project.repos.iter().map(|r| r.name.clone()).collect();
+    coral_core::atomic::with_exclusive_lock(&lockfile_path, || {
+        let mut lock = Lockfile::load_or_default(&lockfile_path).map_err(|e| {
+            coral_core::error::CoralError::Walk(format!(
+                "loading {}: {}",
+                lockfile_path.display(),
+                e
+            ))
+        })?;
+        for (plan, outcome) in &outcomes {
+            match outcome {
+                Ok(o) => {
+                    report_one(&plan.name, o);
+                    if let Some(sha) = o.sha() {
+                        lock.upsert(
+                            &plan.name,
+                            RepoLockEntry {
+                                url: plan.url.clone(),
+                                r#ref: plan.r#ref.clone(),
+                                sha: sha.to_string(),
+                                synced_at: now,
+                            },
+                        );
+                        succeeded += 1;
+                    } else if o.is_skipped() {
+                        skipped += 1;
+                    } else {
+                        failed += 1;
+                    }
+                }
+                Err(e) => {
+                    eprintln!("✘ {}: {}", plan.name, e);
                     failed += 1;
                 }
             }
-            Err(e) => {
-                eprintln!("✘ {}: {}", plan.name, e);
-                failed += 1;
-            }
         }
-    }
-
-    // Drop lockfile entries for repos no longer in the manifest.
-    let manifest_names: std::collections::BTreeSet<&str> =
-        project.repos.iter().map(|r| r.name.as_str()).collect();
-    let stale: Vec<String> = lock
-        .repos
-        .keys()
-        .filter(|k| !manifest_names.contains(k.as_str()))
-        .cloned()
-        .collect();
-    for name in stale {
-        lock.repos.remove(&name);
-    }
-
-    lock.write_atomic(&lockfile_path)
-        .with_context(|| format!("writing {}", lockfile_path.display()))?;
+        // Drop lockfile entries for repos no longer in the manifest.
+        let stale: Vec<String> = lock
+            .repos
+            .keys()
+            .filter(|k| !manifest_names.contains(k.as_str()))
+            .cloned()
+            .collect();
+        for name in stale {
+            lock.repos.remove(&name);
+        }
+        coral_core::atomic::atomic_write_string(&lockfile_path, &lock.to_string())
+    })
+    .with_context(|| format!("syncing {}", lockfile_path.display()))?;
 
     println!();
     println!(

@@ -120,9 +120,9 @@ impl WikiLog {
 
     /// **Atomic single-entry append.** Opens the log file in append mode
     /// and writes a single formatted entry line. Race-free under
-    /// concurrent writers — POSIX guarantees `O_APPEND` writes ≤ PIPE_BUF
-    /// (typically 4096 bytes) are atomic, and a single log line is well
-    /// under that limit.
+    /// concurrent writers — the entire create-or-append sequence runs
+    /// inside an `flock(2)` advisory lock so the first-create header
+    /// write and any racing append-only writers are serialized.
     ///
     /// This is the recommended path for callers that only need to add
     /// ONE entry and don't care about the full history (e.g. `coral
@@ -131,12 +131,23 @@ impl WikiLog {
     /// `WikiLog::append` → `WikiLog::save` pattern has under concurrent
     /// writers (documented in `crates/coral-core/tests/concurrency.rs`).
     ///
-    /// On the first write, also seeds the YAML frontmatter + heading
-    /// block via `OpenOptions::create_new` to guarantee at most one
-    /// thread writes the header (any racing writer that loses the
-    /// `create_new` race opens in plain append mode and only writes its
-    /// entry line, which is correct because the winner has already
-    /// produced the header before its entry).
+    /// v0.19.6 audit C2: previously the create vs. append branches each
+    /// raced on their own. Two threads could both win the
+    /// `create_new(true)` AlreadyExists / Ok branches respectively;
+    /// `O_APPEND` made each `write()` atomic-seek-to-EOF, but the loser
+    /// could land its single-line entry BETWEEN the winner's header
+    /// `write_all` and the winner's entry `write_all`, producing
+    /// on-disk garbage like:
+    ///   - <loser-entry>
+    ///   ---
+    ///   type: log
+    ///   ---
+    ///   # Wiki operation log
+    ///   - <winner-entry>
+    /// Wrapping the whole sequence in `with_exclusive_lock` makes the
+    /// header-then-entry pair indivisible.
+    ///
+    /// On the first write, seeds the YAML frontmatter + heading block.
     ///
     /// Creates parent dirs.
     pub fn append_atomic(
@@ -166,58 +177,50 @@ impl WikiLog {
             entry.summary
         );
 
-        // Try to create-and-seed the file with header + entry. If it
-        // already exists, fall through to the plain append path.
-        //
-        // CRITICAL: even the first-writer path uses `append(true)` to
-        // get O_APPEND semantics. Without it, the first writer's cursor
-        // sits at offset 0 and a concurrent append-mode writer (one
-        // that lost the create_new race) can write at the current EOF
-        // — then the first writer's NEXT write (the entry line, after
-        // the header) overwrites the append-writer's bytes because the
-        // first writer's cursor advanced linearly. With O_APPEND on
-        // both sides, every write atomically seeks to EOF first, so
-        // bytes are never overwritten regardless of interleaving.
-        //
-        // This race is benign for the header itself: the winner writes
-        // header+entry; concurrent first-time writers lose create_new
-        // and only write their entry line. The header is written at
-        // most once.
-        match fs::OpenOptions::new()
-            .append(true)
-            .create_new(true)
-            .open(path)
-        {
-            Ok(mut f) => {
-                let header = "---\ntype: log\n---\n\n# Wiki operation log\n\n";
-                f.write_all(header.as_bytes())
-                    .and_then(|_| f.write_all(line.as_bytes()))
-                    .map_err(|source| CoralError::Io {
+        // v0.19.6 audit C2: serialize the entire create-or-append
+        // sequence so the header can never be split across racing
+        // writers' bytes. `with_exclusive_lock` also guards us against
+        // peer processes (cross-process safety: same primitive used by
+        // `index.md` and `coral.lock`).
+        crate::atomic::with_exclusive_lock(path, || {
+            match fs::OpenOptions::new()
+                .append(true)
+                .create_new(true)
+                .open(path)
+            {
+                Ok(mut f) => {
+                    let header = "---\ntype: log\n---\n\n# Wiki operation log\n\n";
+                    f.write_all(header.as_bytes())
+                        .and_then(|_| f.write_all(line.as_bytes()))
+                        .map_err(|source| CoralError::Io {
+                            path: path.to_path_buf(),
+                            source,
+                        })?;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    let mut f =
+                        fs::OpenOptions::new()
+                            .append(true)
+                            .open(path)
+                            .map_err(|source| CoralError::Io {
+                                path: path.to_path_buf(),
+                                source,
+                            })?;
+                    f.write_all(line.as_bytes())
+                        .map_err(|source| CoralError::Io {
+                            path: path.to_path_buf(),
+                            source,
+                        })?;
+                }
+                Err(source) => {
+                    return Err(CoralError::Io {
                         path: path.to_path_buf(),
                         source,
-                    })?;
+                    });
+                }
             }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                let mut f = fs::OpenOptions::new()
-                    .append(true)
-                    .open(path)
-                    .map_err(|source| CoralError::Io {
-                        path: path.to_path_buf(),
-                        source,
-                    })?;
-                f.write_all(line.as_bytes())
-                    .map_err(|source| CoralError::Io {
-                        path: path.to_path_buf(),
-                        source,
-                    })?;
-            }
-            Err(source) => {
-                return Err(CoralError::Io {
-                    path: path.to_path_buf(),
-                    source,
-                });
-            }
-        }
+            Ok(())
+        })?;
 
         Ok(entry)
     }
@@ -386,6 +389,56 @@ random nonsense
             assert!(
                 summaries.contains(expected.as_str()),
                 "missing entry: {expected}"
+            );
+        }
+    }
+
+    /// v0.19.6 audit C2 regression: under concurrent first-create
+    /// writers the on-disk file must NEVER show a log entry BEFORE the
+    /// frontmatter header. Pre-fix the loser of the `create_new` race
+    /// could land its `- <entry>` line between the winner's `header`
+    /// and `entry` writes, producing:
+    ///   `- <loser>\n---\ntype: log\n---\n# Wiki operation log\n- <winner>\n`
+    /// Post-fix the entire sequence runs under `with_exclusive_lock`, so
+    /// the file always starts with the canonical header block.
+    #[test]
+    fn append_atomic_first_create_race_never_produces_entry_before_header() {
+        let dir = TempDir::new().expect("tempdir");
+        let target = dir.path().join("log.md");
+        const N: usize = 8;
+        std::thread::scope(|s| {
+            for i in 0..N {
+                let target = target.clone();
+                s.spawn(move || {
+                    WikiLog::append_atomic(&target, "race", format!("entry-{i}"))
+                        .expect("append_atomic");
+                });
+            }
+        });
+        let raw = std::fs::read_to_string(&target).expect("read raw log");
+        // Header must appear at the VERY START — never preceded by an
+        // entry line.
+        assert!(
+            raw.starts_with("---\ntype: log\n---\n\n# Wiki operation log\n"),
+            "header was split / preceded by an entry; raw bytes:\n{raw}"
+        );
+        // All N entries present.
+        let final_log = WikiLog::parse(&raw).expect("parse");
+        assert_eq!(
+            final_log.entries.len(),
+            N,
+            "expected {N} entries, got {}; raw:\n{raw}",
+            final_log.entries.len()
+        );
+        // Cross-check: no entry line appears before the header marker.
+        let header_pos = raw
+            .find("# Wiki operation log")
+            .expect("header marker missing");
+        let prelude = &raw[..header_pos];
+        for line in prelude.lines() {
+            assert!(
+                !line.starts_with("- "),
+                "found entry line before header in prelude: {line:?}"
             );
         }
     }
