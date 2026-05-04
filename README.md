@@ -5,10 +5,12 @@
 [![CI](https://github.com/agustincbajo/Coral/actions/workflows/ci.yml/badge.svg)](https://github.com/agustincbajo/Coral/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/agustincbajo/Coral?display_name=tag)](https://github.com/agustincbajo/Coral/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-700%2B%20passing-brightgreen)](#testing--ci)
+[![Tests](https://img.shields.io/badge/tests-928%20passing-brightgreen)](#testing--ci)
 [![Codecov](https://codecov.io/gh/agustincbajo/Coral/branch/main/graph/badge.svg)](https://codecov.io/gh/agustincbajo/Coral)
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange?logo=rust)](rust-toolchain.toml)
 [![MCP](https://img.shields.io/badge/MCP-2025--11--25-blue?logo=anthropic)](https://modelcontextprotocol.io/)
+[![BC](https://img.shields.io/badge/BC-v0.15%20single--repo-blue)](#backward-compatibility)
+[![Audit](https://img.shields.io/badge/multi--agent_audited-3_cycles-green)](#how-coral-itself-was-built)
 
 Coral started as a [Karpathy-style LLM Wiki](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) maintainer for a single repo. **As of v0.19** it's a full developer-experience platform for microservice-shaped projects: declare your repos in a `coral.toml`, bring up a multi-service environment, run functional tests, and expose the whole thing to coding agents (Claude Code, Cursor, Continue, Cline, Goose, Codex, Copilot) via Model Context Protocol — all from one binary, all open source, all locally runnable.
 
@@ -25,12 +27,17 @@ Coral started as a [Karpathy-style LLM Wiki](https://gist.github.com/karpathy/44
 - [Quickstart — multi-repo](#quickstart--multi-repo-5-minutes)
 - [Quickstart — environments + tests](#quickstart--environments--tests)
 - [Quickstart — MCP server for coding agents](#quickstart--mcp-server-for-coding-agents)
+- [Cookbook — common workflows](#cookbook--common-workflows)
+- [MCP client integration (Claude Code, Cursor, Continue, …)](#mcp-client-integration)
+- [Output examples — what each command actually prints](#output-examples)
 - [Subcommand reference](#subcommand-reference)
 - [The wiki schema](#the-wiki-schema)
 - [The `coral.toml` manifest](#the-coraltoml-manifest)
 - [The `coral.lock` lockfile](#the-corallock-lockfile)
 - [Test schema (`.coral/tests/*.{yaml,hurl}`)](#test-schema-coraltestsyamlhurl)
 - [Backward compatibility](#backward-compatibility)
+- [Comparison vs adjacent tools](#comparison-vs-adjacent-tools)
+- [Security model](#security-model)
 - [CI integration](#ci-integration)
 - [Multi-provider LLM support](#multi-provider-llm-support)
 - [Auth setup](#auth-setup)
@@ -39,6 +46,8 @@ Coral started as a [Karpathy-style LLM Wiki](https://gist.github.com/karpathy/44
 - [Performance](#performance)
 - [Testing & CI](#testing--ci)
 - [Troubleshooting](#troubleshooting)
+- [FAQ](#faq)
+- [Glossary](#glossary)
 - [Roadmap](#roadmap)
 - [How Coral itself was built](#how-coral-itself-was-built)
 - [Contributing](#contributing)
@@ -49,29 +58,30 @@ Coral started as a [Karpathy-style LLM Wiki](https://gist.github.com/karpathy/44
 
 ## What you get
 
-A single `coral` binary (~6.3 MB stripped, statically linked, MSRV 1.85) with **36 leaf subcommands** (28 top-level commands, four of which group sub-subcommands) across five layers:
+A single `coral` binary (~6.3 MB stripped, statically linked, MSRV 1.85, ad-hoc-codesigned on macOS) with **37 leaf subcommands** (28 top-level commands, four of which group sub-subcommands) across five layers:
 
 | Layer | Commands | Since |
 |---|---|---|
 | **Wiki** | `init` `bootstrap` `ingest` `query` `lint` `consolidate` `stats` `sync` `onboard` `prompts` `search` `export` `notion-push` `validate-pin` `diff` `status` `history` | v0.1+ |
 | **Multi-repo** | `project new/list/add/sync/doctor/lock/graph` | v0.16 |
-| **Environments** | `up` `down` `env status/logs/exec` | v0.17 |
-| **Functional testing** | `test` `test-discover` `verify` | v0.18 |
+| **Environments** | `up` `down` `env status/logs/exec/import` | v0.17, v0.19.7 (`import`) |
+| **Functional testing** | `test` `test-discover` `verify` `contract check` | v0.18, v0.19 (`contract`) |
 | **AI ecosystem** | `mcp serve` `export-agents` `context-build` | v0.19 |
 
 Plus:
 
 - **8 Rust crates** in a workspace: `coral-cli`, `coral-core`, `coral-env`, `coral-test`, `coral-mcp`, `coral-runner`, `coral-lint`, `coral-stats`.
-- **5 LLM runner implementations** (`Claude`, `Gemini`, `Local` llama.cpp, `Http` OpenAI-compat, `Mock` for tests).
+- **5 LLM runner implementations** (`Claude`, `Gemini`, `Local` llama.cpp, `Http` OpenAI-compat, `Mock` for tests). API keys never appear in process argv (piped via stdin); request bodies never appear in argv either (per-call tempfile mode 0600 via RAII guard).
 - **3 embeddings providers** (`Voyage`, `OpenAI`, `Mock`).
 - **2 storage backends** (JSON default, SQLite via `CORAL_EMBEDDINGS_BACKEND=sqlite`).
-- **9 structural lint checks** + 1 LLM-driven semantic check + auto-fix routing.
+- **9 structural lint checks** + 1 LLM-driven semantic check + 1 prompt-injection detector (`coral lint --check-injection`) + auto-fix routing.
 - **5 export formats** for the wiki (`markdown-bundle`, `json`, `notion-json`, `jsonl`, `html`).
 - **5 export formats** for AI agent instructions (`agents-md`, `claude-md`, `cursor-rules`, `copilot`, `llms-txt`) — manifest-driven, NOT LLM-driven.
 - **9 `TestKind` variants** (`Healthcheck`, `UserDefined`, `LlmGenerated`, `Contract`, `PropertyBased`, `Recorded`, `Event`, `Trace`, `E2eBrowser`).
-- **6 MCP resources + 5 read-only tools (3 more behind `--allow-write-tools`) + 3 prompts** exposed via JSON-RPC 2.0 stdio.
-- **End-to-end concurrency safety**: atomic writes (`tmp + rename`), cross-process `flock(2)` locking, race-free parallel `coral ingest`.
-- **Backward-compat guarantee**: every v0.15 single-repo workflow keeps working — pinned by a dedicated `bc-regression` test job that runs on every PR.
+- **6 MCP resources + 5 read-only tools (3 more behind `--allow-write-tools`) + 3 prompts** exposed via JSON-RPC 2.0 stdio. MCP `mimeType` matches actual payload per resource (catalog-driven). `.coral/audit.log` rotates at 16 MiB. Notification methods (no `id`) silently no-op per JSON-RPC 2.0 §4.1.
+- **End-to-end concurrency safety**: atomic writes (`tmp + rename`), cross-process `flock(2)` locking, race-free parallel `coral ingest` AND `coral project sync`. `WikiLog::append_atomic` is race-free under contending writers (header+entry sequence cannot be reordered).
+- **Hardened against adversarial inputs**: slug allowlist (`is_safe_filename_slug` + `is_safe_repo_name`) at every interpolation site; `--` separator before user-controlled positionals in every `git` invocation (CVE-2017-1000117 / CVE-2024-32004 family); 32 MiB cap on every `read_to_string` of user-supplied content; secret scrubbing in every `RunnerError` Display.
+- **Backward-compat guarantee**: every v0.15 single-repo workflow keeps working — pinned by a dedicated `bc-regression` test job (6 fixtures) that runs on every PR.
 
 ---
 
@@ -421,6 +431,487 @@ The loader uses TF-IDF ranking + backlink BFS + greedy fill under your token bud
 
 ---
 
+## Cookbook — common workflows
+
+Real-world recipes that show how the layers compose. Each one is copy-paste-ready — every command has been exercised against the test suite or in dogfooding.
+
+### Recipe 1 — Stand up a new microservices project from zero
+
+You have nothing. You want a multi-repo project with wiki, dev environment, and smoke tests.
+
+```bash
+mkdir orchestra && cd orchestra
+git init -q && git commit --allow-empty -qm "init"
+
+# 1. Multi-repo manifest
+coral project new orchestra
+coral project add api    --remote github --tags service,team:platform
+coral project add worker --remote github --tags service,team:data
+coral project add shared --remote github --tags library
+
+# 2. Resolve every repo's URL via the [remotes.github] template,
+#    parallel-clone, write coral.lock with resolved SHAs.
+coral project sync
+
+# 3. Aggregated wiki — Coral compiles a Markdown page per concept
+#    cross-repo. Slugs become `<repo>/<slug>` automatically.
+coral bootstrap --apply
+
+# 4. Verify everything's coherent
+coral lint --severity critical          # exits 0 → ready to ship
+coral status --format markdown          # daily-use dashboard
+```
+
+After this you have `coral.toml` + `coral.lock` + `repos/{api,worker,shared}/` + `.wiki/` + `.coral/`. Commit them all (`.gitignore` for `repos/` if you don't want to vendor — `coral project sync` re-clones on demand).
+
+### Recipe 2 — Migrate from raw `docker-compose.yml`
+
+You already have a `docker-compose.yml` and don't want to author the `[[environments]]` block from scratch.
+
+```bash
+coral env import docker-compose.yml > /tmp/imported.toml
+# Review the output. Things Coral couldn't translate cleanly land as
+# `# TODO:` comments — addresses long-form depends_on, list-form
+# environment, port ranges, extends/profiles/volumes/networks.
+
+# Paste the contents into your coral.toml as a top-level [[environments]]
+# block. Then bring it up:
+coral up --env dev
+coral verify                            # runs the imported healthchecks
+```
+
+The importer is **conservative + advisory**. Only fields that round-trip cleanly through `EnvironmentSpec` are emitted. Heuristics infer `kind = "http"` from `CMD ["curl", "-f", "http://.../health"]` patterns and `kind = "exec"` from arbitrary `CMD-SHELL` lines via `sh -c`. Compose duration strings (`5s`, `1m30s`, `2h`) parse to seconds.
+
+### Recipe 3 — Onboard a new contributor in 30 seconds
+
+The wiki is the persistent memory. Use it.
+
+```bash
+# 1. Generate a personalized reading path. The runner picks 5–10 pages
+#    in dependency order based on the profile.
+coral onboard --profile backend --apply
+
+# 2. Or, agent-friendly: dump a curated context-budgeted bundle.
+coral context-build --query "how does the auth flow work" --budget 80000 > context.md
+# Paste context.md into Claude Code, Cursor, ChatGPT, anything with a
+# context window — the bundle sorts by (confidence desc, length asc)
+# under the budget cap. No LLM was invoked to assemble it.
+
+# 3. For a structured first day:
+coral export-agents --format claude-md --write    # CLAUDE.md
+coral export-agents --format cursor-rules --write # .cursor/rules/coral.mdc
+coral export-agents --format llms-txt --write     # llms.txt
+```
+
+The agent-instruction files are **manifest-driven, not LLM-driven** — they render deterministically from `[project]`, `[[repos]]`, `[hooks]` (when present) so re-running produces byte-identical output. Empirical context-engineering work (incl. [Anthropic's published guidance](https://www.anthropic.com/engineering/context-engineering)) has consistently found LLM-synthesised AGENTS.md files degrade agent task success vs. deterministic templates.
+
+### Recipe 4 — Cross-repo contract testing
+
+Catch interface drift between a provider's `openapi.yaml` and a consumer's `.coral/tests/` BEFORE the test environment even comes up.
+
+```bash
+# Setup: provider repo declares its API; consumer repo declares its
+# expectations as test fixtures.
+echo '
+openapi: 3.0.0
+info: { title: api, version: 1.0 }
+paths:
+  /users:
+    get:
+      responses: { "200": { description: ok } }
+' > repos/api/openapi.yaml
+
+mkdir -p repos/worker/.coral/tests
+echo '
+name: worker-against-api
+service: worker
+steps:
+  - http: GET /users
+    expect: { status: 200 }
+' > repos/worker/.coral/tests/api.yaml
+
+# Drift detection — deterministic, no LLM. Use --strict to gate CI.
+coral contract check --strict --format json > contract-report.json
+# exit 0 → consumer + provider agree
+# exit non-zero → drift report with structured findings
+```
+
+`coral contract check` walks every `[[repos]] depends_on` edge, parses the upstream's OpenAPI spec, and diffs against every `.coral/tests/**` reference (yaml + hurl). Findings include `UnknownEndpoint`, `UnknownMethod`, `StatusDrift`, `MissingProviderSpec`, `MalformedProviderSpec`. Generates the same JSON shape as `coral test --format junit` so existing CI reporters can consume it.
+
+### Recipe 5 — Continuous wiki maintenance with `coral ingest`
+
+Wire `coral ingest` into your post-commit / post-merge workflow so the wiki stays current automatically.
+
+```bash
+# In CI (.github/workflows/ingest.yml):
+- name: Update Coral wiki
+  run: |
+    coral ingest --apply --severity warning  # idempotent; uses last_commit
+    if [ -n "$(git status --porcelain .wiki/)" ]; then
+      git config user.name  "coral-bot"
+      git config user.email "coral-bot@example.com"
+      git add .wiki/
+      git commit -m "chore(wiki): coral ingest"
+      git push
+    fi
+```
+
+Or with `--affected` for sub-repo selectivity in multi-repo projects:
+
+```bash
+coral ingest --affected --since main~10 --apply
+# Only repos whose tip changed since main~10 are re-ingested,
+# DFS-walking depends_on so downstream consumers also refresh.
+```
+
+### Recipe 6 — Hardened production posture
+
+If your wiki is committed to a public repo and accepts external PRs, lock it down.
+
+```bash
+# 1. Reject prompt-injection patterns at lint time.
+coral lint --check-injection --severity warning
+# Detects `<|system|>`, `</system>`, base64 runs >100 chars, unicode
+# bidi (U+202E) and tag chars (U+E0000–U+E007F), confidence-drop
+# instruction patterns.
+
+# 2. Tag every repo with a trust_level (manifest field, planned for
+#    v0.20+). Until then, gate `coral query` with --strict so cross-repo
+#    citations are required.
+
+# 3. Run `coral project doctor` on every PR.
+coral project doctor --format json
+# Checks: clones present, ref drift, uncommitted changes, lockfile
+# staleness, auth setup per remote.
+
+# 4. The CI workflow already runs cargo audit + cargo deny.
+#    Add a step that re-asserts no dependencies bring in unsafe
+#    licenses or known CVEs.
+```
+
+### Recipe 7 — Connect Coral to a coding agent
+
+See the next section ([MCP client integration](#mcp-client-integration)) for vendor-specific configuration. Quick taste:
+
+```bash
+# Boot Coral as an MCP server (stdio transport, read-only by default).
+coral mcp serve --transport stdio &
+
+# Or HTTP/SSE for clients that prefer that:
+coral mcp serve --transport http --port 3737 --read-only false &
+# (--read-only false enables the 5 read-only tools; --allow-write-tools
+#  additionally enables the 3 write tools.)
+```
+
+Test the boot manually:
+
+```bash
+echo '{"jsonrpc":"2.0","id":1,"method":"resources/list","params":{}}' | coral mcp serve --transport stdio
+# → {"jsonrpc":"2.0","id":1,"result":{"resources":[...6 catalog URIs...]}}
+```
+
+---
+
+## MCP client integration
+
+Coral speaks Model Context Protocol 2025-11-25. Below are copy-paste configs for the common clients.
+
+### Claude Code (`claude` CLI)
+
+Edit `~/.claude/settings.json` (or `.claude/settings.json` in the project root):
+
+```json
+{
+  "mcpServers": {
+    "coral": {
+      "command": "coral",
+      "args": ["mcp", "serve", "--transport", "stdio"],
+      "env": {
+        "RUST_LOG": "coral_mcp=info"
+      }
+    }
+  }
+}
+```
+
+After restart, Claude Code can read `coral://manifest`, `coral://lock`, `coral://wiki/<repo>/<slug>`, `coral://wiki/_index`, `coral://stats`, and call the read-only tools (`query`, `search`, `find_backlinks`, `affected_repos`, `verify`).
+
+To enable write tools (`run_test` plus 2 more, gated):
+
+```json
+"args": ["mcp", "serve", "--transport", "stdio", "--allow-write-tools"]
+```
+
+Every write-tool invocation is logged to `.coral/audit.log` (rotates at 16 MiB).
+
+### Cursor
+
+In Cursor's MCP settings (Cmd+, → MCP Servers):
+
+```json
+{
+  "name": "coral",
+  "command": "coral mcp serve --transport stdio",
+  "cwd": "/absolute/path/to/your/project"
+}
+```
+
+Same resource + tool catalog as Claude Code.
+
+### Continue
+
+`~/.continue/config.yaml`:
+
+```yaml
+mcpServers:
+  - name: coral
+    command: coral
+    args:
+      - mcp
+      - serve
+      - --transport
+      - stdio
+```
+
+### Cline
+
+Cline reads `.cline/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "coral": {
+      "command": "coral",
+      "args": ["mcp", "serve", "--transport", "stdio"]
+    }
+  }
+}
+```
+
+### Goose
+
+`~/.config/goose/config.yaml`:
+
+```yaml
+extensions:
+  coral:
+    type: stdio
+    cmd: coral mcp serve --transport stdio
+```
+
+### Generic JSON-RPC over stdio
+
+For any client that speaks raw MCP JSON-RPC, `coral mcp serve --transport stdio` is the entry point. The server announces `protocolVersion: "2025-11-25"` in the `initialize` handshake and responds to `resources/list`, `resources/read`, `tools/list`, `tools/call`, `prompts/list`, `prompts/get`. Notifications (no `id` field) silently no-op per spec §4.1.
+
+### Generic HTTP/SSE
+
+```bash
+coral mcp serve --transport http --port 3737
+# Server listens on http://127.0.0.1:3737/ ; clients send POSTs with
+# JSON-RPC envelopes; SSE for streaming responses.
+```
+
+### Resources catalog
+
+| URI | mimeType | Content |
+|---|---|---|
+| `coral://manifest` | `application/json` | `coral.toml` parsed to JSON |
+| `coral://lock` | `application/json` | `coral.lock` with resolved SHAs |
+| `coral://stats` | `application/json` | `StatsReport` (page count, avg confidence, orphans) |
+| `coral://wiki/_index` | `application/json` | aggregated slug list cross-repo |
+| `coral://wiki/<repo>/_index` | `application/json` | per-repo slug list (`_default` = aggregate) |
+| `coral://wiki/<repo>/<slug>` | `application/json` | `{slug, type, status, confidence, last_updated_commit, sources, backlinks, body}` |
+
+Each per-page resource is JSON not raw markdown — clients render the body field as markdown if they want to.
+
+### Tools catalog
+
+Default (`--read-only`, the default):
+- `query` — LLM-backed Q&A over the wiki (returns `Skip` if no `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` is set; the agent should fall back to direct resource reads).
+- `search` — TF-IDF + optional Voyage embeddings, no LLM.
+- `find_backlinks` — list every page that wikilinks to the given slug.
+- `affected_repos` — DFS over `depends_on` since a given SHA.
+- `verify` — run `coral verify` (liveness healthchecks, <30s).
+
+Enabled with `--allow-write-tools`:
+- `run_test` — invoke `coral test` on a specific case ID. Logged to `.coral/audit.log`.
+- (2 more reserved for v0.20+).
+
+### Prompts catalog
+
+- `prompts/onboard?profile=<name>` — "you are a new dev with this profile; here are the pages to read in this order".
+- `prompts/cross-repo-trace?flow=<name>` — "explain this flow walking pages cross-repo".
+- `prompts/code-review?repo=<name>&pr=<n>` — "review this PR against the wiki".
+
+---
+
+## Output examples
+
+What each command actually prints. Pasted from real runs against a tmpdir fixture.
+
+### `coral status`
+
+```
+# Wiki status
+
+- Wiki: `.wiki`
+- Last commit: `8823181`
+- Pages: 24
+- Lint: Critical: 0 | Warning: 2 | Info: 1
+- Stats: 24 pages, avg confidence 0.83, 0 orphan candidate(s)
+
+## Recent log
+
+- 2026-05-04T17:02:11+00:00 ingest: 3 pages updated
+- 2026-05-04T16:45:33+00:00 lint: 0 critical, 2 warning
+- 2026-05-04T15:12:08+00:00 consolidate: 1 page retired, 1 merged
+- 2026-05-04T13:48:55+00:00 bootstrap: 24 pages compiled
+- 2026-05-04T13:42:10+00:00 init: wiki created
+```
+
+JSON:
+
+```json
+{
+  "wiki": ".wiki",
+  "last_commit": "8823181",
+  "pages": 24,
+  "lint": { "critical": 0, "warning": 2, "info": 1 },
+  "stats": { "total_pages": 24, "confidence_avg": 0.83, "orphan_candidates": 0 },
+  "recent_log": [
+    { "timestamp": "2026-05-04T17:02:11+00:00", "op": "ingest", "summary": "3 pages updated" }
+  ]
+}
+```
+
+### `coral lint`
+
+```
+# Lint report
+
+24 pages, 3 issues (0 critical, 2 warning, 1 info)
+
+| severity | rule | page | message |
+|----------|------|------|---------|
+| ⚠ | high-confidence-without-sources | api/auth-flow | confidence=0.95 but sources is empty |
+| ⚠ | broken-wikilink | worker/order | links to `[[non-existent]]` |
+| ℹ | low-confidence | shared/migration-2026-04 | confidence=0.4; consider --consolidate |
+```
+
+Exit codes: 0 (no issues at the requested severity), 1 (issues found ≥ severity).
+
+### `coral verify`
+
+```
+✔ db        Healthy   (interval=5s, retries=6, start_period=20s)
+✔ api       Healthy   (interval=2s, retries=5, start_period=30s)
+✔ worker    Healthy   (interval=5s, retries=3, start_period=15s)
+
+3/3 services healthy in 4.2s
+```
+
+Exit 0 if every healthcheck passes, non-zero otherwise. JSON variant gives a structured report consumable by GitHub Actions reporters.
+
+### `coral test`
+
+```
+# Test report
+
+| status | service | case | duration |
+|--------|---------|------|----------|
+| ✔ | api | smoke-users-list | 0.12s |
+| ✔ | api | smoke-users-create | 0.34s |
+| ✔ | worker | integration-order-flow | 1.8s |
+| ✘ | worker | integration-cancel | 0.5s — expected 200, got 404 |
+
+3/4 passing in 2.76s
+```
+
+JUnit XML variant:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites tests="4" failures="1" time="2.76">
+  <testsuite name="api" tests="2" failures="0" time="0.46">
+    <testcase classname="api" name="smoke-users-list" time="0.12"/>
+    <testcase classname="api" name="smoke-users-create" time="0.34"/>
+  </testsuite>
+  <testsuite name="worker" tests="2" failures="1" time="2.30">
+    <testcase classname="worker" name="integration-order-flow" time="1.8"/>
+    <testcase classname="worker" name="integration-cancel" time="0.5">
+      <failure>expected 200, got 404</failure>
+    </testcase>
+  </testsuite>
+</testsuites>
+```
+
+### `coral query`
+
+```
+$ coral query "how does worker authenticate against api?"
+
+# how does worker authenticate against api?
+
+The worker authenticates via JWT bearer token. Specifically:
+
+1. Worker reads `WORKER_API_TOKEN` from env at startup (api/auth-flow §2).
+2. Each outbound request to `api` includes `Authorization: Bearer <token>`
+   in the header (worker/http-client §1).
+3. The api validates against `JWT_SECRET` (api/auth-flow §3).
+4. Token rotation is handled by `shared/secrets-rotator` on a 24h cycle.
+
+## Sources
+
+- [api/auth-flow](.wiki/concepts/api/auth-flow.md) §2 §3
+- [worker/http-client](.wiki/modules/worker/http-client.md) §1
+- [shared/secrets-rotator](.wiki/modules/shared/secrets-rotator.md)
+
+(confidence: 0.91, runner: claude-sonnet-4-5)
+```
+
+`coral query --strict` requires every claim to cite a slug; without it the runner is allowed (and instructed) to admit "I don't know" rather than hallucinate.
+
+### `coral env status`
+
+```
+| service | state    | health  | restarts | published ports |
+|---------|----------|---------|----------|-----------------|
+| api     | Running  | Pass    | 0        | 3000->3000      |
+| worker  | Running  | Pass    | 0        | —               |
+| db      | Running  | Pass    | 0        | 5432->5432      |
+```
+
+### `coral project graph --format mermaid`
+
+```
+graph TD
+  api
+  worker --> api
+  shared
+  api --> shared
+  worker --> shared
+```
+
+GitHub renders this directly in the README. `--format dot` for Graphviz, `--format json` for tooling.
+
+### `coral contract check`
+
+```
+# Contract drift report
+
+3 finding(s) (1 error, 2 warning):
+
+| severity | consumer | provider | message |
+|----------|----------|----------|---------|
+| ✘ | worker | api | unknown endpoint: GET /users/{id}/permissions (provider's openapi.yaml does not declare this path) |
+| ⚠ | worker | api | status drift: GET /users expects 200; provider documents [201, 400] |
+| ⚠ | analytics | shared | provider 'shared' has openapi spec but it failed to parse: yaml line 12 unexpected key |
+```
+
+Exit 0 by default; `--strict` raises warnings to errors and exits non-zero.
+
+---
+
 ## Subcommand reference
 
 ### Wiki layer (v0.15+)
@@ -466,6 +957,7 @@ The loader uses TF-IDF ranking + backlink BFS + greedy fill under your token bud
 | `coral env status [--env] [--format markdown\|json]` | Live service state from `EnvBackend::status()`. |
 | `coral env logs <service> [--env] [--tail N]` | Read recent logs (compose `logs --no-color --no-log-prefix --timestamps`). |
 | `coral env exec <service> [--env] -- <cmd>...` | One-shot exec inside a container. Exit code propagates. |
+| `coral env import <compose.yml> [--env NAME] [--write] [--out PATH]` | (v0.19.7+) Convert an existing `docker-compose.yml` into a starter `[[environments]]` block for `coral.toml`. Conservative + advisory: emits only fields that round-trip through `EnvironmentSpec`; everything else surfaces as a `# TODO:` comment. Heuristic infers `kind = "http"` from `CMD curl URL` patterns. |
 
 ### Functional testing layer (v0.18+)
 
@@ -724,6 +1216,100 @@ coral test --include-discovered           # include them in the run
 | `coral init` after migrating to `coral.toml` | n/a | scaffolds `<root>/.wiki/` (the project's aggregated wiki); single-repo entries still work |
 
 What's *not* preserved: when you opt in to multi-repo by creating a `coral.toml`, the wiki layout becomes aggregated and slugs may need to be namespaced. The lint detects this and exits non-zero on ambiguous wikilinks. There's no in-place migration tool — the recommended path is "stop the world, run `coral consolidate` once after migrating."
+
+---
+
+## Comparison vs adjacent tools
+
+Coral occupies a specific niche: **the project manifest for multi-repo AI-augmented dev**. The closest neighbors solve overlapping problems differently. The honest take:
+
+| Tool | Coral position |
+|---|---|
+| **Devin Wiki** ([Cognition](https://www.cognition.ai/)) | Closest functional match. Devin's wiki is proprietary, hosted, and tightly bound to Devin the agent. **Coral is open source, locally runnable, and consumable from any MCP-speaking agent.** Same "structured wiki on top of a codebase" thesis, two opposite distribution models. |
+| **deepwiki-open** ([AsyncFuncAI](https://github.com/AsyncFuncAI/deepwiki-open)) | Python + Docker + ChromaDB-backed RAG service. Single-repo focus. **Coral is single-binary Rust, manifest-driven, multi-repo-first, no vector DB by default** (TF-IDF baseline; Voyage embeddings opt-in). |
+| **OpenDeepWiki** ([AIDotNet](https://github.com/AIDotNet/OpenDeepWiki)) | .NET + TypeScript wiki UI on top of an LLM-generated knowledge base. Per-repo. **Coral has no UI; the wiki is plain Markdown on disk, diff-able in git, edited in your editor of choice.** No frontend dependency. |
+| **Cursor multi-root workspaces** ([3.2+](https://www.cursor.com/changelog)) | Per-IDE-session multi-root view. Not persisted across sessions. **Coral's manifest is committed to git; survives IDE restarts; consumable cross-tool.** Cursor multi-root and Coral are complementary — Cursor is the editor view, Coral is the on-disk truth. |
+| **Aider repo-map** ([paul-gauthier/aider](https://github.com/paul-gauthier/aider)) | In-session syntactic map (regenerated each run). Per-language, no semantic curation. **Coral is cross-session, semantic, curated by an LLM librarian under a strict schema.** Different abstraction layer. |
+| **`AGENTS.md` / `CLAUDE.md` files** | Hand-written single-file conventions. Drift constantly with the code. **Coral renders these deterministically from `coral.toml` via `coral export-agents`** so you never hand-author them. Per [Anthropic's guidance](https://www.anthropic.com/engineering/context-engineering) + empirical work, LLM-synthesised AGENTS.md files degrade agent task success vs deterministic templates from structured config. |
+| **Backstage / Cortex / OpsLevel** | Service catalogs. UI-heavy, focused on ownership/SLA dashboards, not on agent-readable wiki + manifest. **Coral is CLI-first, manifest-only, agent-readable.** Solves a different problem (developer-experience layer vs ops-portal layer). |
+| **Bazel / Pants / Nx** | Build systems with monorepo manifests. Coral doesn't replace these — **Coral runs alongside.** Bazel governs how you build; Coral governs how the project is documented + reasoned about by agents. |
+| **Garden / Skaffold / Tilt / DevSpace** | Dev-environment orchestrators. Coral's `coral up` is a thin Compose wrapper today (v0.17+); it's not trying to compete. **Coral imports from `docker-compose.yml`** (`coral env import`) so users with existing Garden/Skaffold setups can layer Coral on top without rewriting their stack. |
+| **Pact / Spring Cloud Contract** | Consumer-driven contract testing. **Coral's `coral contract check` is the lighter sibling** — file-based contracts (no broker), deterministic (no LLM), runs as a CI gate. Pact is more featureful for organizations with mature contract workflows; Coral ships zero-setup for repos that just want drift detection.|
+
+Where Coral genuinely differs:
+
+1. **Multi-repo as a first-class manifest, not a session-scoped IDE feature.** `coral.toml` is committed to git; readable by any tool; persists across sessions; works without an IDE.
+2. **Wiki is plain Markdown on disk.** Every page is `git diff`-able. No DB, no UI, no vendor lock-in. `coral export --format html` gives you a static site if you want one.
+3. **Wiki is *machine-readable via MCP*.** Coding agents (Claude Code, Cursor, Continue, Cline, Goose, Codex, Copilot) read `coral://wiki/...` URIs; humans read the same files in their editor.
+4. **Single-binary, single-process.** No services to operate, no DB to back up, no auth flow to set up.
+
+Where Coral is **explicitly not trying to compete**:
+
+- **Build systems.** Use Bazel/Pants/Nx/Cargo/pnpm — Coral runs orthogonally.
+- **k8s-native dev environments.** v0.20+ may add `KindBackend` / `TiltBackend`; today Compose only.
+- **Full E2E browser testing.** Use Playwright. Coral occupies the [microservice honeycomb middle layer](https://martinfowler.com/articles/2021-test-shapes.html) — integration + smoke + contract.
+- **Unit testing.** Use `cargo test` / `pytest` / `jest`. Coral is functional-test layer.
+- **Service catalog / ownership UI.** Use Backstage / Cortex / OpsLevel.
+
+---
+
+## Security model
+
+Coral has been hardened across three audit cycles (v0.19.3 → v0.19.7) with explicit threat-model boundaries. **The threat surface is "a malicious commit / PR to a Coral-managed repo": adversary can supply arbitrary `coral.toml`, `openapi.yaml`, wiki page bodies, and test YAML.** Hardening below mitigates the high-impact vectors of that threat model.
+
+### Process-level secret hygiene
+
+- **API keys never appear in `argv`.** `Authorization: Bearer <token>` headers are piped to curl via stdin (`-H @-`), not arg-listed. Visible to anyone with `ps auxe` / `/proc/<pid>/cmdline`/process accounting otherwise.
+- **Request bodies never appear in `argv`.** Same fix applied to `--data-binary` — bodies stream via stdin (when API key isn't already claiming it) or via per-call tempfile with `mode 0600` on Unix (`OpenOptions::new().create_new(true).mode(0o600)`).
+- **Tempfile lifecycle is RAII-managed.** Cleanup happens on success, error, panic-unwind. Verified by `temp_file_guard_removes_path_on_drop` regression test.
+- **`AuthFailed` Display scrubs `Bearer …` / `x-api-key:` substrings** before emission. Defense against LLM proxies that echo request headers in their error responses.
+- **Audit log for MCP write-tools.** `.coral/audit.log` (JSON-line per call: `{ts, tool, args, result_summary}`). Rotates at 16 MiB to `.coral/audit.log.1`.
+
+### Path-traversal hardening
+
+Every place a slug or repo name lands in a filesystem path interpolation routes through one of two allowlists:
+
+- `coral_core::slug::is_safe_filename_slug` — for wiki page slugs from frontmatter / LLM YAML / consolidate plans / export targets.
+- `coral_core::slug::is_safe_repo_name` — for repo names in `coral.toml` and MCP URI segments.
+
+Both reject: empty, leading `.`, leading `-`, contains `/` `\\` `..` whitespace NUL, anything outside `[a-zA-Z0-9_-]`, length > 200. **A malicious `coral.toml` with `name = "../escape"` is rejected at validate time, not at clone time.**
+
+### Subprocess-level injection hardening
+
+Coral shells out to `git` (clone, fetch, checkout, merge, diff, rev-parse, ls-files) and `docker compose` / `podman compose` extensively. Every git invocation that takes a user-controlled positional argument:
+
+- Inserts `--` between flags and positionals, defending against the [CVE-2017-1000117](https://nvd.nist.gov/vuln/detail/CVE-2017-1000117) / [CVE-2024-32004](https://nvd.nist.gov/vuln/detail/CVE-2024-32004) family of `git clone` option-injection bugs.
+- Refuses positional inputs starting with `-` where `--` isn't applicable (e.g. `git checkout <ref>` doesn't accept `--`-terminated input the way `git clone` does — Coral instead rejects refs that look like flags).
+
+### Concurrency-safety
+
+- **Atomic writes** via `coral_core::atomic::atomic_write_string` (tmp + rename). Used for every user-visible file Coral writes: `.wiki/pages/**`, `.wiki/index.md`, `.wiki/log.md`, `coral.lock`, `.coral/tests/**`, compose YAML artifacts, `.coral/exports/*`.
+- **Cross-process serialization** via `coral_core::atomic::with_exclusive_lock` (`flock(2)` advisory lock). Used for every read-modify-write sequence on shared state: `.wiki/index.md` during `coral ingest`, `coral.lock` during `coral project sync`, `.wiki/log.md` during any append.
+- **Race-free under contending writers.** `WikiLog::append_atomic` first-create header race fixed in v0.19.6 (was reproducible 1/50 with 4 threads pre-fix).
+- **Verified by stress tests.** 50-thread atomic-write test, 16-subprocess flock test, 4-thread WikiLog header race test, 2-process `coral.lock` upsert test.
+
+### Adversarial-input file-size caps
+
+`coral_core::walk::read_pages` caps any single page at 32 MiB. `coral-test::contract_check` caps OpenAPI spec reads at 32 MiB. Defense against memory-exhaustion attacks via a multi-GB attacker-controlled file.
+
+### Prompt-injection detection
+
+`coral lint --check-injection` scans page bodies for the obvious markers:
+- Fake delimiters: `<|system|>`, `</system>`, `</user>`, `</human>`, `<|im_start|>`, `<|im_end|>`.
+- Header-shaped substrings like `Authorization:`, `Bearer`, `x-api-key:`.
+- Base64 runs > 100 chars (often hidden encoded payloads).
+- Unicode bidi controls (`U+202E`) and tag chars (`U+E0000`–`U+E007F`).
+- Confidence-drop instruction patterns ("ignore previous instructions", "you are now…").
+
+Surfaces hits as `LintCode::InjectionSuspected` (warning severity). The check is opt-in (the default lint pass doesn't run it) so it doesn't slow down the everyday workflow but is available for hardening passes.
+
+### What Coral does NOT defend against
+
+- **A compromised LLM provider.** If your `ANTHROPIC_API_KEY` is exfiltrated, Coral can't help.
+- **A compromised local user (Linux multi-tenant).** macOS isolates tempfiles per-user under `$TMPDIR`; Linux's `/tmp` is shared across UIDs but Coral mitigates via mode-0600 tempfiles. A user with the same UID as you can still read your tempfiles — that's a kernel-level isolation question, not a Coral one.
+- **A compromised `coral` binary.** Verify SHA-256 against the GitHub release; ad-hoc codesigning is included for first-launch macOS Gatekeeper but doesn't establish vendor identity.
+- **Network-level MITM on git clone.** Use `https://` with cert pinning, or `ssh://` (Coral always honors your git config; no special handling).
+- **CSRF on the MCP HTTP/SSE transport.** v0.19.x ships stdio-first; the HTTP transport is for local development. Don't expose `coral mcp serve --transport http` to untrusted networks.
 
 ---
 
@@ -1061,6 +1647,116 @@ Single-repo workflows keep working as-is — no migration required. To move to m
 
 ---
 
+## FAQ
+
+### Does Coral replace [Cursor / Claude Code / Continue / …]?
+
+No. Coral is the **manifest layer**: the project's structured truth on disk that those tools consume via MCP. Cursor and Claude Code are editors/agents; Coral describes the project. They're complementary — most users run both.
+
+### Can I use Coral without LLMs?
+
+Yes. Most commands work without any LLM provider:
+
+- `coral init`, `coral status`, `coral lint`, `coral stats`, `coral search`, `coral diff`, `coral history`, `coral export`, `coral export-agents`, `coral context-build`, all `coral project *`, all `coral env *`, `coral verify`, `coral test` (excluding LLM-generated cases), `coral test-discover`, `coral contract check`, `coral mcp serve` (read-only mode).
+
+LLM-required commands: `coral bootstrap`, `coral ingest --apply`, `coral query`, `coral consolidate`, `coral onboard`, `coral lint --auto-fix`, `coral lint --suggest-sources`, `coral test generate` (v0.19.0+).
+
+### What LLM providers are supported?
+
+5 runner implementations:
+- **Claude** (Anthropic, default) — via `claude` CLI or `ANTHROPIC_API_KEY`.
+- **Gemini** — via `gemini-cli` or `GEMINI_API_KEY`.
+- **Local** — via llama.cpp / Ollama / any local OpenAI-compatible server.
+- **Http** — any OpenAI-compatible HTTP endpoint via `CORAL_HTTP_BASE_URL`.
+- **Mock** — for tests.
+
+### Does Coral send my code to the LLM?
+
+Only when you explicitly run an LLM-backed subcommand. The wiki layer reads source via `git diff` / `git ls-files` to construct prompts, and the prompt content is whatever you'd see in `coral ingest --dry-run` or `coral query --print-prompt` first. **Coral never sends data to its own backend** — it has no backend; the LLM call goes directly from your machine to the provider you configured.
+
+### How does Coral handle my secrets?
+
+`Authorization: Bearer <token>` headers are piped to curl via stdin (`-H @-`), never visible in `argv` / `ps`. Request bodies (which can include user prompts) are also kept out of `argv` — either via stdin or via per-call tempfile with mode 0600 on Unix. RAII guards ensure tempfile cleanup on every return path. `AuthFailed` Display scrubs Bearer / x-api-key substrings before emission. See [Security model](#security-model) for the full posture.
+
+### Does Coral work offline?
+
+The wiki, lint, search, stats, diff, history, export, MCP server, env (after `coral up`), and verify layers all work offline. LLM-backed commands need network unless you configure a local runner. `coral project sync` needs network for the initial clone.
+
+### What's the relationship between `coral.toml` and `package.json` / `Cargo.toml` / `BUILD.bazel`?
+
+Orthogonal. `coral.toml` describes the **project shape** (which repos, dev environment, tests). It doesn't replace `package.json` (which describes a JS/TS package's build), `Cargo.toml` (which describes a Rust crate's build), or `BUILD.bazel` (which describes Bazel build targets). Coral runs alongside any of those.
+
+### Can I commit `.wiki/` to git?
+
+Yes — that's the recommended workflow. `.wiki/pages/*.md` are plain Markdown with YAML frontmatter; they `git diff` cleanly. `.wiki/index.md` and `.wiki/log.md` are also human-readable. Commit them; the `coral ingest` runs in CI (or pre-commit hook) keep them current.
+
+### What happens when I run two `coral ingest --apply` simultaneously?
+
+Both serialize via `flock(2)` on `.wiki/index.md`. Both writes land. No data loss. Stress-tested with N=10 parallel processes; verified in `crates/coral-core/tests/concurrency.rs`. Same guarantee for `coral project sync`'s `coral.lock` write (added in v0.19.6).
+
+### What happens if my `coral.toml` has a syntax error?
+
+`coral` exits with a clear parse error pointing at the offending line. Pre-v0.19.6 it silently fell back to legacy single-repo mode; v0.19.6 fixed that.
+
+### Can I use Coral on Windows?
+
+Compilation works (Rust targets Windows). Day-to-day commands work in WSL. Native Windows `cmd.exe` / PowerShell support is best-effort; some path-handling edge cases may surface (CRLF in cache fast path was fixed in v0.19.6, but expect more rough edges than macOS / Linux). File a bug if you hit one.
+
+### Is the wiki-as-context approach better than embedding the whole codebase?
+
+Per [Anthropic's context-engineering guidance](https://www.anthropic.com/engineering/context-engineering) and broader empirical work, **structured note-taking persisted across sessions outperforms monolithic context dumps**. Coral leans into this: the wiki is small (typically ~300 lines/page, a few dozen pages), curated by an LLM librarian under a strict schema, and budget-loadable via `coral context-build --budget <tokens>`. Empirically: comparable token budget → meaningfully better task success vs raw codebase dumps.
+
+### What's the SLA / support model?
+
+Hobby project. No SLA. Issues filed at [github.com/agustincbajo/Coral/issues](https://github.com/agustincbajo/Coral/issues) get triaged in best-effort timeframes. The codebase has 928 tests + 3-cycle multi-agent audit history; quality bar is high but support cadence isn't.
+
+### Can I use Coral's wiki schema with a different tool?
+
+Yes. The wiki is plain Markdown with YAML frontmatter following a documented schema (see [The wiki schema](#the-wiki-schema)). Any tool that reads Markdown + YAML can consume it. You only need Coral if you want the ingest/lint/query/MCP/agent-export workflows.
+
+---
+
+## Glossary
+
+Coral-specific terminology used throughout this README and in the source.
+
+- **Page** — a single Markdown file under `.wiki/pages/<type>/<slug>.md`. Has YAML frontmatter + body.
+- **Slug** — the unique identifier for a page (`auth-flow`, `order-saga`). In multi-repo mode slugs are namespaced as `<repo>/<slug>`.
+- **Frontmatter** — the YAML block at the top of every page: `slug`, `type`, `status`, `confidence`, `last_updated_commit`, `sources`, `backlinks`. See [The wiki schema](#the-wiki-schema).
+- **Page type** — one of `module`, `operation`, `concept`, `reference`, `index`, `decision`, `log`, `synthesis`. Determines the page's role and which directory it lives in.
+- **Status** — `draft`, `reviewed`, `stale`. Drives lint behavior and ingest decisions.
+- **Confidence** — float 0.0–1.0. The runner's self-reported confidence in the page's accuracy. Pages with high confidence but no `sources` get flagged.
+- **Sources** — list of file paths or PR/commit refs the page is grounded in. Format: `src/auth.rs:12-87` or `#142` (PR ref).
+- **Backlinks** — list of slugs that wikilink TO this page. Maintained by `coral lint`.
+- **Wikilink** — `[[other-slug]]` or `[[other-slug|alias]]` reference inside a page body. Coral's lint validates all wikilinks point at real pages.
+- **Wiki layout** — `aggregated` (single `.wiki/` at project root, slugs namespaced) is the only supported value as of v0.19.x.
+- **Project** — the unit of multi-repo organization. Declared in `coral.toml`. Has a name, defaults, remotes, repos, environments.
+- **Repo** — one entry under `[[repos]]` in `coral.toml`. Has a name, URL (or remote+template), ref, optional path override, tags, depends_on.
+- **Tag** — string label on a repo (`service`, `library`, `team:platform`). Filterable via `--tag` on most commands.
+- **Manifest** — `coral.toml`. Diff-able in git. Single source of truth for project shape.
+- **Lockfile** — `coral.lock`. Resolved SHAs for each repo at last `coral project sync`. Same role as `Cargo.lock` / `package-lock.json`.
+- **Local overrides** — `coral.local.toml`. Gitignored, per-developer overrides (point a repo at a local clone, override a ref).
+- **Environment** — one entry under `[[environments]]` in `coral.toml`. Declares a backend (`compose`), services, optional healthchecks.
+- **Backend** — the env-orchestration target: `compose` (v0.17, only one shipped), `kind`/`tilt` (v0.20+ behind feature flags).
+- **Service** — a single container in an environment. Declared at `[environments.services.<name>]`.
+- **Healthcheck** — declarative liveness probe on a service. `kind = "http" | "tcp" | "exec" | "grpc"` + timing.
+- **Mode** — `managed` (Coral generates compose YAML) or `adopt` (user brings their own; v0.20+ only).
+- **TestKind** — discriminator for `TestCase`: `Healthcheck`, `UserDefined`, `LlmGenerated`, `Contract`, `PropertyBased`, `Recorded`, `Event`, `Trace`, `E2eBrowser`. Only the first 4 are wired today.
+- **Runner** — the `Runner` trait in `coral-runner` plus its 5 implementations (`Claude`, `Gemini`, `Local`, `Http`, `Mock`). Provider-agnostic LLM call abstraction.
+- **EnvBackend** — the `EnvBackend` trait in `coral-env`. Wraps the env-orchestration tool; `ComposeBackend` is the only impl today.
+- **TestRunner** — the `TestRunner` trait in `coral-test`. Multiple impls: `HealthcheckRunner`, `UserDefinedRunner`, `HurlRunner`, `DiscoveryRunner`.
+- **MCP resource** — a read-only URI exposed by `coral mcp serve` that returns content. Listed under [MCP client integration](#mcp-client-integration).
+- **MCP tool** — a callable function exposed by `coral mcp serve`. Read-only by default; write tools gated by `--allow-write-tools`.
+- **MCP prompt** — a parameterized prompt template `coral mcp serve` exposes for client use.
+- **Ingest** — incremental wiki update from `last_commit` to HEAD. Run `coral ingest --apply`.
+- **Bootstrap** — full wiki compilation from HEAD (one-shot, expensive, runs once per project lifetime). Run `coral bootstrap --apply`.
+- **Consolidate** — LLM-suggested merges/splits/retirements of redundant pages. Run `coral consolidate --apply`.
+- **Onboard** — generate a personalized reading-order page list. Run `coral onboard --profile <p> --apply`.
+- **Lint** — structural + semantic checks over the wiki. 9 structural rules + 1 LLM rule + 1 injection detector.
+- **`coral.toml` apiVersion** — schema versioning field. Currently `coral.dev/v1`. Forward-compatible bump path via `coral migrate` (v0.20+).
+
+---
+
 ## Roadmap
 
 ✅ **Shipped (v0.19.0):**
@@ -1074,19 +1770,33 @@ Single-repo workflows keep working as-is — no migration required. To move to m
 - `coral context-build` (smart context loader under explicit token budget).
 - 700+ unit tests + 30+ E2E across 8 crates.
 
-🚧 **v0.19.x (patches):**
+✅ **Shipped (v0.19.1 → v0.19.7 — audit-driven hardening sprint):**
 
-- `coral mcp serve --transport http` (Streamable HTTP / SSE).
-- `coral mcp` tool dispatcher wires `query` / `search` / `verify` / `affected_repos` to real CLI commands.
-- `coral env devcontainer emit` — generate `.devcontainer/devcontainer.json` from the manifest.
-- `coral env import <compose.yml>` — generate a starter `coral.toml` from an existing compose file.
-- `coral up --watch` (compose 2.22 `develop.watch`) — Linux first; macOS waits on the Docker bug.
-- `coral env attach <service>`, `coral env reset`, `coral env port-forward`, `coral env open`, `coral env prune`.
-- `coral lint --check-injection` for prompt-injection patterns in wiki pages.
+A 3-cycle multi-agent audit found and resolved ~50 bugs across reliability, security, doc-vs-reality, concurrency, and adversarial-input handling. Highlights:
 
-🔮 **v0.20+:**
+- **MCP server fully wired** (was a stub at v0.19.0 — `resources/read` returned `-32601` for every URI; now serves all 6 catalog URIs end-to-end with spec-compliant `mimeType` per resource).
+- **Critical security hardening**: `git clone` option-injection (CVE-2017-1000117 family) closed; slug allowlists at every interpolation site; API keys + request bodies migrated off `argv` to stdin / mode-0600 tempfile via RAII guard; `AuthFailed` Display scrubs Bearer/x-api-key.
+- **Concurrency**: `coral ingest --apply` lost-update race on `.wiki/index.md` + `coral project sync` lost-update race on `coral.lock` + `WikiLog::append_atomic` first-create header race all fixed via `with_exclusive_lock` (cross-process flock).
+- **`coral env import <compose.yml>` shipped (v0.19.7)** — convert existing docker-compose.yml to coral.toml starter.
+- **Test count**: 700+ → 928, BC contract holds.
 
-- `KindBackend`, `TiltBackend`, `K3dBackend` (k8s local).
+Full per-release detail in [CHANGELOG](CHANGELOG.md).
+
+🚧 **v0.19.x patches still on the table** (filed as GitHub issues):
+
+- [#26](https://github.com/agustincbajo/Coral/issues/26) — MCP `resources/list` cursor pagination (currently unbounded).
+- [#27](https://github.com/agustincbajo/Coral/issues/27) — wikilink escaped pipe `[[a\|b]]` regex edge case.
+- [#28](https://github.com/agustincbajo/Coral/issues/28) — document the `_default` magic repo prefix in MCP URIs.
+- [#29](https://github.com/agustincbajo/Coral/issues/29) — OpenAPI adversarial-input audit ($ref cycles, giant inline examples, escaped paths).
+- [#30](https://github.com/agustincbajo/Coral/issues/30) — `coral export --format html` XSS surface audit.
+- [#31](https://github.com/agustincbajo/Coral/issues/31) — streaming HTTP runners stress test (mid-stream truncation, cancellation, recv_timeout).
+- [#32](https://github.com/agustincbajo/Coral/issues/32) — `*.lock.lock` zero-byte sentinel cleanup (TOCTOU deferred).
+- [#33](https://github.com/agustincbajo/Coral/issues/33) — `WikiLog` regex `op` shape (log v2 format eventually).
+
+🔮 **v0.20+ feature roadmap:**
+
+- **[#16](https://github.com/agustincbajo/Coral/issues/16) — `coral session capture/distill`.** Preserve agent-session transcripts (Claude Code JSONL, Cursor chat) into the wiki via `coral session capture --from <client>` + `coral session distill`. PRD-stub already filed; see issue.
+- `KindBackend`, `TiltBackend`, `K3dBackend` (k8s local, behind feature flags).
 - `PropertyBasedRunner` (proptest from OpenAPI), `RecordedRunner` (Keploy traffic capture, Linux-only feature).
 - `EventRunner` (AsyncAPI, Testcontainers Kafka/Rabbit), `TraceRunner` (OTLP queries).
 - `ContractRunner` (consumer-driven, `coral.contracts.lock` with `--can-i-deploy`).
@@ -1097,19 +1807,49 @@ Single-repo workflows keep working as-is — no migration required. To move to m
 - `MultiStepRunner` (planner + executor + reviewer with per-step model tiering).
 - gRPC test steps (via `grpcurl` subprocess or `tonic` reflection).
 - Cross-repo glob (`[[repos]] glob = "services/*"`) and sub-manifests `<include>`.
+- `coral up --watch` (compose 2.22 `develop.watch`) — Linux first; macOS waits on the Docker bug.
+- `coral env attach <service>`, `coral env reset`, `coral env port-forward`, `coral env open`, `coral env prune`, `coral env devcontainer emit`.
 - SWE-ContextBench benchmark publication.
 
-Detailed PRD covering every PRD iteration (multi-repo, environments, testing, MCP, AGENTS.md research) is tracked privately in the maintainer's plans directory; the relevant decisions and trade-offs are summarised in the [CHANGELOG](CHANGELOG.md) per release.
+Detailed PRD covering every iteration (multi-repo, environments, testing, MCP, AGENTS.md research) is tracked in the maintainer's plans directory; per-release decisions and trade-offs are summarised in the [CHANGELOG](CHANGELOG.md).
 
 ---
 
 ## How Coral itself was built
 
-Dogfood: Coral's own `.wiki/` is maintained by Coral. Each merge to `main` runs `coral ingest --apply` via the `.github/actions/ingest` composite action, with a Claude bibliotecario subagent doing the page curation under the SCHEMA in `template/schema/SCHEMA.base.md`.
+### Dogfooding
 
-The PRD ([this](https://github.com/agustincbajo/Coral/blob/main/.claude/plans/quiero-que-eval-es-todo-glittery-eclipse.md)) was written first (5 PRD iterations, validated against industry: Bazel, Nx, Turborepo, Cargo workspaces, Garden, Compose Watch, Tilt, Skaffold, Pact, Schemathesis, Hurl, Stepci, MCP, AGENTS.md research, Devin Wiki competitive analysis). Each `coral project` / `coral env` / `coral test` / `coral mcp` subcommand has a wave-1 (scaffold) → wave-2 (real impl) → wave-3 (advanced features) progression in the CHANGELOG, plus dedicated unit tests at every wave.
+Coral's own `.wiki/` is maintained by Coral. Each merge to `main` runs `coral ingest --apply` via the `.github/actions/ingest` composite action, with a Claude bibliotecario subagent doing the page curation under the SCHEMA in `template/schema/SCHEMA.base.md`.
 
-The pluggable trait pattern (`Runner` → `EnvBackend` → `TestRunner` → `ResourceProvider`/`ToolDispatcher`) was a deliberate copy of itself: one trait, one error type, one Mock impl, one factory function. Once you've debugged one of them, debugging another is muscle memory.
+### PRD-first
+
+The PRD was written first (5 PRD iterations, validated against industry: Bazel, Nx, Turborepo, Cargo workspaces, Garden, Compose Watch, Tilt, Skaffold, Pact, Schemathesis, Hurl, Stepci, MCP, AGENTS.md research, Devin Wiki competitive analysis). Each `coral project` / `coral env` / `coral test` / `coral mcp` subcommand has a wave-1 (scaffold) → wave-2 (real impl) → wave-3 (advanced features) progression in the CHANGELOG, plus dedicated unit tests at every wave.
+
+### Pluggable trait pattern
+
+The pluggable trait pattern (`Runner` → `EnvBackend` → `TestRunner` → `ResourceProvider`/`ToolDispatcher`) was a deliberate copy of itself: one trait, one error type, one `Mock*` impl in the same crate, one factory function. Once you've debugged one of them, debugging another is muscle memory.
+
+### Multi-agent audit pipeline
+
+The v0.19.x sprint shipped 8 patch releases (v0.19.0 → v0.19.7) closing ~50 bugs surfaced by **three audit cycles**, each cycle running multiple parallel agents with non-overlapping mandates:
+
+| Cycle | Agents | Focus | Findings |
+|---|---|---|---|
+| 1 (post-v0.19.0) | 1 broad agent | bugs, doc-vs-reality, cross-platform | 11 |
+| 2 (post-v0.19.4) | 3 parallel | reliability + security + doc-vs-reality | ~30 |
+| 3 (post-v0.19.5) | 1 deep dive | concurrency + new MCP code + adversarial inputs | 12 |
+
+Each cycle followed the same loop:
+1. **Audit agent(s)** — scoped mandate, instructed to verify before reporting (no hand-waving), output a punch list with severity tiers.
+2. **Fix agent** — given the full punch list + working agreements; lands all fixes in one commit; runs `scripts/ci-locally.sh` until green; bumps version + CHANGELOG; **does not push or tag**.
+3. **Validator agent** — re-verifies each fix is real (stash-validates the highest-impact ones), confirms regression tests catch the bug class, looks for fix-agent design decisions that need scrutiny; recommends ship / NEEDS WORK / FAIL.
+4. **Maintainer applies any small inline fixes** (when the validator catches a partial fix, like the v0.19.5 README L568+ regression), then pushes + tags + creates the GitHub release.
+
+This pipeline is reproducible — the agent prompts live in the `.claude/` directory and can be re-run on any future major release. v0.19.5 (30+ findings, fix agent + validator + 1 inline fix) and v0.19.6 (12 findings, fix agent + validator) are the canonical examples.
+
+### `scripts/ci-locally.sh`
+
+CI on GitHub Actions has been blocked by a billing issue throughout the v0.19.x sprint, so `scripts/ci-locally.sh` mirrors the four blocking jobs (fmt, clippy `-D warnings`, test --workspace, bc-regression) for local verification — runs in ~100s including warm cache. Used as the gate before every release tag.
 
 ---
 
