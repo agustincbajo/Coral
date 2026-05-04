@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.2] - 2026-05-03
+
+Patch release fixing a user-reported cosmetic bug in `coral status`.
+
+### Fixed
+
+- **`coral status` no longer emits `failed to invoke git: No such file or directory (os error 2)`** when run from a repo root with the default relative `.wiki/` path on macOS.
+  - Root cause: `Path::new(".wiki").parent()` returns `Some("")` (NOT `None`), and the empty `PathBuf` propagated into `Command::current_dir("")`, which surfaces as `ENOENT` from `execvp` on macOS.
+  - The same fix landed in `coral lint` in commit `d2d7012` (v0.19.0); `crates/coral-cli/src/commands/status.rs:120-123` was missed in that pass.
+  - Mirror the lint-side pattern: treat empty parent the same as missing parent and fall back to `.`.
+  - New regression test (`status_resolves_repo_root_when_wiki_path_is_relative`) invokes `coral status` from a real git tmpdir against the relative default and asserts neither the misleading WARN nor the rev-list failure surfaces in stderr.
+
+### Note for users on the same affected wikis
+
+The cosmetic `Last commit: <unknown>` and `Recent log: (no entries)` outputs that accompanied this bug **are not the same bug** — those reflect the wiki's `index.md` `last_commit` field and `log.md` entries, neither of which is populated by externally-managed wikis (e.g. those built via project-local scripts that bypass `coral ingest` / `coral bootstrap`). Both fields populate normally when Coral itself drives the wiki.
+
 ## [0.19.1] - 2026-05-03
 
 Validation pass on top of v0.19.0. Three real bugs caught during a

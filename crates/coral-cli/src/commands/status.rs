@@ -117,10 +117,19 @@ fn render_once(args: &StatusArgs, root: &Path) -> Result<()> {
 
     // Lint counts via the FAST structural pass — no semantic LLM call.
     // Repo root = parent of `.wiki/` (matches `coral lint`'s convention).
-    let repo_root: PathBuf = root
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."));
+    //
+    // `Path::parent()` returns `Some("")` (NOT `None`) for single-component
+    // relative paths like `.wiki`. An empty `PathBuf` propagates downstream
+    // into `Command::current_dir("")`, which on macOS surfaces as
+    // `ENOENT` from `execvp` and shows up as the misleading `failed to
+    // invoke git: No such file or directory (os error 2) repo_root=`
+    // warning in `check_commit_in_git`. Mirror the fix already applied to
+    // `coral lint` (lint.rs:132-135): treat empty parent the same as
+    // missing parent and fall back to `.` (the current working dir).
+    let repo_root: PathBuf = match root.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
+        _ => PathBuf::from("."),
+    };
     let lint_report = run_structural_with_root(&pages, &repo_root);
 
     let stats = StatsReport::new(&pages);
@@ -426,5 +435,66 @@ type: log\n\
     #[test]
     fn default_interval_is_five() {
         assert_eq!(DEFAULT_INTERVAL, 5);
+    }
+
+    /// Regression: `coral status` invoked with no `--wiki-root` from a
+    /// repo root used to fail with `failed to invoke git: No such file or
+    /// directory (os error 2) repo_root=` because `Path::new(".wiki").parent()`
+    /// returns `Some("")` (NOT `None`), and the empty PathBuf flowed into
+    /// `Command::current_dir("")` which surfaces as `ENOENT` from
+    /// `execvp` on macOS. The fix is to treat empty-parent the same as
+    /// missing-parent and fall back to `.`.
+    ///
+    /// We exercise the bug at the binary boundary: invoke `coral status`
+    /// from a tmpdir that's a real git repo with a `.wiki/` (so the relative
+    /// default kicks in), and assert the output contains NEITHER the
+    /// misleading warning NOR the cosmetic `<unknown>`.
+    #[test]
+    fn status_resolves_repo_root_when_wiki_path_is_relative() {
+        use std::process::Command as StdCommand;
+        let tmp = TempDir::new().unwrap();
+        // Real git repo so `git rev-list` actually has commits to find.
+        StdCommand::new("git")
+            .args(["init", "-q"])
+            .current_dir(tmp.path())
+            .status()
+            .expect("git init");
+        // Pin user.name/email locally so commit doesn't fail under
+        // CI-style identity-less environments.
+        StdCommand::new("git")
+            .args([
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "commit",
+                "--allow-empty",
+                "-qm",
+                "init",
+            ])
+            .current_dir(tmp.path())
+            .status()
+            .expect("git commit");
+        init_wiki(&tmp);
+
+        let assert = Command::cargo_bin("coral")
+            .unwrap()
+            .current_dir(tmp.path())
+            // No --wiki-root → defaults to relative `.wiki`. THIS is the
+            // exact case that triggered the bug.
+            .args(["status", "--format", "json"])
+            .assert()
+            .success();
+        let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
+        // The warning carried `repo_root=` empty before the fix. If it
+        // ever comes back, this assertion catches it loudly.
+        assert!(
+            !stderr.contains("repo_root=\n") && !stderr.contains("repo_root= "),
+            "regression: empty repo_root WARN reappeared:\n{stderr}"
+        );
+        assert!(
+            !stderr.contains("git rev-list failed"),
+            "regression: status emitted git rev-list failure:\n{stderr}"
+        );
     }
 }
