@@ -519,10 +519,25 @@ fn git_apply_inner(
     Ok(())
 }
 
-/// Rewrites `.wiki/<slug>.md`'s frontmatter to set `reviewed: false`.
-/// Coral OWNS the flip — the LLM's job is body content. Idempotent:
-/// running twice on the same page is fine; the second call is a no-op.
-fn flip_reviewed_false(target_path: &std::path::Path) -> SessionResult<()> {
+/// Rewrites `.wiki/<slug>.md`'s frontmatter to set `reviewed: false`
+/// AND a populated `source.runner` block. Coral OWNS the flip — the
+/// LLM's job is body content. Idempotent: running twice on the same
+/// page is fine; the second call overwrites with the same values.
+///
+/// The `source` block is REQUIRED, not decorative: the
+/// `unreviewed-distilled` lint gate (and the mirror in
+/// [`coral_core::page::Page::is_unreviewed_distilled`]) only fires
+/// when BOTH `reviewed: false` AND a non-empty `source.runner` are
+/// present. Without the source block, a `coral lint` run would let
+/// LLM-edited-then-not-reviewed pages slip past the trust gate. v0.21.3
+/// ships this shape from day one (the bug existed in `0ba9efd` and was
+/// caught by the post-commit audit before tagging).
+fn flip_reviewed_false(
+    target_path: &std::path::Path,
+    runner_name: &str,
+    session_id: &str,
+    captured_at: &str,
+) -> SessionResult<()> {
     let mut page = Page::from_file(target_path).map_err(|e| match e {
         coral_core::error::CoralError::Io { path, source } => SessionError::Io { path, source },
         other => SessionError::Io {
@@ -530,6 +545,28 @@ fn flip_reviewed_false(target_path: &std::path::Path) -> SessionResult<()> {
             source: std::io::Error::other(format!("{other}")),
         },
     })?;
+    let mut source_map = serde_yaml_ng::Mapping::new();
+    source_map.insert(
+        serde_yaml_ng::Value::String("runner".into()),
+        serde_yaml_ng::Value::String(runner_name.to_string()),
+    );
+    source_map.insert(
+        serde_yaml_ng::Value::String("prompt_version".into()),
+        serde_yaml_ng::Value::Number(serde_yaml_ng::Number::from(
+            DISTILL_PATCH_PROMPT_VERSION as i64,
+        )),
+    );
+    source_map.insert(
+        serde_yaml_ng::Value::String("session_id".into()),
+        serde_yaml_ng::Value::String(session_id.to_string()),
+    );
+    source_map.insert(
+        serde_yaml_ng::Value::String("captured_at".into()),
+        serde_yaml_ng::Value::String(captured_at.to_string()),
+    );
+    page.frontmatter
+        .extra
+        .insert("source".into(), serde_yaml_ng::Value::Mapping(source_map));
     page.frontmatter
         .extra
         .insert("reviewed".into(), serde_yaml_ng::Value::Bool(false));
@@ -691,6 +728,16 @@ pub fn distill_patch_session(
     // surface git failures here as Io errors because a successful
     // --check followed by a failed --apply would be a real
     // environment surprise (e.g. a concurrent edit between phases).
+    //
+    // TODO(v0.21.x post-tag): post-apply atomicity. Pre-apply atomicity
+    // (the `--check` loop above) is intact, but if patch #N applies
+    // and patch #N+1's `git apply` fails mid-flight, `.wiki/` is left
+    // half-mutated. The spec only required pre-apply atomicity, so
+    // this is acknowledged-but-not-blocking. A follow-up issue should
+    // either snapshot+restore `.wiki/` around this loop or move to a
+    // `git stash` / branch-based rollback. Tester-flagged LOW finding
+    // from the v0.21.3 audit; tracked separately, not fixed in the
+    // v0.21.3 trust-gate fix commit.
     let mut applied_targets: Vec<PathBuf> = Vec::new();
     if opts.apply {
         for (idx, p) in patches.iter().enumerate() {
@@ -708,7 +755,7 @@ pub fn distill_patch_session(
                 });
             }
             let target_path = wiki_root.join(format!("{}.md", p.target_slug));
-            flip_reviewed_false(&target_path)?;
+            flip_reviewed_false(&target_path, runner_name, &entry.session_id, &captured_at)?;
             applied_targets.push(target_path);
         }
     }

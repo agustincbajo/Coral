@@ -20,6 +20,7 @@
 //!    headers all reject without writing anything.
 
 use chrono::TimeZone;
+use coral_core::page::Page;
 use coral_runner::MockRunner;
 use coral_session::capture::{CaptureSource, IndexEntry, SessionIndex, read_index, write_index};
 use coral_session::distill_patch::{
@@ -270,6 +271,85 @@ fn distill_patch_apply_mutates_wiki_and_resets_reviewed() {
     assert!(
         after.contains("reviewed: false"),
         "frontmatter must carry reviewed: false; got:\n{after}"
+    );
+}
+
+/// Regression test for the v0.21.3 post-commit audit HIGH finding:
+/// `--apply --as-patch` MUST write a populated `source.runner` block
+/// alongside `reviewed: false` so the `unreviewed-distilled` lint gate
+/// fires. The qualifier introduced by the v0.20.1 H2 audit fix in
+/// `coral_lint::structural::check_unreviewed_distilled` (mirrored in
+/// `coral_core::page::Page::is_unreviewed_distilled`) requires BOTH
+/// `reviewed: false` AND a non-empty `source.runner` to fire.
+///
+/// Pre-fix shape: `flip_reviewed_false` only inserted `reviewed: false`,
+/// so a patched-but-unreviewed page silently bypassed the trust gate
+/// at commit time.
+///
+/// Post-fix contract: `Page::is_unreviewed_distilled()` returns `true`
+/// for every `.wiki/<target>.md` mutated by `distill_patch_session`
+/// with `apply: true`. This test would have FAILED before the fix.
+#[test]
+fn apply_patch_marks_page_as_unreviewed_distilled() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    seed_project(
+        root,
+        "session-kkkk-0011",
+        &[("modules/auth", &page_body("auth"))],
+    );
+    let yaml = format!(
+        r#"patches:
+  - target: modules/auth
+    rationale: |
+      Trust-gate regression test patch.
+    diff: |
+{}
+"#,
+        indent(&append_line_diff("modules/auth", "Trust-gate note."))
+    );
+    let runner = MockRunner::new();
+    runner.push_ok(&yaml);
+
+    let opts = DistillPatchOptions {
+        project_root: root.to_path_buf(),
+        session_id: "session-kkkk-0011".into(),
+        apply: true,
+        model: None,
+        candidates: 5,
+    };
+    let outcome = distill_patch_session(&opts, &runner, "mock").expect("ok");
+    assert_eq!(outcome.applied_targets.len(), 1);
+
+    let target_path = root.join(".wiki/modules/auth.md");
+    let after = std::fs::read_to_string(&target_path).unwrap();
+
+    // Both shape (text-level) AND semantic (qualifier-level) checks —
+    // either alone is insufficient. Text-level pins the YAML keys;
+    // semantic pins the lint-gate contract.
+    assert!(
+        after.contains("reviewed: false"),
+        "reviewed: false must be in frontmatter; got:\n{after}"
+    );
+    assert!(
+        after.contains("source:"),
+        "source block must be in frontmatter; got:\n{after}"
+    );
+    assert!(
+        after.contains("runner: mock"),
+        "source.runner must be populated; got:\n{after}"
+    );
+
+    // The contract: Page::is_unreviewed_distilled() == true. This is
+    // EXACTLY the qualifier the lint gate consults. Before the fix,
+    // this assertion failed because `source.runner` was missing.
+    let page = Page::from_file(&target_path).expect("re-parse");
+    assert!(
+        page.is_unreviewed_distilled(),
+        "page must be flagged as unreviewed-distilled (the trust-by-curation gate); \
+         missing source.runner would let the page slip past `coral lint`. \
+         Frontmatter:\n{:?}",
+        page.frontmatter.extra
     );
 }
 
