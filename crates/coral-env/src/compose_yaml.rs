@@ -3,9 +3,10 @@
 //! v0.17 wave 2 covers the schema fields the wave-1 `EnvironmentSpec`
 //! exposes: `image`, `build { context, dockerfile, target, args,
 //! cache_from, cache_to }`, `ports`, `env`, `depends_on`,
-//! `healthcheck`. `develop.watch` (compose 2.22+) follows in wave 3
-//! once the rebuild/restart interaction with the healthcheck loop is
-//! pinned by the integration test (see PRD risk #6).
+//! `healthcheck`. `develop.watch` (compose 2.22+) was wired in v0.21.2:
+//! `WatchSpec` flows from `[services.*.watch]` straight into the
+//! emitted `develop.watch` sequence, with `sync` rules first, then
+//! `rebuild`, then `restart` — see `render_watch` below.
 
 use crate::plan::{EnvPlan, ServiceSpecPlan};
 use crate::spec::{Healthcheck, HealthcheckKind, HealthcheckTiming, RealService, ServiceKind};
@@ -166,6 +167,91 @@ fn render_real(out: &mut serde_yaml_ng::Mapping, real: &RealService, plan: &Serv
     if let Some(hc) = &real.healthcheck {
         out.insert(Value::String("healthcheck".into()), render_healthcheck(hc));
     }
+    if let Some(ws) = &real.watch
+        && let Some(develop) = render_watch(ws, plan)
+    {
+        out.insert(Value::String("develop".into()), develop);
+    }
+}
+
+/// Render the `develop.watch` sub-table for a service whose spec has
+/// `[services.*.watch]`. Returns `None` if the watch block is empty
+/// (zero `sync` / `rebuild` / `restart` rules) — emitting an empty
+/// `develop.watch` sequence is useless YAML noise. The CLI surface
+/// catches this case with a friendly error before we reach the
+/// renderer; this branch is the defense-in-depth so the renderer never
+/// produces an invalid Compose document for a malformed plan.
+///
+/// Order of emission: `sync` first, then `rebuild`, then `restart`.
+/// Pinned for byte-stable output across rebuilds (the artifact hash
+/// drives `.coral/env/compose/<hash>.yml`).
+fn render_watch(ws: &crate::spec::WatchSpec, plan: &ServiceSpecPlan) -> Option<Value> {
+    if ws.sync.is_empty() && ws.rebuild.is_empty() && ws.restart.is_empty() {
+        return None;
+    }
+    let mut entries: Vec<Value> =
+        Vec::with_capacity(ws.sync.len() + ws.rebuild.len() + ws.restart.len());
+
+    // Resolve a host-side path against `plan.resolved_context` the
+    // same way `build.context` is resolved — so a relative path under
+    // a `repo = "..."` service hits the actual checkout root.
+    let resolve = |path: &std::path::Path| -> String {
+        let resolved = plan
+            .resolved_context
+            .clone()
+            .map(|root| root.join(path))
+            .unwrap_or_else(|| path.to_path_buf());
+        resolved.to_string_lossy().into_owned()
+    };
+
+    for rule in &ws.sync {
+        let mut m = serde_yaml_ng::Mapping::new();
+        m.insert(Value::String("action".into()), Value::String("sync".into()));
+        m.insert(
+            Value::String("path".into()),
+            Value::String(resolve(&rule.path)),
+        );
+        m.insert(
+            Value::String("target".into()),
+            Value::String(rule.target.to_string_lossy().into_owned()),
+        );
+        if ws.initial_sync {
+            // `initial_sync` requires compose ≥ 2.27. Compose silently
+            // ignores unknown keys on older versions, so we don't probe
+            // the binary's version — emit unconditionally and let the
+            // older runtimes drop it.
+            m.insert(Value::String("initial_sync".into()), Value::Bool(true));
+        }
+        entries.push(Value::Mapping(m));
+    }
+    for path_str in &ws.rebuild {
+        let mut m = serde_yaml_ng::Mapping::new();
+        m.insert(
+            Value::String("action".into()),
+            Value::String("rebuild".into()),
+        );
+        m.insert(
+            Value::String("path".into()),
+            Value::String(resolve(std::path::Path::new(path_str))),
+        );
+        entries.push(Value::Mapping(m));
+    }
+    for path_str in &ws.restart {
+        let mut m = serde_yaml_ng::Mapping::new();
+        m.insert(
+            Value::String("action".into()),
+            Value::String("restart".into()),
+        );
+        m.insert(
+            Value::String("path".into()),
+            Value::String(resolve(std::path::Path::new(path_str))),
+        );
+        entries.push(Value::Mapping(m));
+    }
+
+    let mut develop = serde_yaml_ng::Mapping::new();
+    develop.insert(Value::String("watch".into()), Value::Sequence(entries));
+    Some(Value::Mapping(develop))
 }
 
 fn render_healthcheck(hc: &Healthcheck) -> Value {
@@ -489,5 +575,230 @@ mod tests {
         let b = render(&plan);
         assert_eq!(a, b);
         assert_eq!(content_hash(&a), content_hash(&b));
+    }
+
+    // ---- v0.21.2: `develop.watch` rendering ----
+
+    use crate::spec::{SyncRule, WatchSpec};
+
+    fn watch_service(name: &str, watch: WatchSpec) -> ServiceSpecPlan {
+        ServiceSpecPlan {
+            name: name.into(),
+            kind: ServiceKind::Real(Box::new(RealService {
+                repo: None,
+                image: Some("api:dev".into()),
+                build: None,
+                ports: vec![],
+                env: BTreeMap::new(),
+                depends_on: vec![],
+                healthcheck: None,
+                watch: Some(watch),
+            })),
+            resolved_context: None,
+        }
+    }
+
+    #[test]
+    fn watch_block_empty_emits_nothing() {
+        // A `WatchSpec` with no rules is a user mistake — the CLI
+        // catches it before we render — but the renderer must still
+        // emit no `develop` block so a half-baked plan never produces
+        // invalid YAML.
+        let mut plan = empty_plan("dev");
+        plan.services.insert(
+            "api".into(),
+            watch_service(
+                "api",
+                WatchSpec {
+                    sync: vec![],
+                    rebuild: vec![],
+                    restart: vec![],
+                    initial_sync: false,
+                },
+            ),
+        );
+        let yaml = render(&plan);
+        assert!(
+            !yaml.contains("develop:"),
+            "empty WatchSpec must not emit a `develop` block, got:\n{yaml}"
+        );
+    }
+
+    #[test]
+    fn watch_block_sync_only() {
+        let mut plan = empty_plan("dev");
+        plan.services.insert(
+            "api".into(),
+            watch_service(
+                "api",
+                WatchSpec {
+                    sync: vec![SyncRule {
+                        path: std::path::PathBuf::from("./src"),
+                        target: std::path::PathBuf::from("/app/src"),
+                    }],
+                    rebuild: vec![],
+                    restart: vec![],
+                    initial_sync: false,
+                },
+            ),
+        );
+        let yaml = render(&plan);
+        assert!(yaml.contains("develop:"), "missing develop block:\n{yaml}");
+        assert!(yaml.contains("watch:"), "missing watch sequence:\n{yaml}");
+        assert!(
+            yaml.contains("action: sync"),
+            "missing sync action:\n{yaml}"
+        );
+        assert!(
+            yaml.contains("./src") && yaml.contains("/app/src"),
+            "missing path/target:\n{yaml}"
+        );
+        // No rebuild/restart should appear when only sync is declared.
+        assert!(!yaml.contains("action: rebuild"));
+        assert!(!yaml.contains("action: restart"));
+        // initial_sync defaulted false — must NOT appear.
+        assert!(!yaml.contains("initial_sync"));
+    }
+
+    #[test]
+    fn watch_block_all_three_actions() {
+        // Pin the rule order: sync first, then rebuild, then restart.
+        // Compose treats the watch list as ordered for first-match
+        // semantics in some edge cases, so a stable order is part of
+        // the contract.
+        let mut plan = empty_plan("dev");
+        plan.services.insert(
+            "api".into(),
+            watch_service(
+                "api",
+                WatchSpec {
+                    sync: vec![SyncRule {
+                        path: std::path::PathBuf::from("./src"),
+                        target: std::path::PathBuf::from("/app/src"),
+                    }],
+                    rebuild: vec!["./Dockerfile".into()],
+                    restart: vec!["./config.yaml".into()],
+                    initial_sync: false,
+                },
+            ),
+        );
+        let yaml = render(&plan);
+        let sync_idx = yaml.find("action: sync").expect("missing sync action");
+        let rebuild_idx = yaml
+            .find("action: rebuild")
+            .expect("missing rebuild action");
+        let restart_idx = yaml
+            .find("action: restart")
+            .expect("missing restart action");
+        assert!(
+            sync_idx < rebuild_idx && rebuild_idx < restart_idx,
+            "expected sync < rebuild < restart in YAML output, got:\n{yaml}"
+        );
+    }
+
+    #[test]
+    fn watch_initial_sync_propagates_to_sync_entries() {
+        // `initial_sync = true` flips an `initial_sync: true` flag on
+        // every sync entry (compose ≥ 2.27). It MUST NOT appear on
+        // rebuild / restart entries — they're not sync ops.
+        let mut plan = empty_plan("dev");
+        plan.services.insert(
+            "api".into(),
+            watch_service(
+                "api",
+                WatchSpec {
+                    sync: vec![
+                        SyncRule {
+                            path: std::path::PathBuf::from("./src"),
+                            target: std::path::PathBuf::from("/app/src"),
+                        },
+                        SyncRule {
+                            path: std::path::PathBuf::from("./templates"),
+                            target: std::path::PathBuf::from("/app/templates"),
+                        },
+                    ],
+                    rebuild: vec!["./Dockerfile".into()],
+                    restart: vec![],
+                    initial_sync: true,
+                },
+            ),
+        );
+        let yaml = render(&plan);
+        // Two sync entries, two `initial_sync: true` flags.
+        let count = yaml.matches("initial_sync: true").count();
+        assert_eq!(
+            count, 2,
+            "expected two initial_sync flags, got {count} in:\n{yaml}"
+        );
+    }
+
+    #[test]
+    fn watch_path_resolves_against_resolved_context() {
+        // For a service with `repo = "..."`, the renderer resolves
+        // relative `path` values against `resolved_context` (the
+        // checkout root) so `./src` lives at `/work/repos/api/src`,
+        // NOT at the cwd of `coral up`. Mirrors how `build.context`
+        // is resolved in `render_real`.
+        let svc = ServiceSpecPlan {
+            name: "api".into(),
+            kind: ServiceKind::Real(Box::new(RealService {
+                repo: Some("api".into()),
+                image: None,
+                build: None,
+                ports: vec![],
+                env: BTreeMap::new(),
+                depends_on: vec![],
+                healthcheck: None,
+                watch: Some(WatchSpec {
+                    sync: vec![SyncRule {
+                        path: std::path::PathBuf::from("./src"),
+                        target: std::path::PathBuf::from("/app/src"),
+                    }],
+                    rebuild: vec!["./Dockerfile".into()],
+                    restart: vec![],
+                    initial_sync: false,
+                }),
+            })),
+            resolved_context: Some(std::path::PathBuf::from("/work/repos/api")),
+        };
+        let mut plan = empty_plan("dev");
+        plan.services.insert("api".into(), svc);
+        let yaml = render(&plan);
+        // The sync path must be the joined absolute path; the target
+        // (container-side) must pass through verbatim.
+        assert!(
+            yaml.contains("/work/repos/api/./src") || yaml.contains("/work/repos/api/src"),
+            "sync path not resolved against resolved_context, got:\n{yaml}"
+        );
+        assert!(
+            yaml.contains("/work/repos/api/./Dockerfile")
+                || yaml.contains("/work/repos/api/Dockerfile"),
+            "rebuild path not resolved against resolved_context, got:\n{yaml}"
+        );
+        // Target stays container-side, untouched.
+        assert!(
+            yaml.contains("target: /app/src"),
+            "target should pass through, got:\n{yaml}"
+        );
+    }
+
+    #[test]
+    fn watch_absent_yields_yaml_identical_to_pre_watch() {
+        // BC contract — the centerpiece of v0.21.2: a service with
+        // `watch: None` (i.e. `[services.*.watch]` absent in TOML)
+        // produces YAML byte-identical to v0.21.1 output. We pin this
+        // by rendering the same plan twice (once with `watch: None`,
+        // the default) and asserting no `develop:` keyword appears.
+        let mut plan = empty_plan("dev");
+        plan.services.insert("db".into(), real_service("db"));
+        let yaml = render(&plan);
+        assert!(
+            !yaml.contains("develop:"),
+            "services without `watch` must NOT emit a develop block, got:\n{yaml}"
+        );
+        assert!(
+            !yaml.contains(" watch:"),
+            "services without `watch` must NOT emit a watch key, got:\n{yaml}"
+        );
     }
 }

@@ -1,10 +1,15 @@
-//! `coral up [--service NAME]... [--env dev|ci] [--detach] [--build]`
+//! `coral up [--service NAME]... [--env dev|ci] [--detach] [--build] [--watch]`
 //!
 //! Brings up the selected environment via the configured backend
 //! (compose in v0.17). Single-repo legacy users can still declare
 //! `[[environments]]` in a `coral.toml` placed in their cwd; this
 //! command always requires a manifest because environments are
 //! manifest-only.
+//!
+//! v0.21.2 added `--watch`: after `up -d --wait` succeeds, run
+//! `compose watch` foreground until Ctrl-C. The renderer emits
+//! `develop.watch` from `[services.*.watch]` in `coral.toml`.
+//! `coral env watch` is an alias.
 
 use anyhow::{Context, Result};
 use clap::Args;
@@ -36,6 +41,12 @@ pub struct UpArgs {
     /// Force rebuild before bringing up.
     #[arg(long)]
     pub build: bool,
+
+    /// After `up -d --wait` succeeds, run `compose watch` foreground
+    /// until Ctrl-C. Requires at least one service to declare
+    /// `[services.<name>.watch]` in `coral.toml`. v0.21.2+.
+    #[arg(long)]
+    pub watch: bool,
 }
 
 pub fn run(args: UpArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
@@ -57,12 +68,25 @@ pub fn run(args: UpArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
     let plan = EnvPlan::from_spec(&spec, &project.root, &repo_paths)
         .map_err(|e| anyhow::anyhow!("building env plan: {}", e))?;
 
+    // macOS users hit a known docker-for-mac fsevents issue with
+    // compose watch (sometimes `EBADF` after long sessions, files
+    // ignored on case-sensitive volumes). Surface the upstream issue
+    // up front so users have a pointer when they hit it.
+    // <https://github.com/docker/for-mac/issues/7832>
+    if args.watch && cfg!(target_os = "macos") {
+        eprintln!(
+            "WARNING: `compose watch` on macOS has a known fsevents flakiness issue \
+             (docker/for-mac#7832 — https://github.com/docker/for-mac/issues/7832). \
+             If sync events stop firing, restart Docker Desktop."
+        );
+    }
+
     let backend = ComposeBackend::new(ComposeRuntime::parse(&spec.compose_command));
     let opts = UpOptions {
         services: args.services,
         detach: args.detach,
         build: args.build,
-        watch: false,
+        watch: args.watch,
     };
     let handle = backend
         .up(&plan, &opts)

@@ -39,6 +39,24 @@ pub enum EnvCmd {
     Import(ImportArgs),
     /// Devcontainer (.devcontainer/devcontainer.json) operations.
     Devcontainer(DevcontainerArgs),
+    /// Run `compose watch` in foreground for live-reload. Alias for
+    /// `coral up --watch`. v0.21.2+.
+    Watch(WatchArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct WatchArgs {
+    /// Environment name (e.g. `dev`). Defaults to the first declared.
+    #[arg(long)]
+    pub env: Option<String>,
+
+    /// Limit watch to specific services.
+    #[arg(long = "service", num_args = 1..)]
+    pub services: Vec<String>,
+
+    /// Force rebuild before bringing up.
+    #[arg(long)]
+    pub build: bool,
 }
 
 #[derive(Args, Debug)]
@@ -136,7 +154,23 @@ pub fn run(args: EnvArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
         EnvCmd::Devcontainer(a) => match a.command {
             DevcontainerCmd::Emit(emit) => devcontainer_emit(emit, wiki_root),
         },
+        EnvCmd::Watch(a) => watch(a, wiki_root),
     }
+}
+
+/// `coral env watch` is a thin alias for `coral up --watch`. We
+/// translate `WatchArgs` to `UpArgs` and dispatch through `up::run` so
+/// there's exactly one watch implementation. Doubles the help-text
+/// surface by ~10 lines, but keeps the orchestration single-sourced.
+fn watch(args: WatchArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
+    let up_args = crate::commands::up::UpArgs {
+        env: args.env,
+        services: args.services,
+        detach: true,
+        build: args.build,
+        watch: true,
+    };
+    crate::commands::up::run(up_args, wiki_root)
 }
 
 fn status(args: StatusArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {

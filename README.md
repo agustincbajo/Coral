@@ -314,6 +314,36 @@ coral test --format junit > junit.xml    # consumed by GitHub Actions reporter /
 coral down                               # tear down
 ```
 
+### Live reload (`coral up --watch`, v0.21.2+)
+
+Declare what to sync, rebuild, or restart on file changes:
+
+```toml
+[environments.services.api.watch]
+rebuild      = ["./Dockerfile", "./go.sum"]
+restart      = ["./config.yaml"]
+initial_sync = true                       # compose ≥ 2.27 — fires once on attach
+
+[[environments.services.api.watch.sync]]
+path   = "./src"
+target = "/app/src"
+
+[[environments.services.api.watch.sync]]
+path   = "./templates"
+target = "/app/templates"
+```
+
+Then:
+
+```bash
+coral up --watch --env dev               # up -d --wait, then `compose watch` foreground until Ctrl-C
+coral env watch --env dev                # alias for `coral up --watch`
+```
+
+`compose watch` streams sync events (`syncing X files to Y`, `rebuilding service Z`) to your terminal — same UX as `tilt up` or `skaffold dev`. Ctrl-C tears the watch subprocess down cleanly without killing the running containers (`coral down` does that). At least one service must declare `[services.<name>.watch]`; running `--watch` against a manifest with no watch blocks fails fast with an actionable error.
+
+> **macOS caveat.** `compose watch` on macOS hits an upstream Docker fsevents flakiness — sometimes sync events stop firing after long sessions, or files on case-sensitive volumes are ignored. Tracked at [docker/for-mac#7832](https://github.com/docker/for-mac/issues/7832). Coral emits a one-line `WARNING:` to stderr on macOS so the issue is never silent. Workaround when sync stalls: restart Docker Desktop.
+
 Author tests as YAML in `.coral/tests/*.yaml`:
 
 ```yaml
@@ -1060,13 +1090,14 @@ Exit 0 by default; `--strict` raises warnings to errors and exits non-zero.
 
 | Command | Purpose |
 |---|---|
-| `coral up [--env NAME] [--service NAME]... [--detach] [--build]` | `EnvBackend::up`. Default `--detach=true`. Compose backend renders `.coral/env/compose/<hash>.yml`. |
+| `coral up [--env NAME] [--service NAME]... [--detach] [--build] [--watch]` | `EnvBackend::up`. Default `--detach=true`. Compose backend renders `.coral/env/compose/<hash>.yml`. `--watch` (v0.21.2+) runs `compose watch` foreground after `up -d --wait` succeeds — see "Live reload" above. |
 | `coral down [--env] [--volumes] [--yes]` | Tear down. `--yes` required when `production = true`. |
 | `coral env status [--env] [--format markdown\|json]` | Live service state from `EnvBackend::status()`. |
 | `coral env logs <service> [--env] [--tail N]` | Read recent logs (compose `logs --no-color --no-log-prefix --timestamps`). |
 | `coral env exec <service> [--env] -- <cmd>...` | One-shot exec inside a container. Exit code propagates. |
 | `coral env import <compose.yml> [--env NAME] [--write] [--out PATH]` | (v0.19.7+) Convert an existing `docker-compose.yml` into a starter `[[environments]]` block for `coral.toml`. Conservative + advisory: emits only fields that round-trip through `EnvironmentSpec`; everything else surfaces as a `# TODO:` comment. Heuristic infers `kind = "http"` from `CMD curl URL` patterns. |
 | `coral env devcontainer emit [--env NAME] [--service NAME] [--write] [--out PATH]` | (v0.21.0+) Render a `.devcontainer/devcontainer.json` from the active `[[environments]]` block so VS Code / Cursor / GitHub Codespaces can attach to the same Compose project Coral runs. Pure offline emit: `forwardPorts` from `RealService.ports`, `dockerComposeFile` points at `../.coral/env/compose/<hash>.yml`. `--service` overrides the auto-selection (first real service with `repo = "..."`, fallback alphabetic). `--write` lands the file atomically at `<project_root>/.devcontainer/devcontainer.json`. |
+| `coral env watch [--env NAME] [--service NAME]... [--build]` | (v0.21.2+) Alias for `coral up --watch`. Runs `compose watch` foreground until Ctrl-C. |
 
 ### Functional testing layer (v0.18+)
 
@@ -1732,12 +1763,13 @@ Nightly (`.github/workflows/nightly.yml`) runs the `--ignored` smoke tests again
 
 This is a **GitHub Actions billing issue**, not a Coral bug. Update your billing settings or spending limit at github.com/settings/billing/payment_information. The CI workflow itself is correct — re-running after billing is resolved should work without code changes.
 
-### `coral up` fails on macOS Sonoma+ with "compose watch" file-descriptor errors
+### `coral up --watch` fails on macOS Sonoma+ with "compose watch" file-descriptor errors
 
-Known [Docker Desktop 4.57+ regression](https://github.com/docker/for-mac/issues/7832). Workarounds:
+Known [Docker Desktop 4.57+ regression](https://github.com/docker/for-mac/issues/7832). Coral emits a one-line `WARNING:` banner to stderr before starting `compose watch` on macOS, so this issue is never silent. Workarounds:
 
 - Add a `.dockerignore` at each repo root excluding `vendor/`, `node_modules/`, `target/`.
-- Pass `--no-watch` to `coral up` (not yet shipped — coming in v0.19.x; for now, edit the manifest's `[services.*.watch]` block and re-run `up`).
+- Run `coral up --env dev` without `--watch` — `[services.*.watch]` blocks in `coral.toml` are only consulted by `--watch`, so omitting the flag keeps the env up without the live-reload subprocess.
+- Restart Docker Desktop when sync stalls — the underlying fsevents handle gets corrupt over long sessions.
 - Switch to Linux for development, or use `colima` / `podman` (`compose_command = "podman"`).
 
 ### `coral project sync` fails on one repo, succeeds on others
@@ -1934,6 +1966,10 @@ Full per-release detail in [CHANGELOG](CHANGELOG.md).
 
 - **`coral env devcontainer emit` (offline).** Render a `.devcontainer/devcontainer.json` from the active `[[environments]]` block so VS Code / Cursor / GitHub Codespaces can attach to the same Compose project Coral runs. Pure renderer in the env layer (`coral_env::render_devcontainer`), no I/O; `--write` lands the file atomically at `.devcontainer/devcontainer.json` (atomic-write, sibling tempfile + rename, matching `coral env import --write`). Service auto-selection prefers the first real service with a `repo = "..."` reference and falls back alphabetically; `--service` overrides explicitly. `forwardPorts` is the union of every `RealService.ports` from the spec, deduped and sorted. **1124 tests pass (was 1108; +16).**
 
+✅ **Shipped (v0.21.2 — `coral up --watch`):**
+
+- **`coral up --watch` (compose 2.22+ `develop.watch`).** Wire the wave-1 `WatchSpec` / `SyncRule` types through the YAML renderer and `ComposeBackend::up`. After `up -d --wait` succeeds, run `compose watch` foreground until Ctrl-C; SIGINT (130) tears the watch subprocess down cleanly without killing containers. `coral env watch` is an alias. macOS users get a one-line `WARNING:` banner pointing at [docker/for-mac#7832](https://github.com/docker/for-mac/issues/7832). `EnvCapabilities::watch` flips `true`. BC sacred: services without `[services.*.watch]` emit byte-identical YAML to v0.21.1. **1174 tests pass (was 1155; +19).**
+
 🔮 **v0.22+ feature roadmap:**
 
 - `coral session capture --from cursor` and `--from chatgpt` (the v0.20 flags currently emit a clear "not yet implemented" error pointing at #16).
@@ -1948,7 +1984,6 @@ Full per-release detail in [CHANGELOG](CHANGELOG.md).
 - `MultiStepRunner` (planner + executor + reviewer with per-step model tiering).
 - gRPC test steps (via `grpcurl` subprocess or `tonic` reflection).
 - Cross-repo glob (`[[repos]] glob = "services/*"`) and sub-manifests `<include>`.
-- `coral up --watch` (compose 2.22 `develop.watch`) — Linux first; macOS waits on the Docker bug.
 - `coral env attach <service>`, `coral env reset`, `coral env port-forward`, `coral env open`, `coral env prune`.
 - SWE-ContextBench benchmark publication.
 

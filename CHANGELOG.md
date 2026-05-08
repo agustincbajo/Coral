@@ -7,6 +7,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.2] - 2026-05-08
+
+**Feature release: `coral up --watch` (live reload via compose `develop.watch`).** Wire the wave-1 `WatchSpec` / `SyncRule` types through the YAML renderer and `ComposeBackend::up` so `coral up --watch` runs `docker compose watch` foreground after `up -d --wait` completes. The wave-1 v0.17 schema reserved `[services.<name>.watch]` (with `sync` + `rebuild` + `restart` + `initial_sync`) but the renderer dropped it on the floor — v0.21.2 closes that gap. After `up -d --wait` succeeds, `compose watch` streams sync events ("syncing X files to Y", "rebuilding service Z") to the terminal until Ctrl-C; SIGINT (exit code 130) is treated as a clean exit. `coral env watch` is a thin alias for `coral up --watch` so the surface area stays small. macOS users hit a known fsevents flakiness in Docker Desktop ([docker/for-mac#7832](https://github.com/docker/for-mac/issues/7832)) — Coral emits a one-line `WARNING:` banner to stderr before the watch subprocess starts so the issue is never silent. **`EnvCapabilities::watch` flips from `false` to `true`.** **BC sacred: services without `[services.*.watch]` emit byte-identical YAML to v0.21.1** — pinned by `compose_yaml::tests::watch_absent_yields_yaml_identical_to_pre_watch` and `crates/coral-env/tests/watch_yaml_render.rs::service_without_watch_emits_no_develop_block`. **1174 tests pass (was 1155; +19).** `bc_regression` green.
+
+### Added
+
+- **`coral up --watch [--env NAME] [--service NAME]...`.** After `up -d --wait` succeeds, run `compose watch` foreground until Ctrl-C. Requires at least one service to declare `[services.<name>.watch]` in `coral.toml`. The watch subprocess inherits the parent's stdin/stdout/stderr so events stream live (matches `tilt up` / `skaffold dev` UX). Pre-flight validation rejects `--watch` against a manifest with no watch blocks via `EnvError::InvalidSpec` whose message names both `--watch` and `[services.<name>.watch]` (acceptance criterion #2).
+- **`coral env watch [--env NAME] [--service NAME]... [--build]`.** Alias for `coral up --watch`. ~10-line dispatch in `crates/coral-cli/src/commands/env.rs::watch` translates `WatchArgs` → `UpArgs { watch: true, detach: true, ... }` and re-enters `up::run` so there's exactly one watch implementation.
+- **`develop.watch` block in the rendered Compose YAML.** Emitted from `[services.<name>.watch]` for any service that declares it. Order: `sync` rules first, then `rebuild`, then `restart` (pinned by `compose_yaml::tests::watch_block_all_three_actions`). Sync rules carry `path` (resolved against `resolved_context` for `repo = "..."` services, same way `build.context` is resolved) and `target` (container-side, verbatim). Rebuild and restart entries carry only `path`. `initial_sync = true` (compose ≥ 2.27) propagates to every sync entry; older compose versions silently drop the unknown key — no version probe needed.
+- **macOS `WARNING:` banner.** Single stderr line emitted before `compose watch` starts on macOS, mentioning [docker/for-mac#7832](https://github.com/docker/for-mac/issues/7832) by URL. Pinned by `crates/coral-cli/tests/watch_macos_banner.rs`, `#[cfg(target_os = "macos")]`-gated.
+
+### Changed
+
+- **`ComposeBackend::capabilities()` returns `watch: true`.** Pinned by `compose::tests::capabilities_advertise_watch_true`.
+- **`crates/coral-cli/src/commands/up.rs::UpArgs` gains `pub watch: bool` (`#[arg(long)]`).** The line-65 hardcode `watch: false` flips to `args.watch`. `--detach` default stays `true` so `coral up --watch` continues to behave like `coral up && coral verify` upstream.
+- **README "Quickstart — environments + tests"** gains a new "Live reload (`coral up --watch`, v0.21.2+)" subsection. TOML snippet (sync + rebuild + restart) + commands + macOS caveat with upstream issue link. The pre-existing "compose watch file-descriptor errors on macOS Sonoma+" troubleshooting entry is rewritten — the v0.19.x `--no-watch` placeholder workaround is replaced with "omit `--watch`" since the flag is now real.
+- **README env table** gains `--watch` on the `coral up` row and a new `coral env watch` row.
+
+### Internal
+
+- **`compose_yaml::render_watch(ws, plan)`** — pure helper over `WatchSpec`. Returns `None` for empty `WatchSpec` (defensive: the CLI catches this case earlier with a friendly error). Lives next to `render_real` so the watch path inherits the same `resolved_context` resolution as `build.context`.
+- **`compose::watch_subprocess(plan, artifact, services)`** — `Command::status()`-shaped foreground subprocess (NOT `output()`) so stdout/stderr stream live. Appends `"watch"` after `--project-name`, then forwards the `--service` allowlist as positional args. Blocks until the child exits.
+- **`compose::validate_watch_services(plan)`** — extracted as a free function (was inline in `up`) so it's directly unit-testable without spawning a subprocess. Pinned by 4 tests in `compose::tests::validate_watch_services_*`.
+- **No new dependencies.** `notify` was a non-starter — compose handles fs events natively. Zero net additions to `Cargo.lock`.
+
+### Tests (+19)
+
+- **#1-#6 (`crates/coral-env/src/compose_yaml.rs::tests`)**: `watch_block_empty_emits_nothing`, `watch_block_sync_only`, `watch_block_all_three_actions`, `watch_initial_sync_propagates_to_sync_entries`, `watch_path_resolves_against_resolved_context`, `watch_absent_yields_yaml_identical_to_pre_watch`.
+- **#7-#10 (`crates/coral-env/src/compose.rs::tests`)**: `validate_watch_services_rejects_plan_without_any_watch_block` (pins the `--watch` + `[services.<name>.watch]` message shape), `validate_watch_services_rejects_plan_with_services_but_no_watch`, `validate_watch_services_accepts_plan_with_at_least_one_watch_block`, `validate_watch_services_rejects_empty_watch_spec`.
+- **#11 (`crates/coral-env/src/compose.rs::tests`)**: `capabilities_advertise_watch_true`.
+- **#12 (`crates/coral-env/src/spec.rs::tests`)**: `sync_rule_requires_both_path_and_target` — guard against `#[serde(default)]` slipping in and weakening the contract.
+- **#13-#17 (`crates/coral-env/tests/watch_yaml_render.rs`)**: `parse_then_render_emits_develop_watch_block`, `watch_actions_emit_in_canonical_order`, `sync_paths_resolve_against_repo_checkout`, `initial_sync_propagates_to_every_sync_entry`, `service_without_watch_emits_no_develop_block`, `adding_watch_changes_artifact_hash`. End-to-end round-trip parse → plan → render → re-parse YAML.
+- **#18 (`crates/coral-cli/tests/watch_macos_banner.rs`)**: `macos_emits_warning_banner_before_watch_subprocess` — `#[cfg(target_os = "macos")]`-gated; pins the URL appears on stderr.
+- **`crates/coral-cli/tests/watch_smoke.rs`** (`#[ignore]`-gated; runs only with `--ignored` and a real docker daemon): `watch_subprocess_runs_foreground_against_real_docker`, `watch_without_watch_service_fails_actionably`. Two `ignored` smoke tests reach 19 ignored total (was 17).
+
+### Acceptance criteria — 15/15 met
+
+1. `coral up --watch --env dev` foregrounds `compose watch` after `up -d --wait` ✓ (`compose::up` sequencing).
+2. `--watch` against an env with no watch blocks fails with `EnvError::InvalidSpec` whose message names `--watch` AND `[services.<name>.watch]` ✓ (`validate_watch_services_rejects_plan_without_any_watch_block`).
+3. Services without `watch` emit byte-identical YAML to v0.21.1 ✓ (`watch_absent_yields_yaml_identical_to_pre_watch`, `service_without_watch_emits_no_develop_block`).
+4. `compose watch` runs foreground; stdin/stdout/stderr inherited; Ctrl-C exits cleanly without orphaned containers ✓ (`watch_subprocess` uses `Command::status()`; SIGINT 130 → `Ok(())`).
+5. macOS `WARNING:` line goes to stderr before the watch subprocess starts, mentioning docker/for-mac#7832 by URL ✓ (`macos_emits_warning_banner_before_watch_subprocess`).
+6. `coral env watch` is an alias with identical observable behavior ✓ (single `up::run` dispatch).
+7. `ComposeBackend::capabilities()` returns `watch: true` ✓ (`capabilities_advertise_watch_true`).
+8. `cargo test -p coral-env` includes a snapshot-style assertion of rendered `develop.watch` YAML for sync+rebuild+restart ✓ (`watch_block_all_three_actions`, `parse_then_render_emits_develop_watch_block`).
+9. Adding `[services.*.watch]` to an existing manifest produces a NEW artifact hash ✓ (`adding_watch_changes_artifact_hash`).
+10. macOS banner test gated `#[cfg(target_os = "macos")]` ✓ (file-level cfg on `watch_macos_banner.rs`).
+11. `bc_regression` passes unmodified ✓.
+12. `--watch` propagates through `UpOptions.watch` to `ComposeBackend::up` — no other path consumes it ✓ (single read site at `compose::up`).
+13. `coral up --watch --service api` only watches `api` ✓ (`watch_subprocess` forwards `services` after `watch` verb).
+14. SIGINT 130 → `Ok(())`; only non-130 non-zero is `EnvError::BackendError` ✓ (`compose::up` exit-code branch).
+15. README + CHANGELOG mention `--watch` and the macOS caveat ✓.
+
+### Pipeline note
+
+Patch release within the v0.21 sprint (third feature of the five-feature batch). No `Co-Authored-By: Claude` trailer per working-agreements.
+
 ## [0.21.1] - 2026-05-08
 
 **Feature release: HTTP/SSE MCP transport (Streamable HTTP per MCP 2025-11-25).** v0.20.x had deferred this transport during the cycle-4 audit (H6) — every shipped MCP client speaks stdio, and an inflated docs surface for an unimplemented transport read worse than absence of the feature. v0.21.1 reintroduces it as a first-class peer of stdio: `coral mcp serve --transport http --port <p>` opens `POST /mcp` (JSON-RPC), `GET /mcp` (SSE keep-alive), `DELETE /mcp` (session teardown), and `OPTIONS /mcp` (CORS preflight) on a `tiny_http::Server`. Default bind is `127.0.0.1`; `--bind 0.0.0.0` is opt-in and emits a `WARNING:` stderr banner. Origin allowlist accepts `null` / `http://localhost*` / `http://127.0.0.1*` / `http://[::1]*` only — the spec's DNS-rebinding mitigation. Body cap is 4 MiB → 413, concurrency cap is 32 in-flight → 503, batched JSON-RPC arrays return 400. Wire format is byte-stable with v0.20.x stdio: the dispatcher (`McpHandler::handle_line`) is shared, so tool catalogs, audit-log shape, the `--read-only` / `--allow-write-tools` gate, and the `--include-unreviewed` filter behave identically across the two transports. Phase 2 of the v0.21.1 plan lifted the stdio loop body out of `server.rs` into `transport/stdio.rs` so the new HTTP transport could share `handle_line` without the JSON-RPC core dragging the stdio framing along — `serve_stdio` is now a 6-line shim over `transport::stdio::serve_stdio`. **BC pinned via `mcp_stdio_golden.rs` (test #21): the JSON-RPC envelope shape is byte-identical to v0.21.0.** **1155 tests pass (was 1124; +31).** BC contract holds — `bc_regression` is green; the wire format `"transport": "stdio"` deserializes unchanged from any v0.20.x config.

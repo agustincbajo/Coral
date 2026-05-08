@@ -1,9 +1,12 @@
 //! `ComposeBackend` — `docker compose` v2 / `docker-compose` v1 / `podman compose` wrapper.
 //!
 //! v0.17 wave 2 wires the real subprocess lifecycle: `up -d`, `down`,
-//! `ps --format json` for status, `logs`, `exec`. `develop.watch`
-//! follows in v0.17.x once the rebuild/healthcheck flapping
-//! interaction is pinned by the integration test (PRD risk #6).
+//! `ps --format json` for status, `logs`, `exec`. v0.21.2 adds the
+//! `develop.watch` foreground path: when `UpOptions.watch == true`,
+//! `up` first runs the existing `up -d --wait` and then streams
+//! `compose watch` foreground until Ctrl-C. The renderer (compose_yaml)
+//! emits the `develop.watch` block from `[services.*.watch]` in
+//! `coral.toml`.
 
 use crate::compose_yaml;
 use crate::plan::{
@@ -147,6 +150,72 @@ impl ComposeBackend {
             message: format!("failed to invoke {bin}: {e}"),
         })
     }
+
+    /// Spawn `compose watch` in foreground, inheriting stdin/stdout/stderr
+    /// from the parent. Blocks until the child exits.
+    ///
+    /// Foreground (`Command::status`, not `Command::output`) is the
+    /// right shape for `coral up --watch`: compose watch is chatty —
+    /// "syncing X files to Y", "rebuilding service Z" — and the user
+    /// expects to see those lines live, the way `tilt up` and
+    /// `skaffold dev` look. Capturing into a buffer would defeat the
+    /// inner-loop UX.
+    ///
+    /// The `services` list is forwarded as positional args after the
+    /// `watch` verb so `--service api` only watches `api`.
+    fn watch_subprocess(
+        &self,
+        plan: &EnvPlan,
+        artifact: &Path,
+        services: &[String],
+    ) -> EnvResult<std::process::ExitStatus> {
+        let (bin, prefix) = self.detect_invocation()?;
+        let mut cmd = Command::new(&bin);
+        for arg in &prefix {
+            cmd.arg(arg);
+        }
+        cmd.arg("--file").arg(artifact);
+        cmd.arg("--project-name").arg(&plan.project_name);
+        cmd.arg("watch");
+        for s in services {
+            cmd.arg(s);
+        }
+        if let Some(env_file) = &plan.env_file {
+            cmd.env("COMPOSE_ENV_FILES", env_file);
+        }
+        cmd.status().map_err(|e| EnvError::BackendError {
+            backend: "compose".into(),
+            message: format!("failed to invoke {bin} watch: {e}"),
+        })
+    }
+}
+
+/// Validate that at least one service in the plan declares a
+/// non-empty `[services.<name>.watch]` block. Returns
+/// `EnvError::InvalidSpec` with a message naming both `--watch` and
+/// `[services.<name>.watch]` when the gate fails — the message shape
+/// is part of the user-visible contract (acceptance criterion #2).
+///
+/// Pulled out as a free function (not a `ComposeBackend` method) so
+/// it's directly unit-testable without spawning a subprocess.
+pub(crate) fn validate_watch_services(plan: &EnvPlan) -> EnvResult<()> {
+    let any_watch = plan.services.values().any(|svc| {
+        if let crate::spec::ServiceKind::Real(real) = &svc.kind {
+            real.watch.as_ref().is_some_and(|ws| {
+                !ws.sync.is_empty() || !ws.rebuild.is_empty() || !ws.restart.is_empty()
+            })
+        } else {
+            false
+        }
+    });
+    if !any_watch {
+        return Err(EnvError::InvalidSpec(format!(
+            "--watch was requested but no service in environment '{}' \
+             declares a [services.<name>.watch] sub-table",
+            plan.name
+        )));
+    }
+    Ok(())
 }
 
 fn try_invocation(bin: &str, args: &[&str]) -> bool {
@@ -202,6 +271,28 @@ impl EnvBackend for ComposeBackend {
                 message: format!("up failed: {tail}"),
             });
         }
+
+        // v0.21.2 — `--watch` foreground path.
+        //
+        // Sequencing: `up -d --wait` first (so all services are
+        // healthy and the user has a working environment to watch),
+        // then `compose watch` in foreground. SIGINT (130) tears the
+        // watch subprocess down cleanly without killing the running
+        // containers — that's `coral down`'s job, not watch's.
+        if opts.watch {
+            validate_watch_services(plan)?;
+            let status = self.watch_subprocess(plan, &artifact_path, &opts.services)?;
+            // Exit code 130 == SIGINT, the user's Ctrl-C — clean exit.
+            // Anything else non-zero is a real error.
+            if !status.success() && status.code() != Some(130) {
+                let code = status.code().unwrap_or(-1);
+                return Err(EnvError::BackendError {
+                    backend: "compose".into(),
+                    message: format!("compose watch exited with code {code}"),
+                });
+            }
+        }
+
         let mut state = BTreeMap::new();
         state.insert("project_name".into(), plan.project_name.clone());
         Ok(EnvHandle {
@@ -375,7 +466,11 @@ impl EnvBackend for ComposeBackend {
 
     fn capabilities(&self) -> EnvCapabilities {
         EnvCapabilities {
-            watch: false, // wave-3
+            // v0.21.2: live-reload via `compose watch`. The renderer
+            // emits `develop.watch` from `[services.*.watch]`, and
+            // `up()` runs `compose watch` foreground when
+            // `UpOptions.watch == true`.
+            watch: true,
             exec: true,
             logs_follow: false, // CLI handles --follow via direct streaming
             port_forward_explicit: false,
@@ -529,5 +624,174 @@ mod tests {
         if matches!(err, EnvError::InvalidSpec(_)) {
             panic!("managed mode should not be rejected as InvalidSpec");
         }
+    }
+
+    /// v0.21.2: `coral up --watch` must report `EnvError::InvalidSpec`
+    /// when the active environment declares zero `[services.*.watch]`
+    /// blocks. Pre-fix, `compose watch` itself would just print "no
+    /// service is configured for watch" and exit 1 — a worse UX. Pin
+    /// the actionable error so the gate stays put.
+    #[test]
+    fn validate_watch_services_rejects_plan_without_any_watch_block() {
+        use crate::plan::EnvPlan;
+        use crate::spec::EnvMode;
+        let plan = EnvPlan {
+            name: "dev".into(),
+            project_name: "coral-dev-deadbeef".into(),
+            mode: EnvMode::Managed,
+            services: Default::default(),
+            env_file: None,
+            project_root: std::path::PathBuf::from("/tmp"),
+        };
+        let err = super::validate_watch_services(&plan)
+            .expect_err("plan with no watch services must be rejected");
+        match err {
+            EnvError::InvalidSpec(msg) => {
+                assert!(
+                    msg.contains("--watch"),
+                    "message must mention --watch: {msg}"
+                );
+                assert!(
+                    msg.contains("[services.") && msg.contains(".watch]"),
+                    "message must mention [services.<name>.watch]: {msg}"
+                );
+                assert!(
+                    msg.contains("'dev'"),
+                    "message must include env name: {msg}"
+                );
+            }
+            other => panic!("expected InvalidSpec, got {other:?}"),
+        }
+    }
+
+    /// v0.21.2: a service with `image` only (no watch block) is
+    /// rejected — having any service in the plan isn't enough; at
+    /// least one must declare a non-empty `[services.*.watch]`.
+    #[test]
+    fn validate_watch_services_rejects_plan_with_services_but_no_watch() {
+        use crate::plan::{EnvPlan, ServiceSpecPlan};
+        use crate::spec::{EnvMode, RealService, ServiceKind};
+        let mut services = std::collections::BTreeMap::new();
+        services.insert(
+            "api".to_string(),
+            ServiceSpecPlan {
+                name: "api".into(),
+                kind: ServiceKind::Real(Box::new(RealService {
+                    repo: None,
+                    image: Some("alpine:latest".into()),
+                    build: None,
+                    ports: vec![],
+                    env: Default::default(),
+                    depends_on: vec![],
+                    healthcheck: None,
+                    watch: None,
+                })),
+                resolved_context: None,
+            },
+        );
+        let plan = EnvPlan {
+            name: "dev".into(),
+            project_name: "coral-dev-deadbeef".into(),
+            mode: EnvMode::Managed,
+            services,
+            env_file: None,
+            project_root: std::path::PathBuf::from("/tmp"),
+        };
+        let err = super::validate_watch_services(&plan).expect_err("must reject");
+        assert!(matches!(err, EnvError::InvalidSpec(_)));
+    }
+
+    /// v0.21.2: the converse — a service that DOES declare a
+    /// non-empty `[services.*.watch]` lets validation succeed.
+    #[test]
+    fn validate_watch_services_accepts_plan_with_at_least_one_watch_block() {
+        use crate::plan::{EnvPlan, ServiceSpecPlan};
+        use crate::spec::{EnvMode, RealService, ServiceKind, WatchSpec};
+        let mut services = std::collections::BTreeMap::new();
+        services.insert(
+            "api".to_string(),
+            ServiceSpecPlan {
+                name: "api".into(),
+                kind: ServiceKind::Real(Box::new(RealService {
+                    repo: None,
+                    image: Some("alpine:latest".into()),
+                    build: None,
+                    ports: vec![],
+                    env: Default::default(),
+                    depends_on: vec![],
+                    healthcheck: None,
+                    watch: Some(WatchSpec {
+                        sync: vec![],
+                        rebuild: vec!["./Dockerfile".into()],
+                        restart: vec![],
+                        initial_sync: false,
+                    }),
+                })),
+                resolved_context: None,
+            },
+        );
+        let plan = EnvPlan {
+            name: "dev".into(),
+            project_name: "coral-dev-deadbeef".into(),
+            mode: EnvMode::Managed,
+            services,
+            env_file: None,
+            project_root: std::path::PathBuf::from("/tmp"),
+        };
+        super::validate_watch_services(&plan).expect("validation should succeed");
+    }
+
+    /// v0.21.2: an EMPTY `[services.*.watch]` block (sync + rebuild +
+    /// restart all empty) does NOT count as "declared a watch block"
+    /// — it's malformed. The renderer also drops it. Pin the gate so
+    /// a future change can't accept the malformed form.
+    #[test]
+    fn validate_watch_services_rejects_empty_watch_spec() {
+        use crate::plan::{EnvPlan, ServiceSpecPlan};
+        use crate::spec::{EnvMode, RealService, ServiceKind, WatchSpec};
+        let mut services = std::collections::BTreeMap::new();
+        services.insert(
+            "api".to_string(),
+            ServiceSpecPlan {
+                name: "api".into(),
+                kind: ServiceKind::Real(Box::new(RealService {
+                    repo: None,
+                    image: Some("alpine:latest".into()),
+                    build: None,
+                    ports: vec![],
+                    env: Default::default(),
+                    depends_on: vec![],
+                    healthcheck: None,
+                    watch: Some(WatchSpec {
+                        sync: vec![],
+                        rebuild: vec![],
+                        restart: vec![],
+                        initial_sync: false,
+                    }),
+                })),
+                resolved_context: None,
+            },
+        );
+        let plan = EnvPlan {
+            name: "dev".into(),
+            project_name: "coral-dev-deadbeef".into(),
+            mode: EnvMode::Managed,
+            services,
+            env_file: None,
+            project_root: std::path::PathBuf::from("/tmp"),
+        };
+        let err = super::validate_watch_services(&plan).expect_err("must reject");
+        assert!(matches!(err, EnvError::InvalidSpec(_)));
+    }
+
+    /// v0.21.2: capabilities flip — `watch` MUST be `true` now that
+    /// the renderer + subprocess path is wired. Pin the bit so a
+    /// future revert doesn't silently regress it.
+    #[test]
+    fn capabilities_advertise_watch_true() {
+        use crate::EnvBackend;
+        let b = ComposeBackend::new(ComposeRuntime::Auto);
+        let caps = b.capabilities();
+        assert!(caps.watch, "watch capability bit must be true");
     }
 }

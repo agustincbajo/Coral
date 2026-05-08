@@ -253,4 +253,31 @@ mod tests {
         let parsed: WatchSpec = serde_json::from_str(raw).unwrap();
         assert!(!parsed.initial_sync);
     }
+
+    /// v0.21.2: serde must require both `path` and `target` on
+    /// `SyncRule`. Pre-fix, a missing `target` would deserialize as
+    /// the empty path and the renderer would emit `target: ""` —
+    /// which `compose watch` rejects at runtime with an opaque
+    /// error. Pin the round-trip so a future `#[serde(default)]`
+    /// can't silently weaken the contract.
+    #[test]
+    fn sync_rule_requires_both_path_and_target() {
+        let missing_target = r#"{ "path": "./src" }"#;
+        let parsed: Result<SyncRule, _> = serde_json::from_str(missing_target);
+        assert!(
+            parsed.is_err(),
+            "SyncRule without `target` must fail to deserialize"
+        );
+        let missing_path = r#"{ "target": "/app/src" }"#;
+        let parsed: Result<SyncRule, _> = serde_json::from_str(missing_path);
+        assert!(
+            parsed.is_err(),
+            "SyncRule without `path` must fail to deserialize"
+        );
+        // Sanity: both present succeeds.
+        let ok = r#"{ "path": "./src", "target": "/app/src" }"#;
+        let parsed: SyncRule = serde_json::from_str(ok).expect("must deserialize");
+        assert_eq!(parsed.path, std::path::PathBuf::from("./src"));
+        assert_eq!(parsed.target, std::path::PathBuf::from("/app/src"));
+    }
 }
