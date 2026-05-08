@@ -1,0 +1,33 @@
+[package]
+name = "coral-session"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Coral session: capture + distill agent transcripts (Claude Code, …) into the wiki."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml_ng = { workspace = true }
+regex = { workspace = true }
+walkdir = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+coral-core = { workspace = true }
+coral-runner = { workspace = true }
+
+[features]
+default = ["claude_code"]
+# Cross-format adapter feature gates. Only `claude_code` is implemented in
+# v0.20.0; the rest are reserved so users can declare them in
+# `Cargo.toml` without breakage when they ship.
+claude_code = []
+# cursor = []      # v0.21+
+# chatgpt = []     # v0.21+
+
+[dev-dependencies]
+tempfile = { workspace = true }

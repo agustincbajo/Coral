@@ -15,6 +15,7 @@ pub mod notion_push;
 pub mod pins;
 pub mod project;
 pub mod search;
+pub mod session;
 pub mod stats;
 pub mod status;
 pub mod sync;

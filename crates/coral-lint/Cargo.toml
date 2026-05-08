@@ -13,6 +13,11 @@ coral-core = { workspace = true }
 coral-runner = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# v0.20.0: `check_unreviewed_distilled` reads `Frontmatter::extra`
+# entries which deserialize into `serde_yaml_ng::Value`. Lifted from
+# dev-deps to a regular dep so the check can pattern-match on Bool
+# / String variants of the YAML value tree.
+serde_yaml_ng = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 rayon = { workspace = true }

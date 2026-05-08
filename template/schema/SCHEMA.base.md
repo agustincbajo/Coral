@@ -23,7 +23,7 @@ You are the librarian for this microservice. You maintain `.wiki/` in sync with 
 | `entities/` | A new domain type in `src/domain/` with non-trivial invariants |
 | `flows/` | A multi-step request/process crosses modules |
 | `decisions/` | A new ADR in `docs/adr/` (link-only entry in `decisions/index.md`) |
-| `synthesis/` | A technical decision with explicit tradeoffs worth narrating |
+| `synthesis/` | A technical decision with explicit tradeoffs worth narrating. Also the landing zone for `coral session distill --apply` output — those pages always carry `reviewed: false` until a human reviews them (the lint rule `unreviewed-distilled` blocks commits otherwise). |
 | `operations/` | A runbook for on-call (deploy, restore, incident triage) |
 | `sources/` | An RFC, paper, or external doc is referenced from code or ADRs |
 | `gaps/` | The lint detects a gap (page that *should* exist but doesn't) |

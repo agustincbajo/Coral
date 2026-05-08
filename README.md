@@ -27,6 +27,7 @@ Coral started as a [Karpathy-style LLM Wiki](https://gist.github.com/karpathy/44
 - [Quickstart — multi-repo](#quickstart--multi-repo-5-minutes)
 - [Quickstart — environments + tests](#quickstart--environments--tests)
 - [Quickstart — MCP server for coding agents](#quickstart--mcp-server-for-coding-agents)
+- [Quickstart — capture and distill agent sessions](#quickstart--capture-and-distill-agent-sessions)
 - [Cookbook — common workflows](#cookbook--common-workflows)
 - [MCP client integration (Claude Code, Cursor, Continue, …)](#mcp-client-integration)
 - [Output examples — what each command actually prints](#output-examples)
@@ -133,7 +134,7 @@ Unit tests don't tell you if your microservices actually work together. End-to-e
 ### From a tagged release (recommended)
 
 ```bash
-cargo install --locked --git https://github.com/agustincbajo/Coral --tag v0.19.8 coral-cli
+cargo install --locked --git https://github.com/agustincbajo/Coral --tag v0.20.0 coral-cli
 ```
 
 ### From `main` (latest)
@@ -156,10 +157,10 @@ cargo build --release
 Each tagged release ships pre-built binaries for x86_64 Linux, x86_64 macOS, and aarch64 macOS (Apple Silicon) on the [Releases page](https://github.com/agustincbajo/Coral/releases). Download `coral-vX.Y.Z-<target>.tar.gz`, verify the SHA-256, extract the `coral` binary, place it on your `$PATH`.
 
 ```bash
-curl -L -o coral.tar.gz https://github.com/agustincbajo/Coral/releases/download/v0.19.8/coral-v0.19.8-aarch64-apple-darwin.tar.gz
+curl -L -o coral.tar.gz https://github.com/agustincbajo/Coral/releases/download/v0.20.0/coral-v0.20.0-aarch64-apple-darwin.tar.gz
 shasum -a 256 -c coral.tar.gz.sha256  # if you also downloaded the .sha256 sidecar
 tar -xzf coral.tar.gz
-sudo mv coral-v0.19.8-aarch64-apple-darwin/coral /usr/local/bin/
+sudo mv coral-v0.20.0-aarch64-apple-darwin/coral /usr/local/bin/
 coral --version
 ```
 
@@ -428,6 +429,46 @@ coral context-build --query "how does authentication work" --budget 50000 > cont
 ```
 
 The loader uses TF-IDF ranking + backlink BFS + greedy fill under your token budget, sorted by `(confidence desc, body length asc)` so the most-trusted concise sources lead.
+
+---
+
+## Quickstart — capture and distill agent sessions
+
+**Shipped in v0.20.0** ([#16](https://github.com/agustincbajo/Coral/issues/16)). Coral can now fold the conversations that produced your wiki *back into* the wiki — agent transcripts (Claude Code today; Cursor and ChatGPT tracked) become curated synthesis pages. The flow is opt-in at every step and gated by the same trust-by-curation contract that governs `coral test generate` output.
+
+```bash
+# 1. Capture the most-recent Claude Code session whose `cwd` matches this repo.
+#    Privacy scrubber is on by default — API keys, JWTs, AWS creds, etc.
+#    are replaced with [REDACTED:<kind>] markers before bytes hit disk.
+coral session capture --from claude-code
+# captured 5c359daf-… (412 messages, 7 redactions)
+#   → .coral/sessions/2026-05-08_claude-code_a1b2c3d4.jsonl
+
+# 2. Inspect captures.
+coral session list
+coral session show 5c359daf
+
+# 3. Distill into wiki-shaped synthesis pages (one LLM call).
+#    Pages always land as `reviewed: false` — `coral lint` blocks the commit
+#    until a human flips the flag.
+coral session distill 5c359daf --apply
+# → .coral/sessions/distilled/<slug>.md      (always)
+# → .wiki/synthesis/<slug>.md                (with --apply, also reviewed: false)
+
+# 4. Review the page in your editor, flip `reviewed: true`, commit.
+$EDITOR .wiki/synthesis/<slug>.md
+
+# 5. (Optional) drop the raw transcript once curated.
+coral session forget 5c359daf --yes
+```
+
+Storage layout: raw `.jsonl` and `index.json` are gitignored (added to `.gitignore` automatically by `coral init`); curated `.wiki/synthesis/*.md` ships in git. The `.coral/sessions/distilled/` mirror is also gitignored — it's a holding cell, not the canonical wiki.
+
+Privacy posture and the full design-question rationale live in [docs/SESSIONS.md](docs/SESSIONS.md). TL;DR:
+
+- Scrubber is on by default. Opt-out requires both `--no-scrub` AND `--yes-i-really-mean-it`.
+- Distilled pages always carry `reviewed: false`. `coral lint --rule unreviewed-distilled` raises Critical and the bundled pre-commit hook blocks the commit.
+- Cross-format support is staged: Claude Code first; `--from cursor` and `--from chatgpt` exist as CLI flags but currently emit a clear "not yet implemented; track #16" error.
 
 ---
 
@@ -1257,7 +1298,7 @@ Where Coral is **explicitly not trying to compete**:
 
 ## Security model
 
-Coral has been hardened across three audit cycles (v0.19.3 → v0.19.8) with explicit threat-model boundaries. **The threat surface is "a malicious commit / PR to a Coral-managed repo": adversary can supply arbitrary `coral.toml`, `openapi.yaml`, wiki page bodies, and test YAML.** Hardening below mitigates the high-impact vectors of that threat model.
+Coral has been hardened across three audit cycles (v0.19.3 → v0.20.0) with explicit threat-model boundaries. **The threat surface is "a malicious commit / PR to a Coral-managed repo": adversary can supply arbitrary `coral.toml`, `openapi.yaml`, wiki page bodies, and test YAML.** Hardening below mitigates the high-impact vectors of that threat model.
 
 ### Process-level secret hygiene
 
@@ -1754,8 +1795,11 @@ Coral-specific terminology used throughout this README and in the source.
 - **Bootstrap** — full wiki compilation from HEAD (one-shot, expensive, runs once per project lifetime). Run `coral bootstrap --apply`.
 - **Consolidate** — LLM-suggested merges/splits/retirements of redundant pages. Run `coral consolidate --apply`.
 - **Onboard** — generate a personalized reading-order page list. Run `coral onboard --profile <p> --apply`.
-- **Lint** — structural + semantic checks over the wiki. 9 structural rules + 1 LLM rule + 1 injection detector.
-- **`coral.toml` apiVersion** — schema versioning field. Currently `coral.dev/v1`. Forward-compatible bump path via `coral migrate` (v0.20+).
+- **Lint** — structural + semantic checks over the wiki. 10 structural rules (incl. v0.20.0 `unreviewed-distilled`) + 1 LLM rule + 1 injection detector.
+- **Session** — one captured agent transcript (Claude Code today; Cursor/ChatGPT tracked). Lives at `<project_root>/.coral/sessions/<date>_<source>_<sha8>.jsonl`. Gitignored by default.
+- **Captured session** — the raw `.jsonl` after `coral session capture`. May be scrubbed (default) or verbatim (`--no-scrub --yes-i-really-mean-it`).
+- **Distilled session** — the `.md` synthesis page produced by `coral session distill`. Lands as `reviewed: false` so the trust-by-curation gate (`coral lint`) blocks any commit until a human reviews.
+- **`coral.toml` apiVersion** — schema versioning field. Currently `coral.dev/v1`. Forward-compatible bump path via `coral migrate` (v0.21+).
 
 ---
 
@@ -1772,7 +1816,7 @@ Coral-specific terminology used throughout this README and in the source.
 - `coral context-build` (smart context loader under explicit token budget).
 - 700+ unit tests + 30+ E2E across 8 crates.
 
-✅ **Shipped (v0.19.1 → v0.19.8 — audit-driven hardening sprint):**
+✅ **Shipped (v0.19.1 → v0.20.0 — audit-driven hardening sprint):**
 
 A 3-cycle multi-agent audit found and resolved ~50 bugs across reliability, security, doc-vs-reality, concurrency, and adversarial-input handling. Highlights:
 
@@ -1795,9 +1839,13 @@ Full per-release detail in [CHANGELOG](CHANGELOG.md).
 - [#32](https://github.com/agustincbajo/Coral/issues/32) — `*.lock.lock` zero-byte sentinel cleanup (TOCTOU deferred).
 - [#33](https://github.com/agustincbajo/Coral/issues/33) — `WikiLog` regex `op` shape (log v2 format eventually).
 
-🔮 **v0.20+ feature roadmap:**
+✅ **Shipped (v0.20.0 — `coral session`):**
 
-- **[#16](https://github.com/agustincbajo/Coral/issues/16) — `coral session capture/distill`.** Preserve agent-session transcripts (Claude Code JSONL, Cursor chat) into the wiki via `coral session capture --from <client>` + `coral session distill`. PRD-stub already filed; see issue.
+- **[#16](https://github.com/agustincbajo/Coral/issues/16) — `coral session capture/distill`.** Capture agent transcripts (Claude Code JSONL today; Cursor / ChatGPT tracked) into `.coral/sessions/`, scrub secrets by default, distill into `reviewed: false` synthesis pages enforced by `coral lint`. New `coral-session` crate; five subcommands (`capture`, `list`, `forget`, `distill`, `show`); 25-pattern privacy scrubber + secrets fixture; full e2e against the Claude Code JSONL schema. See [docs/SESSIONS.md](docs/SESSIONS.md). 1020+ tests pass (was 977).
+
+🔮 **v0.21+ feature roadmap:**
+
+- `coral session capture --from cursor` and `--from chatgpt` (the v0.20 flags currently emit a clear "not yet implemented" error pointing at #16).
 - `KindBackend`, `TiltBackend`, `K3dBackend` (k8s local, behind feature flags).
 - `PropertyBasedRunner` (proptest from OpenAPI), `RecordedRunner` (Keploy traffic capture, Linux-only feature).
 - `EventRunner` (AsyncAPI, Testcontainers Kafka/Rabbit), `TraceRunner` (OTLP queries).
@@ -1833,7 +1881,7 @@ The pluggable trait pattern (`Runner` → `EnvBackend` → `TestRunner` → `Res
 
 ### Multi-agent audit pipeline
 
-The v0.19.x sprint shipped 9 patch releases (v0.19.0 → v0.19.8) closing ~58 bugs surfaced by **three audit cycles**, each cycle running multiple parallel agents with non-overlapping mandates:
+The v0.19.x sprint shipped 9 patch releases (v0.19.0 → v0.20.0) closing ~58 bugs surfaced by **three audit cycles**, each cycle running multiple parallel agents with non-overlapping mandates:
 
 | Cycle | Agents | Focus | Findings |
 |---|---|---|---|

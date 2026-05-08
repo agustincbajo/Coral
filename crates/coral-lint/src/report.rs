@@ -58,6 +58,15 @@ pub enum LintCode {
     /// Warning so the maintainer reviews before the page reaches an
     /// LLM context window.
     InjectionSuspected,
+    /// v0.20.0: the page's frontmatter declares `reviewed: false`,
+    /// indicating LLM-generated content (`coral session distill`,
+    /// `coral test generate`, etc.) that has not yet been
+    /// human-reviewed. **Critical** so the pre-commit hook blocks
+    /// the commit until the reviewer flips the flag to `true`. The
+    /// check is the load-bearing piece of the trust-by-curation
+    /// gate — without it, LLM output could land in `.wiki/` without
+    /// a human in the loop.
+    UnreviewedDistilled,
 }
 
 /// A single lint finding emitted by a check. `page` is `None` for global
@@ -357,7 +366,7 @@ mod tests {
         }
 
         // Mirrors the snake_case rename of every LintCode variant.
-        let expected: [&str; 12] = [
+        let expected: [&str; 13] = [
             "broken_wikilink",
             "orphan_page",
             "low_confidence",
@@ -370,6 +379,7 @@ mod tests {
             "contradiction",
             "obsolete_claim",
             "injection_suspected",
+            "unreviewed_distilled",
         ];
         for variant in expected {
             assert!(

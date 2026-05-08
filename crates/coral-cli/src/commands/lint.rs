@@ -250,6 +250,11 @@ const VALID_RULE_CODES: &[&str] = &[
     "contradiction",
     "obsolete-claim",
     "injection-suspected",
+    // v0.20.0 — distilled-session trust gate. `docs/SESSIONS.md`
+    // documents `coral lint --rule unreviewed-distilled` as the
+    // dedicated invocation; without this entry the rule code wasn't
+    // selectable from the CLI.
+    "unreviewed-distilled",
 ];
 
 /// Parse a list of `--rule` values into an optional `LintCode` allowlist.
@@ -282,6 +287,7 @@ fn parse_rule_filters(rules: &[String]) -> Result<Option<HashSet<LintCode>>> {
             "contradiction" => LintCode::Contradiction,
             "obsolete-claim" => LintCode::ObsoleteClaim,
             "injection-suspected" => LintCode::InjectionSuspected,
+            "unreviewed-distilled" => LintCode::UnreviewedDistilled,
             other => anyhow::bail!(
                 "unknown --rule value `{other}` (expected one of: {})",
                 VALID_RULE_CODES.join(", ")
@@ -354,6 +360,7 @@ pub(crate) fn lint_code_to_kebab(code: LintCode) -> &'static str {
         LintCode::Contradiction => "contradiction",
         LintCode::ObsoleteClaim => "obsolete-claim",
         LintCode::InjectionSuspected => "injection-suspected",
+        LintCode::UnreviewedDistilled => "unreviewed-distilled",
     }
 }
 
@@ -1778,6 +1785,8 @@ mod tests {
             ("unknown-extra-field", LintCode::UnknownExtraField),
             ("contradiction", LintCode::Contradiction),
             ("obsolete-claim", LintCode::ObsoleteClaim),
+            ("injection-suspected", LintCode::InjectionSuspected),
+            ("unreviewed-distilled", LintCode::UnreviewedDistilled),
         ];
         for (name, expected) in all_kebab {
             let got = parse_rule_filters(&[name.into()])

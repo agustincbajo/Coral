@@ -37,6 +37,7 @@ coral-env = { workspace = true }
 coral-lint = { workspace = true }
 coral-mcp = { workspace = true }
 coral-runner = { workspace = true }
+coral-session = { workspace = true }
 coral-stats = { workspace = true }
 coral-test = { workspace = true }
 

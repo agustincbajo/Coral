@@ -47,6 +47,10 @@ pub fn run_structural_with_root(pages: &[Page], repo_root: &Path) -> LintReport 
         structural::check_stale_status,
         structural::check_archived_linked_from_head,
         structural::check_unknown_extra_field,
+        // v0.20.0: trust-by-curation gate for `coral session distill`
+        // output. Critical so the pre-commit hook blocks any
+        // `reviewed: false` page from being committed.
+        structural::check_unreviewed_distilled,
     ];
     let context_checks: Vec<StructuralCheckWithRoot> = vec![
         structural::check_commit_in_git,

@@ -100,6 +100,13 @@ enum Cmd {
     /// then for every `depends_on` edge reports unknown endpoints,
     /// unknown methods, and status-code drift.
     Contract(commands::contract::ContractArgs),
+    /// **v0.20.0**: Capture + distill agent transcripts (Claude Code
+    /// today; Cursor / ChatGPT tracked in #16). Five subcommands:
+    /// `capture`, `list`, `forget`, `distill`, `show`. The
+    /// distillation flow emits wiki pages with `reviewed: false`
+    /// frontmatter — the `coral lint` trust-by-curation gate blocks
+    /// any commit until a human flips it to `true`.
+    Session(commands::session::SessionArgs),
     /// **Hidden** test-only helper: acquires `with_exclusive_lock(path)`,
     /// reads the file as a u64 counter, increments by 1, writes back.
     /// Used by `tests/cross_process_lock.rs` to verify the v0.15
@@ -146,6 +153,7 @@ fn main() -> ExitCode {
         Cmd::ExportAgents(args) => commands::export_agents::run(args, cli.wiki_root.as_deref()),
         Cmd::ContextBuild(args) => commands::context_build::run(args, cli.wiki_root.as_deref()),
         Cmd::Contract(args) => commands::contract::run(args, cli.wiki_root.as_deref()),
+        Cmd::Session(args) => commands::session::run(args, cli.wiki_root.as_deref()),
         Cmd::TestLockIncr { path } => run_test_lock_incr(&path),
     };
 

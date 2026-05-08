@@ -133,6 +133,124 @@ pub fn run(args: InitArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
         std::fs::create_dir_all(root.join(sub))?;
     }
 
+    // v0.20.0 — session captures land at `<project_root>/.coral/sessions/`,
+    // OUTSIDE `.wiki/`. The wiki-level `.gitignore` we just wrote can't cover
+    // them. Touch the project-root `.gitignore` (idempotent: only append
+    // patterns that aren't already listed). This is the v0.20 PRD design Q1
+    // answer: "gitignored by default; curated distillations under
+    // `.coral/sessions/distilled/` live with the rest of the wiki and are
+    // explicitly NOT gitignored."
+    //
+    // Patterns:
+    //   .coral/sessions/*.jsonl        — raw transcripts (PII-rich, never commit)
+    //   .coral/sessions/*.lock         — flock sentinels left by capture
+    //   .coral/sessions/index.json     — local-only session metadata
+    //   !.coral/sessions/distilled/    — curated distillations DO ship in git
+    let project_gitignore = cwd.join(".gitignore");
+    let session_patterns = [
+        ".coral/sessions/*.jsonl",
+        ".coral/sessions/*.lock",
+        ".coral/sessions/index.json",
+        "!.coral/sessions/distilled/",
+    ];
+    append_gitignore_patterns(&project_gitignore, &session_patterns)
+        .with_context(|| format!("updating {}", project_gitignore.display()))?;
+
     println!("✔ `.wiki/` initialized at {}", root.display());
     Ok(ExitCode::SUCCESS)
+}
+
+/// Idempotent append of `.gitignore` patterns. If the file doesn't
+/// exist yet, creates it with just the requested entries. If it
+/// does, appends only the entries not already present (line-exact
+/// match, whitespace-trimmed). No-ops when every pattern is already
+/// listed. Public-but-not-doc-published so the test module can
+/// re-use it.
+pub(crate) fn append_gitignore_patterns(path: &Path, patterns: &[&str]) -> std::io::Result<bool> {
+    if !path.exists() {
+        let mut content = String::new();
+        for entry in patterns {
+            content.push_str(entry);
+            content.push('\n');
+        }
+        std::fs::write(path, content)?;
+        return Ok(true);
+    }
+    let mut existing = std::fs::read_to_string(path)?;
+    let mut changed = false;
+    for entry in patterns {
+        let already_listed = existing.lines().any(|line| line.trim() == *entry);
+        if !already_listed {
+            if !existing.is_empty() && !existing.ends_with('\n') {
+                existing.push('\n');
+            }
+            existing.push_str(entry);
+            existing.push('\n');
+            changed = true;
+        }
+    }
+    if changed {
+        std::fs::write(path, existing)?;
+    }
+    Ok(changed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    /// `append_gitignore_patterns` creates the file when missing.
+    #[test]
+    fn append_gitignore_creates_when_missing() {
+        let dir = TempDir::new().unwrap();
+        let p = dir.path().join(".gitignore");
+        let changed = append_gitignore_patterns(&p, &[".coral/sessions/*.jsonl"]).unwrap();
+        assert!(changed);
+        let body = std::fs::read_to_string(&p).unwrap();
+        assert!(body.contains(".coral/sessions/*.jsonl"));
+    }
+
+    /// Repeated calls are idempotent.
+    #[test]
+    fn append_gitignore_is_idempotent() {
+        let dir = TempDir::new().unwrap();
+        let p = dir.path().join(".gitignore");
+        let _ = append_gitignore_patterns(&p, &[".coral/sessions/*.jsonl"]).unwrap();
+        let changed_again = append_gitignore_patterns(&p, &[".coral/sessions/*.jsonl"]).unwrap();
+        assert!(!changed_again, "second call must be a no-op");
+    }
+
+    /// Existing user .gitignore is preserved; new patterns appended.
+    #[test]
+    fn append_gitignore_preserves_existing_lines() {
+        let dir = TempDir::new().unwrap();
+        let p = dir.path().join(".gitignore");
+        std::fs::write(&p, "node_modules/\n*.log\n").unwrap();
+        let _ = append_gitignore_patterns(&p, &[".coral/sessions/*.jsonl"]).unwrap();
+        let body = std::fs::read_to_string(&p).unwrap();
+        assert!(body.contains("node_modules/"), "must preserve user lines");
+        assert!(body.contains("*.log"));
+        assert!(body.contains(".coral/sessions/*.jsonl"));
+    }
+
+    /// The session-pattern set includes the `!.coral/sessions/distilled/`
+    /// negation so curated output stays in git.
+    #[test]
+    fn append_gitignore_negation_included_in_session_patterns() {
+        let dir = TempDir::new().unwrap();
+        let p = dir.path().join(".gitignore");
+        let session_patterns = [
+            ".coral/sessions/*.jsonl",
+            ".coral/sessions/*.lock",
+            ".coral/sessions/index.json",
+            "!.coral/sessions/distilled/",
+        ];
+        let _ = append_gitignore_patterns(&p, &session_patterns).unwrap();
+        let body = std::fs::read_to_string(&p).unwrap();
+        assert!(
+            body.contains("!.coral/sessions/distilled/"),
+            "negation pattern missing: {body}"
+        );
+    }
 }

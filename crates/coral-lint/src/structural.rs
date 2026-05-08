@@ -391,10 +391,20 @@ pub fn check_archived_linked_from_head(pages: &[Page]) -> Vec<LintIssue> {
 /// Reports `UnknownExtraField` Info — one issue per non-canonical key in
 /// `frontmatter.extra`. Severity is **Info** on purpose: extra fields are
 /// allowed (consumer wikis extend the SCHEMA) but worth surfacing for review.
+///
+/// v0.20.0: skips the `reviewed` and `source` keys because those carry
+/// dedicated semantics for `coral session distill` output —
+/// [`check_unreviewed_distilled`] handles `reviewed: false` explicitly,
+/// so re-reporting it as `UnknownExtraField` would double-count and
+/// mask the higher-severity issue under Info noise.
 pub fn check_unknown_extra_field(pages: &[Page]) -> Vec<LintIssue> {
     let mut issues = Vec::new();
     for page in pages {
         for key in page.frontmatter.extra.keys() {
+            // v0.20.0: the dedicated check handles these.
+            if key == "reviewed" || key == "source" {
+                continue;
+            }
             issues.push(LintIssue {
                 code: LintCode::UnknownExtraField,
                 severity: LintSeverity::Info,
@@ -404,6 +414,55 @@ pub fn check_unknown_extra_field(pages: &[Page]) -> Vec<LintIssue> {
                     page.frontmatter.slug, key
                 ),
                 context: Some(key.clone()),
+            });
+        }
+    }
+    issues
+}
+
+/// Reports `UnreviewedDistilled` **Critical** for any page whose
+/// frontmatter declares `reviewed: false` (a signal that
+/// `coral session distill` or `coral test generate` produced the
+/// page and a human has not yet reviewed + signed off).
+///
+/// **This is the load-bearing piece of v0.20's trust-by-curation
+/// gate.** A pre-commit hook (set up by `coral init`'s template) runs
+/// `coral lint` and rejects the commit if any Critical issue exists —
+/// so a page with `reviewed: false` cannot accidentally land in
+/// `.wiki/` without a human reviewer flipping the flag to `true`.
+///
+/// Skips pages without the `reviewed` key entirely (the canonical
+/// SCHEMA doesn't include it; only LLM-generated artifacts do).
+/// `reviewed: true` is also skipped — that's the success case.
+///
+/// Accepts both YAML boolean (`reviewed: false`) and string forms
+/// (`reviewed: "false"`) defensively because the YAML serializer the
+/// distill module uses round-trips a literal `false` but a human
+/// editor might quote the value while reviewing.
+pub fn check_unreviewed_distilled(pages: &[Page]) -> Vec<LintIssue> {
+    let mut issues = Vec::new();
+    for page in pages {
+        let Some(value) = page.frontmatter.extra.get("reviewed") else {
+            continue;
+        };
+        let needs_review = match value {
+            serde_yaml_ng::Value::Bool(b) => !b,
+            serde_yaml_ng::Value::String(s) => {
+                let trimmed = s.trim().to_ascii_lowercase();
+                trimmed == "false" || trimmed == "no"
+            }
+            _ => false,
+        };
+        if needs_review {
+            issues.push(LintIssue {
+                code: LintCode::UnreviewedDistilled,
+                severity: LintSeverity::Critical,
+                page: Some(page.path.clone()),
+                message: format!(
+                    "Page '{}' has `reviewed: false` — flip to `true` after human review before committing.",
+                    page.frontmatter.slug
+                ),
+                context: Some("reviewed".into()),
             });
         }
     }
@@ -1346,6 +1405,139 @@ mod tests {
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].code, LintCode::UnknownExtraField);
         assert_eq!(issues[0].severity, LintSeverity::Info);
+    }
+
+    /// v0.20.0: the extra-field check now skips `reviewed` and `source`
+    /// because the dedicated `check_unreviewed_distilled` and the
+    /// per-page LLM-source nesting handle them. Pin so a future
+    /// regression doesn't double-count these keys.
+    #[test]
+    fn unknown_extra_field_skips_reviewed_and_source_keys() {
+        let mut extra = BTreeMap::new();
+        extra.insert("reviewed".into(), serde_yaml_ng::Value::Bool(false));
+        extra.insert(
+            "source".into(),
+            serde_yaml_ng::Value::String("placeholder".into()),
+        );
+        let page = Page {
+            path: PathBuf::from(".wiki/synthesis/foo.md"),
+            frontmatter: Frontmatter {
+                slug: "foo".into(),
+                page_type: PageType::Synthesis,
+                last_updated_commit: "abc".into(),
+                confidence: Confidence::try_new(0.4).unwrap(),
+                sources: vec![],
+                backlinks: vec![],
+                status: Status::Draft,
+                generated_at: None,
+                extra,
+            },
+            body: String::new(),
+        };
+        let issues = check_unknown_extra_field(&[page]);
+        assert!(
+            issues.is_empty(),
+            "reviewed/source must be skipped here, got {issues:?}"
+        );
+    }
+
+    // --- check_unreviewed_distilled (v0.20.0) ---------------------------
+
+    /// `reviewed: false` (YAML boolean) lights up Critical so the
+    /// pre-commit hook blocks the commit.
+    #[test]
+    fn unreviewed_distilled_bool_false_is_critical() {
+        let mut extra = BTreeMap::new();
+        extra.insert("reviewed".into(), serde_yaml_ng::Value::Bool(false));
+        let page = Page {
+            path: PathBuf::from(".wiki/synthesis/foo.md"),
+            frontmatter: Frontmatter {
+                slug: "foo".into(),
+                page_type: PageType::Synthesis,
+                last_updated_commit: "abc".into(),
+                confidence: Confidence::try_new(0.4).unwrap(),
+                sources: vec![],
+                backlinks: vec![],
+                status: Status::Draft,
+                generated_at: None,
+                extra,
+            },
+            body: String::new(),
+        };
+        let issues = check_unreviewed_distilled(&[page]);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].code, LintCode::UnreviewedDistilled);
+        assert_eq!(issues[0].severity, LintSeverity::Critical);
+        assert_eq!(issues[0].context.as_deref(), Some("reviewed"));
+    }
+
+    /// `reviewed: true` (the success case) emits no issue.
+    #[test]
+    fn unreviewed_distilled_bool_true_no_issue() {
+        let mut extra = BTreeMap::new();
+        extra.insert("reviewed".into(), serde_yaml_ng::Value::Bool(true));
+        let page = Page {
+            path: PathBuf::from(".wiki/synthesis/foo.md"),
+            frontmatter: Frontmatter {
+                slug: "foo".into(),
+                page_type: PageType::Synthesis,
+                last_updated_commit: "abc".into(),
+                confidence: Confidence::try_new(0.8).unwrap(),
+                sources: vec![],
+                backlinks: vec![],
+                status: Status::Reviewed,
+                generated_at: None,
+                extra,
+            },
+            body: String::new(),
+        };
+        let issues = check_unreviewed_distilled(&[page]);
+        assert!(issues.is_empty());
+    }
+
+    /// String form `reviewed: "false"` also fires (defensive against
+    /// hand-edits that quote the value).
+    #[test]
+    fn unreviewed_distilled_string_false_also_critical() {
+        let mut extra = BTreeMap::new();
+        extra.insert(
+            "reviewed".into(),
+            serde_yaml_ng::Value::String("false".into()),
+        );
+        let page = Page {
+            path: PathBuf::from(".wiki/synthesis/foo.md"),
+            frontmatter: Frontmatter {
+                slug: "foo".into(),
+                page_type: PageType::Synthesis,
+                last_updated_commit: "abc".into(),
+                confidence: Confidence::try_new(0.4).unwrap(),
+                sources: vec![],
+                backlinks: vec![],
+                status: Status::Draft,
+                generated_at: None,
+                extra,
+            },
+            body: String::new(),
+        };
+        let issues = check_unreviewed_distilled(&[page]);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].severity, LintSeverity::Critical);
+    }
+
+    /// Page without a `reviewed` key produces no issue (the canonical
+    /// SCHEMA doesn't require it).
+    #[test]
+    fn unreviewed_distilled_missing_key_no_issue() {
+        let pages = vec![mk_page(
+            "a",
+            PageType::Module,
+            "",
+            0.8,
+            Status::Draft,
+            vec!["src/a.rs"],
+        )];
+        let issues = check_unreviewed_distilled(&pages);
+        assert!(issues.is_empty());
     }
 
     // --- run_structural_with_root aggregator --------------------------------

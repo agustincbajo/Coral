@@ -7,6 +7,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-05-08
+
+**Major feature release: `coral session capture / list / forget / distill / show`** ([#16](https://github.com/agustincbajo/Coral/issues/16)). The wiki finally captures the conversations that produced it. Five new CLI subcommands; one new crate (`coral-session`); one new lint rule (`unreviewed-distilled`, Critical) that gates any LLM-generated wiki page until a human reviews + signs off. 1049 tests pass (was 977; +72). BC contract holds. The v0.19.x audit-driven hardening sprint is complete; this is the first feature release on top of that.
+
+### Added
+
+- **New crate: `coral-session`.** `crates/coral-session/{src,tests}` — implements capture, list, forget, distill, and show flows. Sits alongside the existing `coral-runner` / `coral-env` / `coral-test` crates with the same shape (declarative error type, `MockRunner`-friendly traits, atomic writes via `coral_core::atomic`). Modules: `capture` (idempotent index updates under `with_exclusive_lock`), `claude_code` (versioned JSONL adapter that defensively handles unknown record types), `distill` (single-pass `Runner::run`, hard cap of 3 findings/session, slug allowlist), `forget` (atomic deletion of raw + distilled + index entry), `list` (Markdown + JSON output), `scrub` (regex-driven privacy redactor with 25 regression tests).
+
+- **`coral session capture --from claude-code [PATH]`** — copies a Claude Code transcript into `<project_root>/.coral/sessions/<date>_claude-code_<sha8>.jsonl`. When `PATH` is omitted, walks `~/.claude/projects/`, parses each transcript's first record, and picks the most-recently-modified one whose recorded `cwd` matches the current project. Default behaviour runs the privacy scrubber over every byte before write.
+
+- **`coral session list [--format markdown|json]`** — renders `.coral/sessions/index.json` as a Markdown table (default) or parseable JSON array, sorted by `captured_at` descending. Empty state prints a friendly "no captured sessions yet" message instead of a header-only table.
+
+- **`coral session show <SESSION_ID>`** — prints metadata + first N message previews (default 5, override with `--n`). Accepts either full UUID or any unique 4+-char prefix.
+
+- **`coral session distill <SESSION_ID> [--apply] [--provider …] [--model …]`** — single-pass LLM call that extracts 1–3 surprising / non-obvious findings and emits each as a synthesis Markdown page. Always lands as `reviewed: false`. Without `--apply`, writes only `.coral/sessions/distilled/<slug>.md`. With `--apply`, also writes `.wiki/synthesis/<slug>.md` so the page shows up in `coral search` / `coral lint` / `coral context-build`. Provider follows the standard `--provider` semantics (claude / gemini / local / http; falls back to `CORAL_PROVIDER` env or `claude`).
+
+- **`coral session forget <SESSION_ID> [--yes]`** — atomic delete of raw `.jsonl` + distilled `.md` + index entry under `with_exclusive_lock`. Prefix matching identical to `show`/`distill`. Without `--yes`, prompts interactively `[y/N]`.
+
+- **New lint rule: `unreviewed-distilled` (Critical).** `crates/coral-lint/src/structural.rs::check_unreviewed_distilled` flags any wiki page whose frontmatter declares `reviewed: false`. Critical severity flips `coral lint` to a non-zero exit, so the bundled pre-commit hook AND any CI lint pipeline reject the commit until a human flips the flag to `true`. Reuses the existing v0.19.x trust-by-curation machinery rather than reinventing it. The complementary `unknown-extra-field` (Info) check now skips `reviewed` and `source` keys to avoid double-counting and noise.
+
+- **Privacy scrubber: 25-pattern regex set covering Anthropic / OpenAI / GitHub / AWS / Slack / GitLab / JWT / Authorization-header / x-api-key-header / bare-Bearer / env-export-assignment shapes.** Each match is replaced by `[REDACTED:<kind>]`; the marker tells the user *what kind* of secret was redacted without leaking the original. Pattern ordering matters (longest-most-specific wins on overlap); scrubbing is idempotent (re-scrubbing a redacted output produces no further redactions). 25 unit tests cover each token shape; one fixture-based integration test (`crates/coral-session/tests/secrets_fixture.rs`) exercises the full capture + scrub pipeline against a real-shaped transcript with `sk-ant-…`, `ghp_…`, `AKIA…`, and a 3-segment JWT embedded.
+
+- **Privacy opt-out is intentionally hard.** `coral session capture --no-scrub` alone fails fast with a clear hint. To take effect it MUST be combined with `--yes-i-really-mean-it`. The mandatory two-flag combo is the v0.20 PRD answer to design Q2: false negatives leak credentials irreversibly, so the default errs on redaction.
+
+- **`coral init` now seeds `.coral/sessions/` patterns into the project-root `.gitignore`.** Idempotent (preserves existing user-managed lines; appends only patterns not already listed). Adds `.coral/sessions/*.jsonl`, `.coral/sessions/*.lock`, `.coral/sessions/index.json`, plus the negation `!.coral/sessions/distilled/` so curated distillations remain in git while raw transcripts stay local-only. Implements PRD design Q1.
+
+- **`docs/SESSIONS.md`** — full design + privacy + trust-by-curation walkthrough with the per-question PRD answers documented inline.
+
+- **README "Quickstart — capture and distill agent sessions" section.** End-to-end flow with the privacy posture and the `reviewed: false` gate called out. Roadmap reorganized: the `coral session` line moves from "v0.20+ feature roadmap" to "Shipped (v0.20.0)"; the cross-format support deferral is now in "v0.21+".
+
+- **Glossary terms**: `Session`, `Captured session`, `Distilled session`. SCHEMA.base.md's synthesis page-type explainer mentions distillation as a producer.
+
+### Internal
+
+- **Fixture transcript** at `crates/coral-session/tests/fixtures/claude_code_with_secrets.jsonl` — a hand-redacted miniature Claude Code JSONL with the v0.20 must-redact secret shapes embedded in both plain user content and `assistant.content[].tool_use.input` blocks. The integration test asserts every must-redact category is replaced with the appropriate marker, AND that `--no-scrub` preserves source bytes byte-for-byte.
+
+- **`coral-cli/tests/session_e2e.rs`** — end-to-end CLI test driving the `coral` binary against a tmpdir + the fixture: `init` → `capture` → `list (markdown)` → `list (json)` → `show` → `forget --yes`, plus three negative tests (`--no-scrub` without confirmation fails, `--no-scrub --yes-i-really-mean-it` writes raw bytes, `--from cursor` returns "not yet implemented" pointing at #16). Plus a `coral lint` integration test that confirms the `unreviewed-distilled` Critical rule fires on a page with `reviewed: false` frontmatter.
+
+- **Workspace dependency**: `coral-session` registered in `Cargo.toml` workspace deps so the CLI (and any future downstream crate) can consume it; `coral-lint` lifted `serde_yaml_ng` from dev-dep to regular dep so the new check can pattern-match on `Bool` / `String` variants of the YAML extra map.
+
+- **Distill prompt is versioned (`prompt_version: 1`)** in the emitted page's frontmatter so a future prompt-template change can be re-distilled against old captured sessions without ambiguity.
+
+### Notes on per-design-question answers
+
+The v0.20 PRD ([#16](https://github.com/agustincbajo/Coral/issues/16)) left six design questions explicitly open. Each is answered + documented in source comments:
+
+1. **Storage default** — gitignored raw + non-gitignored `distilled/` via `!` negation. (`coral init` + `docs/SESSIONS.md`.)
+2. **Privacy scrubbing** — opt-out only; `--no-scrub` requires `--yes-i-really-mean-it` confirmation. (`session.rs::run_capture` guard.)
+3. **Distill output format** — distill-as-page (option a). Distill-as-patch (option b) deferred to v0.21+ once we have diff/merge UX. (`distill.rs` module-level docstring.)
+4. **Trust gating** — same `reviewed: false` machinery as `coral test generate`; new `check_unreviewed_distilled` Critical rule + bundled pre-commit hook. (`structural.rs`.)
+5. **Cross-format support order** — Claude Code first; `--from cursor` and `--from chatgpt` exist as CLI args but currently emit a clean "not yet implemented; track #16" error.
+6. **MultiStepRunner usage** — single-tier `Runner::run` for MVP. Tiering is a v0.21+ optimization once we have data on distill-output quality vs latency. (`distill.rs::distill_session`.)
+
 ## [0.19.8] - 2026-05-04
 
 Closes the eight open audit follow-up issues from the v0.19.7 cycle (#26 through #33). Adds MCP cursor pagination on `resources/list` + `tools/list` (the only one of the eight that was a feature; everything else is bug fixes, audit-gap conversions, or tracked-deferral cleanup). Audit-gap fixtures for `coral test discover` (OpenAPI), `coral export --format html` (XSS), and `coral-runner` streaming (mid-stream truncation / hang / partial-event) ship as protective tests so each gap stops being a gap. 977 tests pass (was 928; +49). One real XSS surface fixed: pulldown-cmark previously passed raw `<script>...</script>` and `[click me](javascript:alert(1))` through verbatim in the static HTML export.
