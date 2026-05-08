@@ -17,7 +17,6 @@ use crate::prompts::PromptCatalog;
 use crate::resources::ResourceProvider;
 use crate::tools::{ToolCatalog, ToolKind};
 use serde::{Deserialize, Serialize};
-use std::io::{BufRead, Write};
 use std::sync::Arc;
 
 /// MCP protocol version. Coral pins to the 2025-11-25 spec freeze;
@@ -118,30 +117,15 @@ impl McpHandler {
     /// a newline. Notifications (requests with no `id`) are dispatched
     /// for side effects but no response is emitted to stdout, per
     /// JSON-RPC 2.0 §4.1.
+    ///
+    /// v0.21.1: thin shim over [`crate::transport::stdio::serve_stdio`].
+    /// The body was lifted into `transport/stdio.rs` so the new HTTP/SSE
+    /// transport could share `handle_line` without dragging the stdio
+    /// loop into the JSON-RPC core. Behavior is byte-identical to the
+    /// v0.21.0 stdio loop and pinned by a golden fixture in
+    /// `crates/coral-mcp/tests/mcp_stdio_golden.rs`.
     pub fn serve_stdio(&self) -> std::io::Result<()> {
-        let stdin = std::io::stdin();
-        let stdout = std::io::stdout();
-        let mut handle = stdout.lock();
-        for line in stdin.lock().lines() {
-            let line = match line {
-                Ok(l) => l,
-                Err(_) => break,
-            };
-            if line.trim().is_empty() {
-                continue;
-            }
-            // v0.19.6 audit M3: `handle_line` now returns `Option<…>`
-            // — `None` for JSON-RPC notifications (no `id` field).
-            // Skip emitting anything for notifications so we don't
-            // confuse strict JSON-RPC clients that don't expect a
-            // response.
-            if let Some(response) = self.handle_line(&line) {
-                let serialized = serde_json::to_string(&response).unwrap_or_else(|_| "{}".into());
-                writeln!(handle, "{serialized}")?;
-                handle.flush()?;
-            }
-        }
-        Ok(())
+        crate::transport::stdio::serve_stdio(self)
     }
 
     /// Public for tests: handle a single JSON-RPC line and return the
@@ -501,6 +485,7 @@ mod tests {
             read_only,
             allow_write_tools,
             port: None,
+            bind_addr: None,
         };
         let resources = Arc::new(WikiResourceProvider::new(std::path::PathBuf::from("/tmp")));
         let tools = Arc::new(NoOpDispatcher);

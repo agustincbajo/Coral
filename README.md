@@ -135,7 +135,7 @@ Unit tests don't tell you if your microservices actually work together. End-to-e
 ### From a tagged release (recommended)
 
 ```bash
-cargo install --locked --git https://github.com/agustincbajo/Coral --tag v0.21.0 coral-cli
+cargo install --locked --git https://github.com/agustincbajo/Coral --tag v0.21.1 coral-cli
 ```
 
 ### From `main` (latest)
@@ -158,10 +158,10 @@ cargo build --release
 Each tagged release ships pre-built binaries for x86_64 Linux, x86_64 macOS, and aarch64 macOS (Apple Silicon) on the [Releases page](https://github.com/agustincbajo/Coral/releases). Download `coral-vX.Y.Z-<target>.tar.gz`, verify the SHA-256, extract the `coral` binary, place it on your `$PATH`.
 
 ```bash
-curl -L -o coral.tar.gz https://github.com/agustincbajo/Coral/releases/download/v0.21.0/coral-v0.21.0-aarch64-apple-darwin.tar.gz
+curl -L -o coral.tar.gz https://github.com/agustincbajo/Coral/releases/download/v0.21.1/coral-v0.21.1-aarch64-apple-darwin.tar.gz
 shasum -a 256 -c coral.tar.gz.sha256  # if you also downloaded the .sha256 sidecar
 tar -xzf coral.tar.gz
-sudo mv coral-v0.21.0-aarch64-apple-darwin/coral /usr/local/bin/
+sudo mv coral-v0.21.1-aarch64-apple-darwin/coral /usr/local/bin/
 coral --version
 ```
 
@@ -652,7 +652,7 @@ coral mcp serve --transport stdio &
 coral mcp serve --transport stdio --allow-write-tools &
 ```
 
-> **Transport status (v0.20.x).** Only `--transport stdio` ships in v0.20.x — every shipped MCP client (Claude Desktop, Cursor, Continue, Cline, OpenCode, Crush, Goose, Codex CLI) uses stdio anyway, so this isn't a constraint in practice. HTTP/SSE transport is tracked for a later release; once it ships we'll add a `--transport http --port <p>` documented path. (See v0.20.2 audit cycle 4, item H6.)
+> **Transport status (v0.21.1+).** Both `--transport stdio` (the default — every shipped MCP client speaks it) and `--transport http --port <p>` (Streamable HTTP per MCP 2025-11-25) ship. HTTP defaults to binding `127.0.0.1` and validates `Origin` against `null` / `http://localhost*` / `http://127.0.0.1*` only — a DNS-rebinding mitigation. `--bind 0.0.0.0` is opt-in and emits a stderr warning banner. See [Security model for the HTTP transport](#security-model-for-the-http-transport) below for the full threat model.
 
 Test the boot manually:
 
@@ -754,9 +754,68 @@ extensions:
 
 For any client that speaks raw MCP JSON-RPC, `coral mcp serve --transport stdio` is the entry point. The server announces `protocolVersion: "2025-11-25"` in the `initialize` handshake and responds to `resources/list`, `resources/read`, `tools/list`, `tools/call`, `prompts/list`, `prompts/get`. Notifications (no `id` field) silently no-op per spec §4.1.
 
-### HTTP/SSE transport (deferred)
+### HTTP/SSE transport (v0.21.1+)
 
-Not yet shipped. `coral mcp serve --transport http --port <p>` is tracked for a follow-up release; v0.20.x is stdio-only. Every shipped MCP client (Claude Desktop, Cursor, Continue, Cline, OpenCode, Crush, Goose, Codex CLI) speaks stdio, so this isn't a blocker for normal use. (See v0.20.2 audit cycle 4 H6.)
+Streamable HTTP per the MCP 2025-11-25 spec. Three endpoints under `/mcp`:
+
+| Method | Body / required headers | Server response |
+|---|---|---|
+| `POST /mcp` | JSON-RPC envelope + `Content-Type: application/json` + `Accept: application/json, text/event-stream` | `200 application/json` for single-answer; `204` for notification (no `id`) |
+| `GET /mcp` | `Accept: text/event-stream` | `200 text/event-stream` empty stream + `: keep-alive\n\n` heartbeat every 15s |
+| `DELETE /mcp` | `Mcp-Session-Id: <id>` | `204` if session existed; `404` otherwise |
+| `OPTIONS /mcp` | (CORS preflight) | `200` with `Access-Control-Allow-Methods: POST, GET, DELETE, OPTIONS` |
+
+Worked example (initialize):
+
+```bash
+coral mcp serve --transport http --port 3737 &
+curl -sS -X POST -H "Content-Type: application/json" \
+  -H "Accept: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
+  http://127.0.0.1:3737/mcp
+# → {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-11-25","capabilities":{...},"serverInfo":{"name":"coral","version":"0.21.1"}}}
+# Response also carries: Mcp-Session-Id: <uuid-shaped opaque cookie>
+```
+
+Echo the `Mcp-Session-Id` cookie on subsequent POSTs so the server can correlate the conversation:
+
+```bash
+curl -sS -X POST -H "Content-Type: application/json" \
+  -H "Accept: application/json" \
+  -H "Mcp-Session-Id: <uuid from initialize>" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"resources/list","params":{}}' \
+  http://127.0.0.1:3737/mcp
+```
+
+Tear down explicitly with `DELETE`:
+
+```bash
+curl -sS -X DELETE \
+  -H "Mcp-Session-Id: <uuid>" \
+  http://127.0.0.1:3737/mcp
+# → 204 No Content (session removed); subsequent DELETE on the same id returns 404.
+```
+
+Default port is `3737`. `--port 0` asks the OS to pick a free port; the resolved port is logged to stderr (`coral mcp serve — listening on http://127.0.0.1:NNNNN/mcp`).
+
+### Security model for the HTTP transport
+
+The HTTP transport is intended for **localhost-only** use. The defense in depth, in priority order:
+
+1. **Default bind is `127.0.0.1`.** Other hosts on the local network can't reach the server. `--bind 0.0.0.0` is opt-in and emits a `WARNING:` stderr banner so a server bound to every interface is never silent.
+2. **Origin allowlist.** Browser clients send `Origin`; we accept only `null` (file://), `http://localhost[:port]`, `http://127.0.0.1[:port]`, and `http://[::1][:port]`. Anything else returns 403. This is the spec's DNS-rebinding mitigation: an attacker who tricks a browser into pointing a malicious DNS record at `127.0.0.1` can't bypass the Origin check because the page itself was loaded from the attacker's host.
+3. **Body cap (4 MiB) → 413.** Cap is the hard maximum; legit MCP envelopes fit in well under 100 KiB.
+4. **Concurrency cap (32 in-flight requests) → 503.** Keeps the per-process FD budget bounded.
+5. **Batched JSON-RPC arrays → 400.** v0.21.1 doesn't support batching yet; we reject up front so a client that mistakenly sends a batch gets a clear error.
+6. **Session ID is opaque, not authentication.** `Mcp-Session-Id` is a correlation token — it doesn't grant access. Anyone who can connect to the port can mint a session via `initialize`. Authentication over the HTTP transport is a future feature; for now the localhost default is the protection.
+
+What this **does NOT defend against**:
+
+- A native client (any non-browser) can spoof `Origin` trivially. The 127.0.0.1 default is the load-bearing protection — exposing the server to a network you don't control turns it into an exfiltration vector.
+- A multi-tenant Linux box where another local user can connect to your `127.0.0.1` listener. Linux's loopback is shared across UIDs.
+- A compromised `coral` binary. Verify SHA-256 against the GitHub release.
+
+If you need network-reachable MCP access, terminate TLS at a reverse proxy (nginx, Caddy, Cloudflare Tunnel) and require client authentication there — Coral's HTTP transport is not a public-internet-facing service.
 
 ### Resources catalog
 
@@ -1022,7 +1081,7 @@ Exit 0 by default; `--strict` raises warnings to errors and exits non-zero.
 
 | Command | Purpose | Needs LLM? |
 |---|---|---|
-| `coral mcp serve [--transport stdio] [--read-only true|false] [--allow-write-tools]` | MCP server (JSON-RPC 2.0 stdio, MCP 2025-11-25). Exposes 6 resources, 3 prompts, and 5 read-only tools (`query`, `search`, `find_backlinks`, `affected_repos`, `verify`); the 3 write tools (`run_test`, `up`, `down`) require `--allow-write-tools`. Read-only by default — pass `--read-only false` to disable. **v0.20.x ships only `--transport stdio`**; HTTP/SSE is tracked for a later release. | No |
+| `coral mcp serve [--transport stdio\|http] [--port N] [--bind ADDR] [--read-only true\|false] [--allow-write-tools]` | MCP server (JSON-RPC 2.0, MCP 2025-11-25). Exposes 6 resources, 3 prompts, and 5 read-only tools (`query`, `search`, `find_backlinks`, `affected_repos`, `verify`); the 3 write tools (`run_test`, `up`, `down`) require `--allow-write-tools`. Read-only by default — pass `--read-only false` to disable. **v0.21.1+ ships both `--transport stdio` (default) and `--transport http`** (Streamable HTTP per the spec; default port 3737, default bind `127.0.0.1`, see [Security model](#security-model-for-the-http-transport)). | No |
 | `coral export-agents --format <agents-md\|claude-md\|cursor-rules\|copilot\|llms-txt> [--write] [--out PATH]` | Manifest-driven instruction file emission. **NOT LLM-driven** — see [Anthropic's context-engineering guidance](https://www.anthropic.com/engineering/context-engineering) for why deterministic templates beat synthesized ones. | No |
 | `coral context-build --query <q> --budget <tokens> [--format markdown\|json] [--seeds N]` | Smart context loader. TF-IDF rank + backlink BFS + greedy fill under token budget. | No |
 
@@ -1373,7 +1432,7 @@ In addition to the lint, every command that interpolates a wiki body into an LLM
 - **A compromised local user (Linux multi-tenant).** macOS isolates tempfiles per-user under `$TMPDIR`; Linux's `/tmp` is shared across UIDs but Coral mitigates via mode-0600 tempfiles. A user with the same UID as you can still read your tempfiles — that's a kernel-level isolation question, not a Coral one.
 - **A compromised `coral` binary.** Verify SHA-256 against the GitHub release; ad-hoc codesigning is included for first-launch macOS Gatekeeper but doesn't establish vendor identity.
 - **Network-level MITM on git clone.** Use `https://` with cert pinning, or `ssh://` (Coral always honors your git config; no special handling).
-- **CSRF on a future MCP HTTP/SSE transport.** v0.20.x ships stdio-only; HTTP/SSE is deferred (see v0.20.2 audit cycle 4 H6). Once it lands, the same advice will apply: don't expose `coral mcp serve --transport http` to untrusted networks.
+- **CSRF / DNS-rebinding on the MCP HTTP/SSE transport.** v0.21.1 ships HTTP/SSE behind `coral mcp serve --transport http`. The default bind is `127.0.0.1` and the Origin allowlist defends browser clients against DNS-rebinding; native clients can spoof Origin, so the localhost default is the load-bearing protection. Don't bind `0.0.0.0` unless you know what you're doing — see [Security model for the HTTP transport](#security-model-for-the-http-transport).
 
 ---
 

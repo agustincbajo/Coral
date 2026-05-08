@@ -5,17 +5,28 @@
 //! Cursor, Continue, Cline, Goose, Codex…) can read Coral's structured
 //! context cross-session.
 //!
-//! v0.20.0 ships **stdio** as the only supported transport, with
-//! `WikiResourceProvider` + `CoralToolDispatcher` end-to-end (catalogs
-//! advertised; tools `query` / `search` / `find_backlinks` /
-//! `affected_repos` / `verify` reachable in `--read-only` mode; write
-//! tools gated by `--allow-write-tools`). Streamable HTTP/SSE was
-//! deferred during the v0.20.1 cycle-4 audit (H6) — every shipped MCP
-//! client (Claude Desktop, Cursor, Continue, Cline, Goose, OpenCode,
-//! Crush, Codex CLI) speaks stdio, and an inflated docs surface for an
-//! unimplemented transport was deemed worse than the absence of the
-//! feature. HTTP/SSE returns to the roadmap when client demand
-//! materializes; track via the GitHub roadmap.
+//! **v0.21.1+ ships both transports.** stdio remains the canonical
+//! path every shipped MCP client (Claude Desktop, Cursor, Continue,
+//! Cline, Goose, OpenCode, Crush, Codex CLI) speaks; the Streamable
+//! HTTP/SSE transport (MCP 2025-11-25) lands behind
+//! `coral mcp serve --transport http --port <p>`. The HTTP transport
+//! defaults to binding `127.0.0.1` and validates `Origin` against
+//! `null` / `http://localhost*` / `http://127.0.0.1*` only (the
+//! DNS-rebinding mitigation the MCP spec calls for); `--bind 0.0.0.0`
+//! is opt-in and emits a stderr warning banner because exposing the
+//! server to a network reachable by other users turns it into an
+//! exfiltration vector. The wire format (`"transport": "stdio"` vs.
+//! `"http_sse"`) was kept stable across the v0.20.x → v0.21.1
+//! reintroduction so older configs deserialize unchanged.
+//!
+//! Resource / tool / prompt surface is identical across the two
+//! transports — the dispatcher is shared via [`McpHandler::handle_line`]
+//! so the audit-log line shape, the `--read-only` /
+//! `--allow-write-tools` gate, and the unreviewed-distilled filter
+//! behave the same regardless of how the client connects. The only
+//! transport-level concerns are framing (stdin/stdout one-line-per-
+//! message vs. HTTP body), origin validation, the 4 MiB body cap, and
+//! the `Mcp-Session-Id` cookie.
 //!
 //! Strategic positioning (PRD §3.10): Coral is "the project manifest
 //! for AI-era development", and this crate is what makes it
@@ -25,6 +36,7 @@ pub mod prompts;
 pub mod resources;
 pub mod server;
 pub mod tools;
+pub mod transport;
 
 pub use prompts::{PromptCatalog, PromptDescriptor};
 pub use resources::{Resource, ResourceProvider, WikiResourceProvider};
@@ -34,8 +46,8 @@ pub use tools::{Tool, ToolCatalog, ToolKind};
 use serde::{Deserialize, Serialize};
 
 /// Configuration the CLI wraps when invoking `coral mcp serve`.
-/// Currently only `stdio` ships; if HTTP/SSE returns to the roadmap
-/// the new variant lands here without a breaking change.
+/// v0.21.1+ supports both `stdio` and `http_sse`; older configs
+/// pinned `transport: stdio` continue to deserialize unchanged.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerConfig {
     pub transport: Transport,
@@ -63,21 +75,30 @@ pub struct ServerConfig {
     /// flags. Now both surfaces share one contract.
     #[serde(default)]
     pub allow_write_tools: bool,
-    /// Reserved for a future HTTP/SSE transport (deferred during the
-    /// v0.20.1 cycle-4 audit; see crate docstring). `None` until that
-    /// transport ships; ignored by the stdio path.
+    /// HTTP transport port. Required when `transport == HttpSse`,
+    /// ignored on stdio. CLI default is 3737 (chosen to avoid the
+    /// 3000-3100 React/Next dev-server cluster and the 8000-8100
+    /// Python clusters).
     pub port: Option<u16>,
+    /// HTTP transport bind address. Defaults to `127.0.0.1` on
+    /// the CLI; `0.0.0.0` is opt-in and prints a stderr warning
+    /// banner. Ignored on stdio.
+    ///
+    /// v0.21.1: was previously not surfaced because the v0.20.x
+    /// docstring left the HTTP transport "deferred". Now first-class.
+    #[serde(default)]
+    pub bind_addr: Option<std::net::IpAddr>,
 }
 
-/// Transport variants. v0.20.x ships `Stdio` only; HTTP/SSE was
-/// deferred during the v0.20.1 cycle-4 audit (H6) — see crate
-/// docstring. The enum is intentionally not narrowed to a single
-/// variant so the wire format (`"transport": "stdio"`) stays stable
-/// across the eventual `HttpSse` re-introduction.
+/// Transport variants. v0.21.1+ ships both `Stdio` and `HttpSse`.
+/// The wire format (`"transport": "stdio"` / `"http_sse"`) was held
+/// stable across the v0.20.x → v0.21.1 reintroduction so any older
+/// `ServerConfig` JSON / TOML deserializes unchanged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Transport {
     Stdio,
+    HttpSse,
 }
 
 impl Default for ServerConfig {
@@ -87,6 +108,7 @@ impl Default for ServerConfig {
             read_only: true,
             allow_write_tools: false,
             port: None,
+            bind_addr: None,
         }
     }
 }

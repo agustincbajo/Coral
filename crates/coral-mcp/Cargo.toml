@@ -15,6 +15,7 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 chrono = { workspace = true }
 toml = { workspace = true }
+tiny_http = { workspace = true }
 coral-core = { workspace = true }
 coral-stats = { workspace = true }
 
@@ -24,10 +25,12 @@ coral-stats = { workspace = true }
 # dep so the workspace still builds without network.
 # rmcp = "1.6"
 
-[features]
-default = ["stdio"]
-stdio = []
-http_sse = []  # v0.19+ Streamable HTTP/SSE transport
+# v0.21.1 deleted the previous `[features]` block (`default = ["stdio"]`,
+# `stdio = []`, `http_sse = []`). Both transports are unconditionally
+# compiled in — the runtime selection is via the `Transport` enum, not a
+# build-time cargo feature. Anyone shaving binary size still has the
+# option to fork `transport::http_sse` out, but the workspace surface
+# stays single-flavor.
 
 [dev-dependencies]
 tempfile = { workspace = true }

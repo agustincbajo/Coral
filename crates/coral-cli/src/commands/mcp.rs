@@ -1,8 +1,12 @@
-//! `coral mcp serve [--transport stdio] [--read-only]`
+//! `coral mcp serve [--transport stdio|http] [--port <p>] [--bind <addr>] [--read-only]`
 //!
 //! Exposes the wiki + manifest as a Model Context Protocol server.
-//! v0.19 wave 2 ships stdio only; HTTP/SSE follows in v0.19.x once the
-//! security model (audit log + rate limit) is pinned.
+//! v0.21.1+ ships **both** transports — stdio (the canonical one
+//! every shipped MCP client speaks) and HTTP/SSE (Streamable HTTP per
+//! MCP 2025-11-25). The HTTP transport binds `127.0.0.1` by default
+//! and validates `Origin` against `null` / `http://localhost*` /
+//! `http://127.0.0.1*` (DNS-rebinding mitigation). `--bind 0.0.0.0`
+//! is opt-in and emits a stderr warning banner.
 //!
 //! v0.19.5 audit C1 wired the real `ToolDispatcher` and resource
 //! `read()` paths — wave 1 had stub implementations that always
@@ -13,8 +17,9 @@ use clap::{Args, Subcommand};
 use coral_core::{search, walk};
 use coral_mcp::{
     McpHandler, ResourceProvider, ServerConfig, ToolCallResult, ToolDispatcher, Transport,
-    WikiResourceProvider,
+    WikiResourceProvider, transport::HttpSseTransport,
 };
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -33,9 +38,23 @@ pub enum McpCmd {
 
 #[derive(Args, Debug)]
 pub struct ServeArgs {
-    /// Transport. v0.19 only supports `stdio`.
+    /// Transport. v0.21.1+ supports `stdio` (default) and `http`.
     #[arg(long, default_value = "stdio")]
     pub transport: TransportArg,
+
+    /// HTTP transport port. Required when `--transport http`; ignored
+    /// for stdio. Default 3737 — picked to dodge the 3000-3100 React/
+    /// Next dev-server cluster and the 8000-8100 Python clusters.
+    #[arg(long)]
+    pub port: Option<u16>,
+
+    /// HTTP transport bind address. Defaults to `127.0.0.1` for safety;
+    /// `--bind 0.0.0.0` is opt-in and emits a stderr warning banner
+    /// (the MCP spec's DNS-rebinding mitigation only protects
+    /// `Origin`-aware browser clients, so 0.0.0.0 + a permissive
+    /// downstream proxy is still a footgun).
+    #[arg(long)]
+    pub bind: Option<IpAddr>,
 
     /// Default-deny: write-tools (`up`, `down`, `run_test`) are
     /// disabled unless `--allow-write-tools` is also passed.
@@ -68,8 +87,19 @@ pub struct ServeArgs {
 
 #[derive(clap::ValueEnum, Clone, Debug)]
 pub enum TransportArg {
+    /// One JSON-RPC envelope per line on stdin/stdout. The canonical
+    /// MCP transport every shipped client speaks.
     Stdio,
+    /// Streamable HTTP/SSE per MCP 2025-11-25. POST /mcp for JSON-RPC
+    /// envelopes, GET /mcp for the SSE keep-alive stream, DELETE /mcp
+    /// for explicit session teardown.
+    Http,
 }
+
+/// Default port for the HTTP transport when `--port` is omitted.
+/// Picked to dodge the busy 3000-3100 React/Next and 8000-8100 Python
+/// dev-server clusters most projects already run.
+pub const DEFAULT_HTTP_PORT: u16 = 3737;
 
 pub fn run(args: McpArgs, _wiki_root: Option<&Path>) -> Result<ExitCode> {
     match args.command {
@@ -95,26 +125,75 @@ fn serve(args: ServeArgs) -> Result<ExitCode> {
     // gating, but the write-tool catalog gate is now driven by
     // `allow_write_tools` alone.
     let read_only = args.read_only && !args.allow_write_tools;
+    let transport = match args.transport {
+        TransportArg::Stdio => Transport::Stdio,
+        TransportArg::Http => Transport::HttpSse,
+    };
+    let bind_addr = args.bind;
+    let port = args.port;
     let config = ServerConfig {
-        transport: match args.transport {
-            TransportArg::Stdio => Transport::Stdio,
-        },
+        transport,
         read_only,
         allow_write_tools: args.allow_write_tools,
-        port: None,
+        port,
+        bind_addr,
     };
     let handler = McpHandler::new(config, resources, tools);
+    let transport_label = match args.transport {
+        TransportArg::Stdio => "stdio",
+        TransportArg::Http => "http",
+    };
     eprintln!(
-        "coral mcp serve — transport={:?}, read_only={}, allow_write_tools={}",
-        match args.transport {
-            TransportArg::Stdio => "stdio",
-        },
-        read_only,
-        args.allow_write_tools
+        "coral mcp serve — transport={}, read_only={}, allow_write_tools={}",
+        transport_label, read_only, args.allow_write_tools
     );
-    handler
-        .serve_stdio()
-        .map_err(|e| anyhow::anyhow!("MCP stdio loop failed: {e}"))?;
+    match args.transport {
+        TransportArg::Stdio => {
+            handler
+                .serve_stdio()
+                .map_err(|e| anyhow::anyhow!("MCP stdio loop failed: {e}"))?;
+        }
+        TransportArg::Http => {
+            let bind_ip = bind_addr.unwrap_or(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)));
+            let port = port.unwrap_or(DEFAULT_HTTP_PORT);
+            let socket = SocketAddr::new(bind_ip, port);
+            // v0.21.1 acceptance criterion: --bind 0.0.0.0 must emit a
+            // stderr warning banner. The MCP spec's DNS-rebinding
+            // mitigation only protects browsers, so 0.0.0.0 + a
+            // permissive proxy still hands a network-reachable agent
+            // to anyone who can see the port.
+            if matches!(bind_ip, IpAddr::V4(v4) if v4.is_unspecified())
+                || matches!(bind_ip, IpAddr::V6(v6) if v6.is_unspecified())
+            {
+                tracing::warn!(
+                    bind = %bind_ip,
+                    port = port,
+                    "MCP HTTP transport bound to 0.0.0.0 — exposed to every network interface; \
+                     prefer --bind 127.0.0.1 unless you know what you're doing"
+                );
+                eprintln!(
+                    "WARNING: coral mcp serve bound to {bind_ip}:{port} — reachable from \
+                     every network interface. Origin validation defends browser clients but \
+                     not native ones; consider --bind 127.0.0.1."
+                );
+            }
+            // Bind FIRST, then print the resolved address — when the
+            // user passes `--port 0` the OS picks a free port and the
+            // banner needs to show the actual port (so smoke tests
+            // and humans both know where to connect). The blocking
+            // serve loop runs after the banner.
+            let handler = Arc::new(handler);
+            let transport = HttpSseTransport::bind(socket, handler)
+                .map_err(|e| anyhow::anyhow!("MCP HTTP/SSE bind failed: {e}"))?;
+            let resolved = transport
+                .local_addr()
+                .map_err(|e| anyhow::anyhow!("could not query local addr: {e}"))?;
+            eprintln!("coral mcp serve — listening on http://{resolved}/mcp");
+            transport
+                .serve_blocking()
+                .map_err(|e| anyhow::anyhow!("MCP HTTP/SSE loop failed: {e}"))?;
+        }
+    }
     Ok(ExitCode::SUCCESS)
 }
 

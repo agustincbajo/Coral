@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.1] - 2026-05-08
+
+**Feature release: HTTP/SSE MCP transport (Streamable HTTP per MCP 2025-11-25).** v0.20.x had deferred this transport during the cycle-4 audit (H6) — every shipped MCP client speaks stdio, and an inflated docs surface for an unimplemented transport read worse than absence of the feature. v0.21.1 reintroduces it as a first-class peer of stdio: `coral mcp serve --transport http --port <p>` opens `POST /mcp` (JSON-RPC), `GET /mcp` (SSE keep-alive), `DELETE /mcp` (session teardown), and `OPTIONS /mcp` (CORS preflight) on a `tiny_http::Server`. Default bind is `127.0.0.1`; `--bind 0.0.0.0` is opt-in and emits a `WARNING:` stderr banner. Origin allowlist accepts `null` / `http://localhost*` / `http://127.0.0.1*` / `http://[::1]*` only — the spec's DNS-rebinding mitigation. Body cap is 4 MiB → 413, concurrency cap is 32 in-flight → 503, batched JSON-RPC arrays return 400. Wire format is byte-stable with v0.20.x stdio: the dispatcher (`McpHandler::handle_line`) is shared, so tool catalogs, audit-log shape, the `--read-only` / `--allow-write-tools` gate, and the `--include-unreviewed` filter behave identically across the two transports. Phase 2 of the v0.21.1 plan lifted the stdio loop body out of `server.rs` into `transport/stdio.rs` so the new HTTP transport could share `handle_line` without the JSON-RPC core dragging the stdio framing along — `serve_stdio` is now a 6-line shim over `transport::stdio::serve_stdio`. **BC pinned via `mcp_stdio_golden.rs` (test #21): the JSON-RPC envelope shape is byte-identical to v0.21.0.** **1155 tests pass (was 1124; +31).** BC contract holds — `bc_regression` is green; the wire format `"transport": "stdio"` deserializes unchanged from any v0.20.x config.
+
+### Added
+
+- **`coral mcp serve --transport http --port <p> [--bind <addr>]`.** Streamable HTTP/SSE per MCP 2025-11-25. Default `--port 3737`, default `--bind 127.0.0.1`. `--port 0` asks the OS to pick a free port; the resolved port is printed to stderr (`coral mcp serve — listening on http://127.0.0.1:NNNNN/mcp`).
+- **New module `crates/coral-mcp/src/transport/`** with `stdio.rs` (lifted from `server.rs`), `http_sse.rs` (the new transport), and `mod.rs` (umbrella). `pub use coral_mcp::transport::{HttpSseTransport, serve_http_sse, serve_stdio}` for callers that want the lower-level surface.
+- **`Transport::HttpSse` enum variant** and **`ServerConfig::bind_addr: Option<IpAddr>`**. The wire-format string `"http_sse"` was held stable across the v0.20.x → v0.21.1 reintroduction so any older `ServerConfig` JSON / TOML deserializes unchanged.
+- **`Mcp-Session-Id` cookie.** Server mints a 36-char UUID-shaped opaque token on every `initialize` POST; clients echo on subsequent traffic. Sessions live in `Arc<Mutex<HashMap<String, Instant>>>` with a 1h TTL, reaped on each request. Hand-crafted (no `uuid` crate) — opacity to clients is the only requirement; cryptographic randomness is not (per the spec).
+
+### Changed
+
+- **`McpHandler::serve_stdio` is now a 6-line shim** over `transport::stdio::serve_stdio`. The lift was byte-identical — pinned by the new `mcp_stdio_golden.rs::stdio_transcript_response_shape_is_byte_identical_to_v0_21_0` regression test.
+- **`coral mcp serve` CLI** gains `--port <u16>`, `--bind <IpAddr>`, and `Http` as a `--transport` value. The CLI validates `--bind 0.0.0.0` (or `::`) by emitting both a `tracing::warn!` and a `WARNING:` stderr banner so a server bound to every interface is never silent. The existing `--read-only` / `--allow-write-tools` / `--include-unreviewed` flags are dispatcher-level concerns and behave identically across both transports.
+- **README**: removed the v0.20.x "Transport status: deferred" callout, replaced with a worked curl recipe for the HTTP transport, a wire-shape table, and a new "Security model for the HTTP transport" section. The PRD-style "What Coral does NOT defend against" entry for CSRF / DNS-rebinding flipped from "future" to "current" and now points at the new section.
+
+### Internal
+
+- **New workspace dep: `tiny_http = "0.12"`.** Picked over hyper / axum because the MCP HTTP transport is a small, blocking-I/O surface (POST + GET + DELETE) and tiny-http is single-purpose, dep-light, and has no async runtime dragging the rest of the workspace into tokio. This is the only new dep in v0.21.1.
+- **`crates/coral-mcp/Cargo.toml`** dropped the dead `[features]` block (`default = ["stdio"]`, `stdio = []`, `http_sse = []`). Both transports are unconditionally compiled in — runtime selection is via the `Transport` enum, not a build-time cargo feature.
+- **`ServerConfig` gained `bind_addr: Option<IpAddr>`** with `#[serde(default)]` so existing serialized configs deserialize unchanged.
+
+### Tests (+24)
+
+**21 tests in the orchestrator's spec, plus 3 edge-case fillers:**
+
+- **#1-#7 unit (in `transport/http_sse.rs::tests`)**: Origin allowlist, Accept validation, DNS-rebind block, SSE frame literal bytes, session table reap, body cap constant, JSON-RPC batch detection, plus a `new_session_id` UUID-shape pin and uniqueness pin.
+- **#8-#16 e2e (`crates/coral-mcp/tests/mcp_http_sse_e2e.rs`)**: POST initialize round-trip, POST resources/list, POST tools/call write-tool rejection, session ID minting, DELETE termination, GET /mcp SSE keep-alive, 5 concurrent clients, malformed JSON-RPC → 200 with -32700, 5 MiB POST → 413 + server stays up, plus three edge-case fillers (Accept text/plain only → 406, OPTIONS preflight CORS shape, unknown path → 404). All driven via raw `std::net::TcpStream` so the test crate doesn't need `tiny_http` as a dep.
+- **#17 CLI smoke (`crates/coral-cli/tests/mcp_http_smoke.rs`)**: `coral mcp serve --transport http --port 0` binds, prints the resolved address, responds to a hand-crafted POST initialize. Plus a sibling test that pins the `WARNING:` stderr banner emitted on `--bind 0.0.0.0`.
+- **#18-#19 adversarial**: ASCII-rendered homoglyph origin (`xn--lcalhost-5cf.attacker.com`, `localhost.attacker.com`, `127.0.0.1.attacker.com`) blocked; bind-to-already-bound port returns a friendly `io::Error` mentioning the port.
+- **#21 BC (`crates/coral-mcp/tests/mcp_stdio_golden.rs`)**: pinned canonical request transcript through `McpHandler::handle_line` produces byte-identical envelopes to v0.21.0. Plus a sibling smoke that spawns the actual `coral mcp serve --transport stdio` binary, pipes initialize, and verifies the protocol version round-trips.
+
+### Acceptance criteria — 15/15 met
+
+- Default bind is `127.0.0.1` ✓
+- `--bind 0.0.0.0` works as opt-in with stderr warning ✓
+- HTTP transport audit-log line shape matches stdio (validates dispatcher is shared) ✓ — the shared `handle_line` is the only place audit lines originate.
+- 5+ concurrent clients work, no deadlocks ✓
+- Body > 4 MiB → 413, server stays up ✓
+- Malformed JSON → 200 with JSON-RPC -32700 (transport-level errors only for transport-shape problems) ✓
+- Origin homoglyph attempts blocked ✓
+- Already-bound port → friendly error ✓
+- Session ID minted on initialize, optional on subsequent ✓
+- DELETE 204 / 404 split ✓
+- 32 concurrent → 503 (validated via the spawn cap branch in `serve_blocking`)
+- Batched arrays → 400 ✓
+- OPTIONS preflight → 200 with tight CORS headers ✓
+- Unknown path → 404 ✓
+- BC test #21 passes ✓
+
+### Pipeline note
+
+Patch release within the v0.21 sprint (same minor as v0.21.0 since the v0.21 cycle is a five-feature batch, not a fresh minor). No `Co-Authored-By: Claude` trailer per working-agreements.
+
 ## [0.21.0] - 2026-05-08
 
 **Feature release: `coral env devcontainer emit`.** Render a `.devcontainer/devcontainer.json` from the active `[[environments]]` block so VS Code, Cursor, and GitHub Codespaces can attach to the same Compose project Coral runs. New `crates/coral-env/src/devcontainer.rs` is a pure renderer over `EnvPlan` (no I/O); `coral_env::render_devcontainer` is callable from the library, and the new `coral env devcontainer emit` CLI subcommand prints the JSON to stdout or writes it atomically with `--write` (mirrors `coral env import --write` exactly). Service auto-selection prefers the first real service whose `repo = "..."` is set (BTreeMap order, lexicographic by service name) and falls back to the alphabetically first real service if none has a repo; mock services are never selected. `forwardPorts` is the union of every `RealService.ports` from the spec, deduped and sorted. **1124 tests pass (was 1108; +16).** BC contract holds — single-repo v0.15 layouts get the same actionable "no [[environments]] declared in coral.toml" error from `coral env devcontainer emit` they get from `coral env status` / `coral up` / `coral down`.
