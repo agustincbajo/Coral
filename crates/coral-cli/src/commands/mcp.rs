@@ -52,6 +52,18 @@ pub struct ServeArgs {
     /// the explicit opt-out).
     #[arg(long)]
     pub allow_write_tools: bool,
+
+    /// Surface `reviewed: false` distilled pages on `resources/list`
+    /// and `resources/read`. Off by default — the MCP boundary
+    /// mirrors the v0.20.1 pre-commit `unreviewed-distilled` lint
+    /// gate, so attacker-influenced (via prompt injection through an
+    /// original transcript) distilled content cannot reach a remote
+    /// agent before a human reviewer flips `reviewed: true`.
+    ///
+    /// v0.20.2 audit-followup #37. Use only when debugging a distill
+    /// flow where you intentionally want the un-vetted draft visible.
+    #[arg(long, default_value_t = false)]
+    pub include_unreviewed: bool,
 }
 
 #[derive(clap::ValueEnum, Clone, Debug)]
@@ -67,23 +79,38 @@ pub fn run(args: McpArgs, _wiki_root: Option<&Path>) -> Result<ExitCode> {
 
 fn serve(args: ServeArgs) -> Result<ExitCode> {
     let cwd = std::env::current_dir()?;
-    let resources: Arc<dyn ResourceProvider> = Arc::new(WikiResourceProvider::new(cwd.clone()));
+    // v0.20.2 audit-followup #37: opt-in flag to surface unreviewed
+    // distilled pages. Default-deny — see `WikiResourceProvider`
+    // doc comment.
+    let resources: Arc<dyn ResourceProvider> = Arc::new(
+        WikiResourceProvider::new(cwd.clone()).with_include_unreviewed(args.include_unreviewed),
+    );
     let tools: Arc<dyn ToolDispatcher> = Arc::new(CoralToolDispatcher::new(cwd));
+    // v0.20.2 audit-followup #38: surface BOTH `read_only` and
+    // `allow_write_tools` to the server config. The handler uses
+    // `allow_write_tools` as the single source of truth for both
+    // `tools/list` advertisement and `tools/call` dispatch — the
+    // two surfaces can no longer disagree. `read_only` is still
+    // surfaced as a behavioural marker for resources / future
+    // gating, but the write-tool catalog gate is now driven by
+    // `allow_write_tools` alone.
     let read_only = args.read_only && !args.allow_write_tools;
     let config = ServerConfig {
         transport: match args.transport {
             TransportArg::Stdio => Transport::Stdio,
         },
         read_only,
+        allow_write_tools: args.allow_write_tools,
         port: None,
     };
     let handler = McpHandler::new(config, resources, tools);
     eprintln!(
-        "coral mcp serve — transport={:?}, read_only={}",
+        "coral mcp serve — transport={:?}, read_only={}, allow_write_tools={}",
         match args.transport {
             TransportArg::Stdio => "stdio",
         },
-        read_only
+        read_only,
+        args.allow_write_tools
     );
     handler
         .serve_stdio()

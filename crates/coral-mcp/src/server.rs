@@ -259,10 +259,17 @@ impl McpHandler {
         &self,
         params: &serde_json::Value,
     ) -> std::result::Result<serde_json::Value, String> {
-        let tools = if self.config.read_only {
-            ToolCatalog::read_only()
-        } else {
+        // v0.20.2 audit-followup #38: the listing gate is now
+        // `allow_write_tools`, NOT `!read_only`. Pre-fix `--read-only
+        // false` alone would list write tools in `tools/list` even
+        // though `tools/call` correctly required both flags — the
+        // user saw "(skipped: tool 'down' requires --allow-write-tools)"
+        // on every write call after `--read-only false`, which is
+        // confusing. Now the catalog matches the dispatcher.
+        let tools = if self.config.allow_write_tools {
             ToolCatalog::all()
+        } else {
+            ToolCatalog::read_only()
         };
         let tools_json: Vec<serde_json::Value> = tools
             .into_iter()
@@ -301,13 +308,16 @@ impl McpHandler {
             .get("arguments")
             .cloned()
             .unwrap_or(serde_json::Value::Null);
-        // Enforce read-only.
+        // v0.20.2 audit-followup #38: the dispatcher's gate now
+        // matches the listing gate — both surfaces require
+        // `allow_write_tools` for the three write tools. Pre-fix the
+        // listing checked `!read_only` while the dispatcher checked
+        // `read_only && !allow_write_tools` (computed at the CLI
+        // layer); the two surfaces could disagree.
         let kind = lookup_tool_kind(name).ok_or_else(|| format!("unknown tool: {name}"))?;
         let is_write = matches!(kind, ToolKind::RunTest | ToolKind::Up | ToolKind::Down);
-        if is_write && self.config.read_only {
-            return Err(format!(
-                "tool '{name}' requires --allow-write-tools (server is in --read-only mode)"
-            ));
+        if is_write && !self.config.allow_write_tools {
+            return Err(format!("tool '{name}' requires --allow-write-tools"));
         }
         match self.tools.call(name, &args) {
             ToolCallResult::Ok(value) => Ok(serde_json::json!({
@@ -469,9 +479,27 @@ mod tests {
     use crate::resources::WikiResourceProvider;
 
     fn handler(read_only: bool) -> McpHandler {
+        // Pre-v0.20.2 helper retained for back-compat with existing
+        // tests: a `read_only` flag drives the config. When the
+        // legacy boolean is `false`, this helper now ALSO sets
+        // `allow_write_tools = true` so the test that exercised
+        // "non-read-only mode" still observes the same surface.
+        // New tests should prefer `handler_with(read_only,
+        // allow_write_tools)` to pin both axes explicitly.
+        handler_with(read_only, !read_only)
+    }
+
+    /// v0.20.2 audit-followup #38: explicit constructor for the
+    /// 2-axis matrix (`read_only`, `allow_write_tools`). Lets the
+    /// new tests pin every cell of:
+    /// - default (read_only=true, allow_write_tools=false)
+    /// - --read-only false alone (read_only=false, allow_write_tools=false)
+    /// - --read-only false + --allow-write-tools (both false / true)
+    fn handler_with(read_only: bool, allow_write_tools: bool) -> McpHandler {
         let cfg = ServerConfig {
             transport: crate::Transport::Stdio,
             read_only,
+            allow_write_tools,
             port: None,
         };
         let resources = Arc::new(WikiResourceProvider::new(std::path::PathBuf::from("/tmp")));
@@ -556,7 +584,113 @@ mod tests {
             serde_json::json!({"name": "up", "arguments": {}}),
         );
         let msg = resp["error"]["message"].as_str().unwrap_or("");
-        assert!(msg.contains("read-only"));
+        // v0.20.2 audit-followup #38: error message changed from
+        // "(server is in --read-only mode)" to a cleaner form that
+        // matches the new contract: write tools require
+        // --allow-write-tools regardless of the --read-only flag.
+        assert!(
+            msg.contains("--allow-write-tools"),
+            "expected --allow-write-tools hint in: {msg}"
+        );
+    }
+
+    /// v0.20.2 audit-followup #38: regression matrix for `tools/list`.
+    /// Pre-fix `--read-only false` alone surfaced all 8 tools; post-fix
+    /// the listing gate is `allow_write_tools` only. Pin every cell:
+    ///
+    /// - default (read_only=true, allow_write_tools=false) → 5 read-only tools
+    /// - read_only=false, allow_write_tools=false → STILL 5 read-only tools
+    /// - read_only=true, allow_write_tools=true → 8 tools (allow_write_tools wins)
+    /// - read_only=false, allow_write_tools=true → 8 tools
+    #[test]
+    fn tools_list_default_shows_only_read_only_tools() {
+        let h = handler_with(true, false);
+        let names = list_tool_names(&h);
+        let read_only_count = ToolCatalog::read_only().len();
+        assert_eq!(
+            names.len(),
+            read_only_count,
+            "default must list exactly the {read_only_count} read-only tools, got: {names:?}"
+        );
+        assert!(!names.contains(&"up".to_string()));
+        assert!(!names.contains(&"down".to_string()));
+        assert!(!names.contains(&"run_test".to_string()));
+    }
+
+    #[test]
+    fn tools_list_with_read_only_false_alone_still_hides_write_tools() {
+        // The load-bearing regression: pre-fix this matrix cell
+        // listed all 8 tools; post-fix it lists only the 5 read-only
+        // ones because `allow_write_tools` is the gate.
+        let h = handler_with(false, false);
+        let names = list_tool_names(&h);
+        let read_only_count = ToolCatalog::read_only().len();
+        assert_eq!(
+            names.len(),
+            read_only_count,
+            "--read-only false alone MUST NOT list write tools (audit #38): {names:?}"
+        );
+        assert!(!names.contains(&"up".to_string()));
+        assert!(!names.contains(&"down".to_string()));
+        assert!(!names.contains(&"run_test".to_string()));
+    }
+
+    #[test]
+    fn tools_list_with_allow_write_tools_lists_all_tools() {
+        let h = handler_with(false, true);
+        let names = list_tool_names(&h);
+        let total = ToolCatalog::all().len();
+        assert_eq!(
+            names.len(),
+            total,
+            "--allow-write-tools must list every tool (read-only + write)"
+        );
+        assert!(names.contains(&"up".to_string()));
+        assert!(names.contains(&"down".to_string()));
+        assert!(names.contains(&"run_test".to_string()));
+    }
+
+    /// v0.20.2 audit-followup #38: `tools/call` matrix mirrors the
+    /// listing matrix. The dispatcher gate is `allow_write_tools`,
+    /// not `!read_only`.
+    #[test]
+    fn tools_call_dispatcher_uses_allow_write_tools_gate() {
+        // read_only=false alone → write tool still rejected.
+        let h = handler_with(false, false);
+        let resp = call(
+            &h,
+            "tools/call",
+            serde_json::json!({"name": "up", "arguments": {}}),
+        );
+        let msg = resp["error"]["message"].as_str().unwrap_or("");
+        assert!(
+            msg.contains("--allow-write-tools"),
+            "expected --allow-write-tools hint in: {msg}"
+        );
+        // allow_write_tools=true → write tool dispatched (NoOp
+        // dispatcher returns Skip but the gate has been passed).
+        let h2 = handler_with(false, true);
+        let resp2 = call(
+            &h2,
+            "tools/call",
+            serde_json::json!({"name": "up", "arguments": {}}),
+        );
+        // No error envelope — the call passed the gate, dispatcher
+        // returned a Skip.
+        assert!(
+            resp2["error"].is_null(),
+            "write tool with --allow-write-tools must pass the gate, got: {resp2}"
+        );
+    }
+
+    fn list_tool_names(h: &McpHandler) -> Vec<String> {
+        let resp = call(h, "tools/list", serde_json::json!({}));
+        resp["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap().to_string())
+            .collect()
     }
 
     #[test]

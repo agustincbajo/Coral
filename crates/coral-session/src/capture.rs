@@ -25,6 +25,36 @@ use coral_core::atomic::atomic_write_string;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+/// Hard cap on the size of a source transcript that `coral session
+/// capture` will read.
+///
+/// v0.20.2 audit-followup #34. Mirrors `coral_core::walk::read_pages`
+/// (v0.19.5 N3) and `coral_test::contract_check::parse_spec_file`. A
+/// 100 MB Claude Code transcript (multi-hour agent session) would
+/// otherwise OOM the binary on a `read_to_string`. 32 MiB is the
+/// shared cap used everywhere else in the workspace.
+pub const MAX_SESSION_BYTES: u64 = 32 * 1024 * 1024;
+
+/// Reject if `path`'s on-disk size exceeds [`MAX_SESSION_BYTES`].
+/// Public so the CLI layer (auto-discovery path) can fail-fast before
+/// invoking the parse pipeline. Emits [`SessionError::TooLarge`] with
+/// the path, observed size, and cap so the user gets actionable
+/// numbers.
+pub fn ensure_within_size_cap(path: &Path) -> SessionResult<()> {
+    let metadata = std::fs::metadata(path).map_err(|source| SessionError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    if metadata.len() > MAX_SESSION_BYTES {
+        return Err(SessionError::TooLarge {
+            path: path.to_path_buf(),
+            size: metadata.len(),
+            cap: MAX_SESSION_BYTES,
+        });
+    }
+    Ok(())
+}
+
 /// Source-format selector. Only `ClaudeCode` is implemented in the
 /// v0.20.0 MVP. The other variants exist on the enum so the CLI can
 /// emit a clean "not yet implemented; track issue #16" error rather
@@ -149,6 +179,12 @@ pub fn capture_from_path(opts: &CaptureOptions) -> SessionResult<CaptureOutcome>
             opts.source_path.display()
         )));
     }
+
+    // v0.20.2 audit-followup #34: reject oversize transcripts BEFORE
+    // either `read_to_string` call below. A 100 MB Claude Code
+    // transcript would otherwise OOM. 32 MiB cap matches the rest of
+    // the workspace.
+    ensure_within_size_cap(&opts.source_path)?;
 
     let parsed: ParsedTranscript = parse_transcript(&opts.source_path)?;
 
@@ -425,5 +461,69 @@ mod tests {
         let a = short_hash("a", "z");
         let b = short_hash("b", "z");
         assert_ne!(a, b);
+    }
+
+    /// v0.20.2 audit-followup #34: a transcript larger than 32 MiB
+    /// is rejected with [`SessionError::TooLarge`] before any
+    /// `read_to_string` is attempted, so the binary can't OOM on a
+    /// pathological input.
+    #[test]
+    fn capture_rejects_oversize_transcript() {
+        // We test the metadata-check helper directly so we don't have
+        // to actually write 33 MiB to /tmp on every test run.
+        // Equivalent reproducer (left as docstring): create a 33 MiB
+        // file at <tmp>/big.jsonl and call `capture_from_path` with
+        // it; the `TooLarge` error must surface before parsing.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("big.jsonl");
+        // Use file_set_len-style sparse file when available; falls
+        // back to actually writing zero bytes otherwise.
+        let f = std::fs::File::create(&path).unwrap();
+        f.set_len(MAX_SESSION_BYTES + 1).unwrap();
+        drop(f);
+        let err = ensure_within_size_cap(&path).expect_err("expected TooLarge");
+        match err {
+            SessionError::TooLarge { path: p, size, cap } => {
+                assert_eq!(p, path);
+                assert!(size > cap);
+                assert_eq!(cap, MAX_SESSION_BYTES);
+            }
+            other => panic!("expected TooLarge, got {other:?}"),
+        }
+    }
+
+    /// v0.20.2 audit-followup #34: end-to-end — a 33 MiB transcript
+    /// drives `capture_from_path` to surface `TooLarge` rather than
+    /// OOM-ing on the read.
+    #[test]
+    fn capture_from_path_rejects_oversize_source() {
+        let proj = TempDir::new().unwrap();
+        let src_dir = TempDir::new().unwrap();
+        let src_path = src_dir.path().join("big.jsonl");
+        let f = std::fs::File::create(&src_path).unwrap();
+        f.set_len(MAX_SESSION_BYTES + 1).unwrap();
+        drop(f);
+        let opts = CaptureOptions {
+            source_path: src_path.clone(),
+            source: CaptureSource::ClaudeCode,
+            project_root: proj.path().to_path_buf(),
+            scrub_secrets: true,
+        };
+        let err = capture_from_path(&opts).unwrap_err();
+        assert!(
+            matches!(err, SessionError::TooLarge { .. }),
+            "expected TooLarge, got {err:?}"
+        );
+    }
+
+    /// v0.20.2 audit-followup #34: under-cap transcripts pass the
+    /// size check unchanged. Pin the negative case so a future
+    /// off-by-one in the comparison can't regress past test review.
+    #[test]
+    fn ensure_within_size_cap_accepts_under_cap_files() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("small.jsonl");
+        std::fs::write(&path, b"under cap content").unwrap();
+        ensure_within_size_cap(&path).expect("under-cap file must pass");
     }
 }

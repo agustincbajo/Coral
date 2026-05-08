@@ -65,11 +65,28 @@ pub(crate) fn collect_versions(pins: &Pins) -> BTreeSet<String> {
     out
 }
 
-/// Run `git ls-remote --tags <url>` and return the set of tag names
-/// (without the `refs/tags/` prefix and the `^{}` peel suffix).
+/// Build the `git ls-remote --tags -- <remote>` command for a remote
+/// URL.
+///
+/// Pure construction — does not spawn — so tests can pin the argv
+/// shape (specifically: that `--` appears before `remote`). Public to
+/// the module so the regression test can call it directly.
+///
+/// v0.20.2 audit-followup #36: `--` is a defense-in-depth separator
+/// against option-injection. Modern git (≥2.30) blocks
+/// `--upload-pack=evil` shapes via a `protocol.allow` allowlist, but
+/// older git on user CI boxes is vulnerable. Same class as the
+/// v0.19.5 git-clone fix (#3).
+pub(crate) fn build_ls_remote_command(remote: &str) -> std::process::Command {
+    let mut cmd = std::process::Command::new("git");
+    cmd.args(["ls-remote", "--tags", "--", remote]);
+    cmd
+}
+
+/// Run `git ls-remote --tags -- <url>` and return the set of tag
+/// names (without the `refs/tags/` prefix and the `^{}` peel suffix).
 fn ls_remote_tags(remote: &str) -> Result<BTreeSet<String>> {
-    let output = std::process::Command::new("git")
-        .args(["ls-remote", "--tags", remote])
+    let output = build_ls_remote_command(remote)
         .output()
         .context("invoking git ls-remote (is git installed?)")?;
     if !output.status.success() {
@@ -250,5 +267,57 @@ ghi789\trefs/heads/main
             .iter()
             .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
             .collect()
+    }
+
+    /// v0.20.2 audit-followup #36: regression — `git ls-remote
+    /// --tags <remote>` must include the `--` end-of-options
+    /// separator before the user-controlled remote URL. Otherwise a
+    /// remote like `--upload-pack=evil` would be parsed by older git
+    /// (<2.30) as a flag rather than a positional. Modern git
+    /// mitigates this via the `protocol.allow` allowlist; the
+    /// separator is defense-in-depth (same shape as the v0.19.5
+    /// git-clone fix, #3).
+    #[test]
+    fn build_ls_remote_command_inserts_double_dash_before_remote() {
+        let cmd = build_ls_remote_command("--upload-pack=evil");
+        let argv: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        // Expected shape: ["ls-remote", "--tags", "--", "--upload-pack=evil"]
+        let dash_idx = argv
+            .iter()
+            .position(|a| a == "--")
+            .expect("expected `--` separator in argv");
+        let remote_idx = argv
+            .iter()
+            .position(|a| a == "--upload-pack=evil")
+            .expect("expected the remote literal in argv");
+        assert!(
+            dash_idx < remote_idx,
+            "`--` must precede the remote URL, got: {argv:?}"
+        );
+        // Sanity: the args before `--` are exactly `ls-remote
+        // --tags`. If a future refactor adds another flag, this
+        // assertion will catch the missing-`--` case.
+        assert_eq!(&argv[..dash_idx], &["ls-remote", "--tags"]);
+        assert_eq!(&argv[remote_idx], "--upload-pack=evil");
+    }
+
+    /// v0.20.2 audit-followup #36: a normal remote URL still works
+    /// — the `--` separator is unconditional.
+    #[test]
+    fn build_ls_remote_command_includes_separator_for_benign_remote() {
+        let cmd = build_ls_remote_command("https://github.com/agustincbajo/Coral");
+        let argv: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let last = argv.last().expect("argv must not be empty");
+        assert_eq!(last, "https://github.com/agustincbajo/Coral");
+        assert!(
+            argv.contains(&"--".to_string()),
+            "`--` separator must always be present: {argv:?}"
+        );
     }
 }

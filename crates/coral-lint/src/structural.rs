@@ -456,36 +456,11 @@ pub fn check_unknown_extra_field(pages: &[Page]) -> Vec<LintIssue> {
 pub fn check_unreviewed_distilled(pages: &[Page]) -> Vec<LintIssue> {
     let mut issues = Vec::new();
     for page in pages {
-        let Some(value) = page.frontmatter.extra.get("reviewed") else {
-            continue;
-        };
-        let needs_review = match value {
-            serde_yaml_ng::Value::Bool(b) => !b,
-            serde_yaml_ng::Value::String(s) => {
-                let trimmed = s.trim().to_ascii_lowercase();
-                trimmed == "false" || trimmed == "no"
-            }
-            _ => false,
-        };
-        if !needs_review {
-            continue;
-        }
-        // H2: only fire when `source.runner` names a non-empty LLM
-        // provider. The runner is the marker that distinguishes
-        // distilled output from a hand-authored draft.
-        let runner_populated = page
-            .frontmatter
-            .extra
-            .get("source")
-            .and_then(|v| v.as_mapping())
-            .and_then(|m| m.get(serde_yaml_ng::Value::String("runner".into())))
-            .and_then(|v| match v {
-                serde_yaml_ng::Value::String(s) => Some(s.trim()),
-                _ => None,
-            })
-            .map(|s| !s.is_empty())
-            .unwrap_or(false);
-        if !runner_populated {
+        // v0.20.2 audit-followup #37: the qualifier moved to
+        // `Page::is_unreviewed_distilled` so the MCP `render_page`
+        // filter and this lint share one implementation. Both
+        // call sites stay in sync via that helper.
+        if !page.is_unreviewed_distilled() {
             continue;
         }
         issues.push(LintIssue {

@@ -240,11 +240,26 @@ fn run_list(args: ListArgs, project_root: &Path) -> Result<ExitCode> {
 }
 
 fn run_forget(args: ForgetArgs, project_root: &Path) -> Result<ExitCode> {
+    // v0.20.2 audit-followup #42: resolve the prefix to its
+    // canonical full session id BEFORE prompting the user, so the
+    // confirmation message shows what's actually about to be
+    // deleted (helpful for ambiguity-prone short prefixes — and a
+    // mismatch between user-typed prefix and resolved id is
+    // exactly when accidental deletes happen).
     if !args.yes {
-        let ok = prompt_yes_no(&format!("Delete session {}? [y/N]: ", args.session_id))?;
+        // Reuse the same matching rule as the underlying
+        // `forget_session` (which collects then errors on >1) so a
+        // doomed forget surfaces the ambiguity error here too —
+        // with a friendlier prompt cancellation flow.
+        let resolved = resolve_session_for_forget(project_root, &args.session_id)?;
+        let ok = prompt_yes_no(&format!("Delete session {resolved}? [y/N]: "))?;
         if !ok {
-            println!("aborted");
-            return Ok(ExitCode::SUCCESS);
+            // v0.20.2 audit-followup #42: previously we returned
+            // `Ok(ExitCode::SUCCESS)` on user-abort, which made
+            // calling scripts treat the no-op as a successful
+            // delete. Surface a real error so the CLI maps to a
+            // non-zero exit code.
+            anyhow::bail!("aborted");
         }
     }
     let opts = ForgetOptions {
@@ -254,6 +269,32 @@ fn run_forget(args: ForgetArgs, project_root: &Path) -> Result<ExitCode> {
     forget_session(&opts).map_err(|e| anyhow::anyhow!(e))?;
     println!("deleted session {}", args.session_id);
     Ok(ExitCode::SUCCESS)
+}
+
+/// v0.20.2 audit-followup #42: resolve a user-typed prefix to its
+/// canonical full session id by reading `index.json` and matching
+/// the same "exact id OR starts_with prefix" rule that
+/// `forget_session` uses internally. The CLI calls this before
+/// prompting so the confirmation message echoes the canonical id
+/// rather than the prefix the user typed.
+fn resolve_session_for_forget(project_root: &Path, prefix: &str) -> Result<String> {
+    let index_path = project_root.join(".coral/sessions/index.json");
+    let index = coral_session::capture::read_index(&index_path).map_err(|e| anyhow::anyhow!(e))?;
+    let matches: Vec<&coral_session::capture::IndexEntry> = index
+        .sessions
+        .iter()
+        .filter(|e| e.session_id == prefix || e.session_id.starts_with(prefix))
+        .collect();
+    if matches.is_empty() {
+        anyhow::bail!("session not found: {prefix}");
+    }
+    if matches.len() > 1 {
+        anyhow::bail!(
+            "session id '{prefix}' matches {} sessions; use a longer prefix or full id",
+            matches.len()
+        );
+    }
+    Ok(matches[0].session_id.clone())
 }
 
 /// `run_distill` factored to take an optional injected runner so the
@@ -303,11 +344,29 @@ pub(crate) fn run_distill(
 fn run_show(args: ShowArgs, project_root: &Path) -> Result<ExitCode> {
     let index_path = project_root.join(".coral/sessions/index.json");
     let index = coral_session::capture::read_index(&index_path).map_err(|e| anyhow::anyhow!(e))?;
-    let entry = index
+    // v0.20.2 audit-followup #41: collect every entry whose session
+    // id matches the provided prefix instead of `.find`-ing the
+    // first one. `forget`/`distill` already raise on `>1` matches;
+    // `show` was silently picking the first, which is the wrong
+    // page to display when two sessions share a 4-char prefix.
+    let matches: Vec<&coral_session::capture::IndexEntry> = index
         .sessions
         .iter()
-        .find(|e| e.session_id == args.session_id || e.session_id.starts_with(&args.session_id))
-        .ok_or_else(|| anyhow::anyhow!("session not found: {}", args.session_id))?;
+        .filter(|e| e.session_id == args.session_id || e.session_id.starts_with(&args.session_id))
+        .collect();
+    if matches.is_empty() {
+        anyhow::bail!("session not found: {}", args.session_id);
+    }
+    if matches.len() > 1 {
+        // Match the message shape used by forget/distill so the
+        // user gets a consistent error across the three commands.
+        anyhow::bail!(
+            "session id '{}' matches {} sessions; use a longer prefix or full id",
+            args.session_id,
+            matches.len()
+        );
+    }
+    let entry = matches[0];
     let parsed = parse_transcript(&entry.captured_path).map_err(|e| anyhow::anyhow!(e))?;
     println!("# session {}", entry.session_id);
     println!("source:        {}", entry.source.as_str());
@@ -397,5 +456,207 @@ mod tests {
                 assert_eq!(home_dir().as_deref(), Some(Path::new(&h)));
             }
         }
+    }
+
+    /// v0.20.2 audit-followup #41: regression — `coral session
+    /// show <prefix>` rejects ambiguous prefixes the same way
+    /// `forget` / `distill` do, instead of silently picking the
+    /// first match.
+    ///
+    /// The matrix:
+    /// - 0 matches → "session not found"
+    /// - 1 match → renders the session normally
+    /// - 2+ matches → "matches N sessions; use a longer prefix"
+    #[test]
+    fn run_show_rejects_ambiguous_prefix() {
+        use chrono::TimeZone;
+        use coral_session::capture::{CaptureSource, IndexEntry, SessionIndex, write_index};
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let sessions_dir = dir.path().join(".coral/sessions");
+        std::fs::create_dir_all(&sessions_dir).unwrap();
+        let index_path = sessions_dir.join("index.json");
+
+        // Two sessions with the same 7-char prefix `5c359da`.
+        let captured_at = chrono::Utc.with_ymd_and_hms(2026, 5, 8, 10, 0, 0).unwrap();
+        let mut idx = SessionIndex::default();
+        for short in ["5c359daf", "5c359dab"] {
+            idx.sessions.push(IndexEntry {
+                session_id: format!("{short}-full-id"),
+                source: CaptureSource::ClaudeCode,
+                captured_at,
+                captured_path: sessions_dir.join(format!("{short}.jsonl")),
+                message_count: 1,
+                redaction_count: 0,
+                distilled: false,
+                distilled_outputs: Vec::new(),
+            });
+        }
+        write_index(&index_path, &idx).unwrap();
+
+        let args = ShowArgs {
+            session_id: "5c359da".into(),
+            n: 5,
+        };
+        let err = run_show(args, dir.path()).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("matches 2 sessions"),
+            "expected ambiguity error mentioning 2 matches, got: {msg}"
+        );
+        assert!(
+            msg.contains("longer prefix"),
+            "error must hint at the fix: {msg}"
+        );
+    }
+
+    /// v0.20.2 audit-followup #41: a unique prefix continues to work.
+    /// Pin the negative case so we don't regress the happy path.
+    #[test]
+    fn run_show_accepts_unique_prefix() {
+        use chrono::TimeZone;
+        use coral_session::capture::{CaptureSource, IndexEntry, SessionIndex, write_index};
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let sessions_dir = dir.path().join(".coral/sessions");
+        std::fs::create_dir_all(&sessions_dir).unwrap();
+        let captured_path = sessions_dir.join("session.jsonl");
+        // Build a minimal valid Claude Code transcript so
+        // parse_transcript inside run_show doesn't fail.
+        std::fs::write(
+            &captured_path,
+            r#"{"type":"user","sessionId":"unique-001","timestamp":"2026-05-08T10:00:00Z","cwd":"/x","message":{"content":"hi"}}
+"#,
+        )
+        .unwrap();
+        let captured_at = chrono::Utc.with_ymd_and_hms(2026, 5, 8, 10, 0, 0).unwrap();
+        let mut idx = SessionIndex::default();
+        idx.sessions.push(IndexEntry {
+            session_id: "unique-001".into(),
+            source: CaptureSource::ClaudeCode,
+            captured_at,
+            captured_path: captured_path.clone(),
+            message_count: 1,
+            redaction_count: 0,
+            distilled: false,
+            distilled_outputs: Vec::new(),
+        });
+        let index_path = sessions_dir.join("index.json");
+        write_index(&index_path, &idx).unwrap();
+        let args = ShowArgs {
+            session_id: "uniq".into(),
+            n: 5,
+        };
+        let exit = run_show(args, dir.path()).expect("unique prefix must succeed");
+        assert_eq!(exit, ExitCode::SUCCESS);
+    }
+
+    /// v0.20.2 audit-followup #41: 0 matches → not-found error.
+    #[test]
+    fn run_show_returns_not_found_for_unknown_prefix() {
+        use coral_session::capture::{SessionIndex, write_index};
+        let dir = tempfile::TempDir::new().unwrap();
+        let sessions_dir = dir.path().join(".coral/sessions");
+        std::fs::create_dir_all(&sessions_dir).unwrap();
+        write_index(&sessions_dir.join("index.json"), &SessionIndex::default()).unwrap();
+        let args = ShowArgs {
+            session_id: "nonexistent".into(),
+            n: 5,
+        };
+        let err = run_show(args, dir.path()).unwrap_err();
+        assert!(
+            err.to_string().contains("session not found"),
+            "expected not-found, got: {err}"
+        );
+    }
+
+    /// v0.20.2 audit-followup #42: `resolve_session_for_forget`
+    /// returns the canonical id for a unique prefix, errors with
+    /// "matches N sessions" for ambiguous, and "session not found"
+    /// for unknown.
+    #[test]
+    fn resolve_session_for_forget_canonicalizes_prefix() {
+        use chrono::TimeZone;
+        use coral_session::capture::{CaptureSource, IndexEntry, SessionIndex, write_index};
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let sessions_dir = dir.path().join(".coral/sessions");
+        std::fs::create_dir_all(&sessions_dir).unwrap();
+        let mut idx = SessionIndex::default();
+        idx.sessions.push(IndexEntry {
+            session_id: "5c359daf-full".into(),
+            source: CaptureSource::ClaudeCode,
+            captured_at: chrono::Utc.with_ymd_and_hms(2026, 5, 8, 10, 0, 0).unwrap(),
+            captured_path: sessions_dir.join("session.jsonl"),
+            message_count: 1,
+            redaction_count: 0,
+            distilled: false,
+            distilled_outputs: Vec::new(),
+        });
+        write_index(&sessions_dir.join("index.json"), &idx).unwrap();
+        let canonical = resolve_session_for_forget(dir.path(), "5c359").unwrap();
+        assert_eq!(canonical, "5c359daf-full");
+    }
+
+    /// v0.20.2 audit-followup #42: `resolve_session_for_forget`
+    /// errors on ambiguous prefix.
+    #[test]
+    fn resolve_session_for_forget_rejects_ambiguous_prefix() {
+        use chrono::TimeZone;
+        use coral_session::capture::{CaptureSource, IndexEntry, SessionIndex, write_index};
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let sessions_dir = dir.path().join(".coral/sessions");
+        std::fs::create_dir_all(&sessions_dir).unwrap();
+        let mut idx = SessionIndex::default();
+        for short in ["5c359daf", "5c359dab"] {
+            idx.sessions.push(IndexEntry {
+                session_id: format!("{short}-full"),
+                source: CaptureSource::ClaudeCode,
+                captured_at: chrono::Utc.with_ymd_and_hms(2026, 5, 8, 10, 0, 0).unwrap(),
+                captured_path: sessions_dir.join(format!("{short}.jsonl")),
+                message_count: 1,
+                redaction_count: 0,
+                distilled: false,
+                distilled_outputs: Vec::new(),
+            });
+        }
+        write_index(&sessions_dir.join("index.json"), &idx).unwrap();
+        let err = resolve_session_for_forget(dir.path(), "5c359").unwrap_err();
+        assert!(err.to_string().contains("matches 2 sessions"), "got: {err}");
+    }
+
+    /// v0.20.2 audit-followup #42: `coral session forget --yes`
+    /// without an interactive prompt still works (no abort path).
+    /// This is the regression-anchor: pin that --yes still bypasses
+    /// the prompt entirely.
+    #[test]
+    fn run_forget_yes_bypasses_prompt() {
+        use chrono::TimeZone;
+        use coral_session::capture::{CaptureSource, IndexEntry, SessionIndex, write_index};
+        let dir = tempfile::TempDir::new().unwrap();
+        let sessions_dir = dir.path().join(".coral/sessions");
+        std::fs::create_dir_all(&sessions_dir).unwrap();
+        let captured = sessions_dir.join("session.jsonl");
+        std::fs::write(&captured, "raw").unwrap();
+        let mut idx = SessionIndex::default();
+        idx.sessions.push(IndexEntry {
+            session_id: "abcdef0123456".into(),
+            source: CaptureSource::ClaudeCode,
+            captured_at: chrono::Utc.with_ymd_and_hms(2026, 5, 8, 10, 0, 0).unwrap(),
+            captured_path: captured.clone(),
+            message_count: 1,
+            redaction_count: 0,
+            distilled: false,
+            distilled_outputs: Vec::new(),
+        });
+        write_index(&sessions_dir.join("index.json"), &idx).unwrap();
+        let args = ForgetArgs {
+            session_id: "abcdef01".into(),
+            yes: true,
+        };
+        let exit = run_forget(args, dir.path()).expect("--yes path must succeed");
+        assert_eq!(exit, ExitCode::SUCCESS);
+        assert!(!captured.exists(), "session must be deleted");
     }
 }

@@ -42,7 +42,27 @@ pub struct ServerConfig {
     /// `true` until the user explicitly opts in via `--allow-write-tools`.
     /// The default-deny stance covers PRD risk #25 (MCP server as
     /// exfiltration vector).
+    ///
+    /// **v0.20.2 audit-followup #38 — listing semantics.** Pre-fix,
+    /// this single field gated both the `tools/list` advertisement
+    /// AND the `tools/call` dispatcher. So `--read-only false` alone
+    /// would surface write tools in `tools/list` even though
+    /// `tools/call` then errored with "requires --allow-write-tools"
+    /// — a doc-vs-reality drift that surprised users. Post-fix the
+    /// listing is gated by [`Self::allow_write_tools`] (the
+    /// CLI-only opt-in), so the catalog matches the dispatcher.
     pub read_only: bool,
+    /// `true` only when `coral mcp serve --allow-write-tools` was
+    /// explicitly passed. Drives the `tools/list` advertisement of
+    /// `run_test` / `up` / `down` AND the `tools/call` dispatcher's
+    /// permission check. Default `false`.
+    ///
+    /// v0.20.2 audit-followup #38: previously the listing gate used
+    /// `!read_only` — i.e. `--read-only false` alone was enough to
+    /// list write tools. The dispatcher correctly required both
+    /// flags. Now both surfaces share one contract.
+    #[serde(default)]
+    pub allow_write_tools: bool,
     /// Reserved for a future HTTP/SSE transport (deferred during the
     /// v0.20.1 cycle-4 audit; see crate docstring). `None` until that
     /// transport ships; ignored by the stdio path.
@@ -65,6 +85,7 @@ impl Default for ServerConfig {
         Self {
             transport: Transport::Stdio,
             read_only: true,
+            allow_write_tools: false,
             port: None,
         }
     }

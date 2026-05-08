@@ -6,7 +6,7 @@
 //! needing Docker or any subprocess.
 
 use crate::{
-    DownOptions, EnvBackend, EnvCapabilities, EnvHandle, EnvPlan, EnvResult, EnvStatus,
+    DownOptions, EnvBackend, EnvCapabilities, EnvError, EnvHandle, EnvPlan, EnvResult, EnvStatus,
     ExecOptions, ExecOutput, HealthState, LogLine, LogsOptions, ServiceState, ServiceStatus,
     UpOptions,
 };
@@ -73,6 +73,19 @@ impl EnvBackend for MockBackend {
     }
 
     fn up(&self, plan: &EnvPlan, opts: &UpOptions) -> EnvResult<EnvHandle> {
+        // v0.20.2 audit-followup #39: mirror `ComposeBackend::up`'s
+        // `EnvMode::Adopt` rejection so the mock can't silently
+        // succeed where the real backend errors. Pre-fix tests using
+        // `MockBackend` could pass against an `Adopt` plan but the
+        // production `ComposeBackend` would have refused it. Same
+        // string shape so test assertions hold across both.
+        if matches!(plan.mode, crate::spec::EnvMode::Adopt) {
+            return Err(EnvError::InvalidSpec(
+                "environment `mode = \"adopt\"` is reserved for v0.17.x; \
+                 set `mode = \"managed\"` (the default) for now"
+                    .into(),
+            ));
+        }
         self.inner.lock().unwrap().calls.push(MockCall::Up {
             services: opts.services.clone(),
             watch: opts.watch,
@@ -194,5 +207,49 @@ mod tests {
         let status = mb.status(&empty_plan()).unwrap();
         assert_eq!(status.services.len(), 1);
         assert!(matches!(status.services[0].state, ServiceState::Running));
+    }
+
+    /// v0.20.2 audit-followup #39: regression — `MockBackend::up`
+    /// must reject `EnvMode::Adopt` with the same `EnvError::InvalidSpec`
+    /// that `ComposeBackend::up` raises. Pre-fix the mock returned
+    /// `Ok` and the divergence was invisible to upstream tests.
+    #[test]
+    fn mock_up_rejects_adopt_mode_like_compose_does() {
+        let mb = MockBackend::new();
+        let mut plan = empty_plan();
+        plan.mode = crate::spec::EnvMode::Adopt;
+        let err = mb
+            .up(&plan, &UpOptions::default())
+            .expect_err("must reject adopt");
+        match err {
+            EnvError::InvalidSpec(msg) => {
+                assert!(
+                    msg.contains("adopt"),
+                    "error must mention adopt mode: {msg}"
+                );
+            }
+            other => panic!("expected InvalidSpec, got {other:?}"),
+        }
+        // No call should be recorded — the rejection happens before
+        // we touch state.
+        assert!(
+            mb.calls().is_empty(),
+            "rejected up() must not record a call"
+        );
+    }
+
+    /// v0.20.2 audit-followup #39: managed mode (the default) keeps
+    /// working unchanged. Pin so a future overzealous gate doesn't
+    /// regress the happy path.
+    #[test]
+    fn mock_up_accepts_managed_mode() {
+        let mb = MockBackend::new();
+        let plan = empty_plan(); // default Managed
+        let _ = mb
+            .up(&plan, &UpOptions::default())
+            .expect("managed mode must succeed");
+        let calls = mb.calls();
+        assert_eq!(calls.len(), 1);
+        assert!(matches!(calls[0], MockCall::Up { .. }));
     }
 }

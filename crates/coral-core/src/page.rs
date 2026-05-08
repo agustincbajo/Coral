@@ -78,6 +78,50 @@ impl Page {
             self.frontmatter.backlinks.push(slug);
         }
     }
+
+    /// Returns `true` for pages whose frontmatter declares `reviewed:
+    /// false` AND carries a populated `source.runner` field — i.e.
+    /// LLM-distilled output that no human has signed off on.
+    ///
+    /// v0.20.2 audit-followup #37. The qualifier was first introduced
+    /// by the v0.20.1 H2 lint fix in
+    /// `coral_lint::structural::check_unreviewed_distilled`; it's
+    /// hoisted here so the MCP `WikiResourceProvider` can apply the
+    /// same gate without taking on a `coral-lint` dep. The two call
+    /// sites must stay in sync — if this qualifier evolves, the lint
+    /// helper MUST follow (and vice versa).
+    ///
+    /// Defensively accepts both YAML boolean (`reviewed: false`) and
+    /// string (`reviewed: "false"` / `reviewed: "no"`) forms because
+    /// the distill module round-trips a literal `false` but a human
+    /// editor might quote the value while reviewing.
+    pub fn is_unreviewed_distilled(&self) -> bool {
+        let Some(value) = self.frontmatter.extra.get("reviewed") else {
+            return false;
+        };
+        let needs_review = match value {
+            serde_yaml_ng::Value::Bool(b) => !b,
+            serde_yaml_ng::Value::String(s) => {
+                let trimmed = s.trim().to_ascii_lowercase();
+                trimmed == "false" || trimmed == "no"
+            }
+            _ => false,
+        };
+        if !needs_review {
+            return false;
+        }
+        self.frontmatter
+            .extra
+            .get("source")
+            .and_then(|v| v.as_mapping())
+            .and_then(|m| m.get(serde_yaml_ng::Value::String("runner".into())))
+            .and_then(|v| match v {
+                serde_yaml_ng::Value::String(s) => Some(s.trim()),
+                _ => None,
+            })
+            .map(|s| !s.is_empty())
+            .unwrap_or(false)
+    }
 }
 
 #[cfg(test)]

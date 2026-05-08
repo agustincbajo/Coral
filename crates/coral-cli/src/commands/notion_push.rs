@@ -11,6 +11,7 @@ use anyhow::{Context, Result};
 use clap::Args;
 use coral_core::page::Page;
 use coral_core::walk;
+use coral_runner::body_tempfile::{TempFileGuard, body_tempfile_path, write_body_tempfile_secure};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -79,34 +80,29 @@ pub fn run(args: NotionPushArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
         // error JSON rather than a bare status code. Pipe the
         // Authorization header via stdin (`@-`) so the secret never
         // appears in argv (visible to other processes via /proc).
+        //
+        // v0.20.2 audit-followup #43: also route the body through a
+        // per-call mode-0600 tempfile via `--data-binary @<path>`
+        // instead of `-d <body>`. Same shared helper as `HttpRunner`
+        // (v0.19.6 N2, v0.19.7 #24/#25). RAII guard cleans up on
+        // every return path including panic-unwind.
+        let body_path = body_tempfile_path("coral-notion-body");
+        write_body_tempfile_secure(&body_path, json_string.as_bytes())
+            .with_context(|| format!("writing notion request body to {}", body_path.display()))?;
+        let body_guard = TempFileGuard::new(Some(body_path.clone()));
         let auth_header = format!("Authorization: Bearer {token}\n");
-        let mut child = std::process::Command::new("curl")
-            .args([
-                "-s",
-                "-w",
-                "\nHTTP_CODE:%{http_code}",
-                "-X",
-                "POST",
-                "https://api.notion.com/v1/pages",
-                "-H",
-                "@-",
-                "-H",
-                "Notion-Version: 2022-06-28",
-                "-H",
-                "Content-Type: application/json",
-                "-d",
-                &json_string,
-            ])
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
+        let mut child = build_curl_command(&body_path)
             .spawn()
             .context("spawning curl (is it in PATH?)")?;
         if let Some(mut stdin) = child.stdin.take() {
             std::io::Write::write_all(&mut stdin, auth_header.as_bytes())
                 .context("writing auth header to curl stdin")?;
+            // EOF stdin so curl proceeds to read the body file.
+            drop(stdin);
         }
         let output = child.wait_with_output().context("awaiting curl")?;
+        // Tempfile is removed when body_guard drops at end of iteration.
+        drop(body_guard);
         if !output.status.success() {
             fail += 1;
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -147,6 +143,41 @@ fn filter_by_types(pages: Vec<Page>, types: &[String]) -> Vec<Page> {
         .into_iter()
         .filter(|p| allow.contains(super::export::page_type_name_pub(&p.frontmatter)))
         .collect()
+}
+
+/// Build the curl `Command` for a single Notion `POST /v1/pages`
+/// request. Pure construction — does not spawn — so tests can assert
+/// the argv shape without hitting the network.
+///
+/// Caller writes the body to `body_path` BEFORE spawning (via
+/// [`write_body_tempfile_secure`]) and binds a [`TempFileGuard`] for
+/// cleanup. The auth header rides on stdin (`@-`); the body rides on
+/// `--data-binary @<body_path>`.
+///
+/// v0.20.2 audit-followup #43.
+pub(crate) fn build_curl_command(body_path: &Path) -> std::process::Command {
+    let mut cmd = std::process::Command::new("curl");
+    let body_arg = format!("@{}", body_path.display());
+    cmd.args([
+        "-s",
+        "-w",
+        "\nHTTP_CODE:%{http_code}",
+        "-X",
+        "POST",
+        "https://api.notion.com/v1/pages",
+        "-H",
+        "@-",
+        "-H",
+        "Notion-Version: 2022-06-28",
+        "-H",
+        "Content-Type: application/json",
+        "--data-binary",
+        &body_arg,
+    ]);
+    cmd.stdin(std::process::Stdio::piped());
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    cmd
 }
 
 /// Build Notion `POST /v1/pages` request bodies, one per page, with the
@@ -244,5 +275,68 @@ mod tests {
         let kept = filter_by_types(pages, &["concept".into()]);
         assert_eq!(kept.len(), 1);
         assert_eq!(kept[0].frontmatter.slug, "b");
+    }
+
+    /// v0.20.2 audit-followup #43: regression — neither the auth
+    /// token nor the request body must land in argv. The auth header
+    /// rides on stdin (`@-` sentinel); the body rides on
+    /// `--data-binary @<tempfile-path>`. Local `ps` viewers never see
+    /// either.
+    #[test]
+    fn build_curl_command_does_not_put_body_or_token_in_argv() {
+        let body_path = std::path::PathBuf::from("/tmp/coral-notion-test-body.json");
+        let cmd = build_curl_command(&body_path);
+        let argv: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        // Auth header sentinel: `@-` tells curl to read it from stdin.
+        assert!(
+            argv.iter().any(|a| a == "@-"),
+            "expected `@-` stdin header sentinel: {argv:?}"
+        );
+        // No flag-style auth value should remain in argv.
+        assert!(
+            argv.iter().all(|a| !a.starts_with("Authorization:")),
+            "argv contained an Authorization header: {argv:?}"
+        );
+        // No bare `-d` arg — the migration to `--data-binary` is
+        // intentional so the body source is consistent and easy to
+        // grep for in audit.
+        assert!(
+            !argv.iter().any(|a| a == "-d"),
+            "argv still contains `-d`; body migration to --data-binary missing: {argv:?}"
+        );
+        // The body must be referenced via `--data-binary @<path>`,
+        // not via inline string.
+        assert!(
+            argv.iter().any(|a| a == "--data-binary"),
+            "expected `--data-binary` flag: {argv:?}"
+        );
+        assert!(
+            argv.iter().any(|a| a.starts_with('@') && a != "@-"),
+            "expected `@<body-path>` reference: {argv:?}"
+        );
+    }
+
+    /// v0.20.2 audit-followup #43: end-to-end argv probe with a real
+    /// adversarial-shaped body. Even if a future refactor wires the
+    /// body construction differently, the JSON contents must NEVER
+    /// appear verbatim in argv.
+    #[test]
+    fn build_curl_command_argv_does_not_leak_body_content() {
+        let body_path = std::path::PathBuf::from("/tmp/coral-notion-leak-test.json");
+        let cmd = build_curl_command(&body_path);
+        let argv: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        // A real body would contain page contents — assert that the
+        // tempfile path is the only carrier.
+        let body_marker = "pineapple-secret-token-42";
+        assert!(
+            argv.iter().all(|a| !a.contains(body_marker)),
+            "argv leaked synthetic body marker: {argv:?}"
+        );
     }
 }

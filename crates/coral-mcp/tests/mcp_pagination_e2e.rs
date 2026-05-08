@@ -52,9 +52,13 @@ path = "."
 }
 
 fn handler_for(root: &Path, read_only: bool) -> McpHandler {
+    // v0.20.2 audit-followup #38: ServerConfig now requires
+    // `allow_write_tools`. Pagination tests don't exercise write
+    // tools, so we just default it to `false`.
     let cfg = ServerConfig {
         transport: Transport::Stdio,
         read_only,
+        allow_write_tools: false,
         port: None,
     };
     let resources = Arc::new(WikiResourceProvider::new(root.to_path_buf()));

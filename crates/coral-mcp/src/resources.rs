@@ -52,11 +52,37 @@ pub trait ResourceProvider: Send + Sync {
 /// `list()` so agents can `resources/read` an exact slug.
 pub struct WikiResourceProvider {
     pub project_root: std::path::PathBuf,
+    /// v0.20.2 audit-followup #37: when `false` (default), pages whose
+    /// frontmatter declares `reviewed: false` AND carry a populated
+    /// `source.runner` field — i.e. LLM-distilled output that no
+    /// human has signed off on — are filtered out of every resource
+    /// listing AND made unreadable via `coral://wiki/<repo>/<slug>`.
+    /// Mirrors the v0.20.1 H2 lint qualifier exactly.
+    ///
+    /// Set to `true` only via `coral mcp serve --include-unreviewed`,
+    /// which is intended for users debugging distill flows.
+    pub include_unreviewed: bool,
 }
 
 impl WikiResourceProvider {
+    /// Build a default-deny provider: unreviewed distilled pages are
+    /// hidden from `resources/list` and unreadable via
+    /// `resources/read`. Use [`Self::with_include_unreviewed`] to opt
+    /// into surfacing them.
     pub fn new(project_root: std::path::PathBuf) -> Self {
-        Self { project_root }
+        Self {
+            project_root,
+            include_unreviewed: false,
+        }
+    }
+
+    /// Builder-style opt-in to surface `reviewed: false` distilled
+    /// pages. Used by `coral mcp serve --include-unreviewed`.
+    ///
+    /// v0.20.2 audit-followup #37.
+    pub fn with_include_unreviewed(mut self, include: bool) -> Self {
+        self.include_unreviewed = include;
+        self
     }
 
     /// The static catalog that's always exposed — the per-page
@@ -111,12 +137,26 @@ impl WikiResourceProvider {
 
     /// Read pages from the wiki root, returning an empty vec if the
     /// root doesn't exist (a freshly-initialized project).
+    ///
+    /// v0.20.2 audit-followup #37: when `include_unreviewed` is
+    /// false, pages flagged by [`is_unreviewed_distilled`] are
+    /// filtered out HERE — at the source — so every downstream
+    /// renderer (`render_page`, `render_aggregate_index`,
+    /// `render_repo_index`, the per-page enumeration in `list`)
+    /// inherits the same qualifier with no extra filter calls.
     fn read_pages(&self) -> Vec<coral_core::page::Page> {
         let root = self.wiki_root();
         if !root.exists() {
             return Vec::new();
         }
-        coral_core::walk::read_pages(&root).unwrap_or_default()
+        let pages = coral_core::walk::read_pages(&root).unwrap_or_default();
+        if self.include_unreviewed {
+            return pages;
+        }
+        pages
+            .into_iter()
+            .filter(|p| !p.is_unreviewed_distilled())
+            .collect()
     }
 
     /// Render `coral://manifest` as JSON.
@@ -246,6 +286,13 @@ fn slug_is_safe_segments(slug: &str) -> bool {
     }
     slug.split('/').all(coral_core::slug::is_safe_filename_slug)
 }
+
+// v0.20.2 audit-followup #37: the `reviewed: false` distilled-page
+// qualifier lives in `coral_core::page::Page::is_unreviewed_distilled`
+// so the MCP filter and the v0.20.1 H2 lint
+// (`coral_lint::structural::check_unreviewed_distilled`) share one
+// implementation. If this qualifier evolves, both call sites
+// inherit the change.
 
 impl ResourceProvider for WikiResourceProvider {
     fn list(&self) -> Vec<Resource> {

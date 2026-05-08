@@ -96,6 +96,81 @@ pub fn render(project: &Project, fmt: AgentFormat) -> String {
     }
 }
 
+/// Escape a free-text token (project name, repo name) for safe
+/// interpolation into rendered Markdown.
+///
+/// v0.20.2 audit-followup #47: pre-fix, an attacker who controlled
+/// `[project.name]` (e.g. via a poisoned `coral.toml` in a forked
+/// repo) could land arbitrary Markdown in AGENTS.md / CLAUDE.md by
+/// embedding `\n## malicious heading` or backticks/asterisks.
+/// Coding agents read every byte of these files; a subtle injection
+/// could nudge LLM behavior.
+///
+/// The escape rules:
+///
+/// - **Newlines (`\n`, `\r`, `\r\n`)** become the literal two-character
+///   sequence `\n` so the name stays on its own line. This is the
+///   load-bearing fix — without it `name = "evil\n## new section"`
+///   creates a real Markdown heading.
+/// - **Backticks** are escaped as `\``. Otherwise a name like
+///   ``evil`code` `` would close an inline-code span and reopen with
+///   attacker-controlled content.
+/// - **Markdown emphasis chars** (`*`, `_`) are escaped via backslash.
+///   Single occurrences would turn into bold/italic; doubled
+///   occurrences would too.
+/// - **Brackets and parens** (`[`, `]`, `(`, `)`) are escaped so a
+///   name like `[[wikilink]]` doesn't render as a link.
+/// - **Backslashes** are escaped first so the other escapes survive.
+///
+/// The output is suitable for direct interpolation into Markdown
+/// running text. It is NOT suitable for HTML output (we don't escape
+/// `<` / `>`); the agents-md / claude-md / cursor-rules / copilot /
+/// llms-txt formats are all Markdown.
+pub(crate) fn escape_markdown_token(name: &str) -> String {
+    // Pre-allocate generously — most names are short and don't
+    // contain any of the special chars below.
+    let mut out = String::with_capacity(name.len() + 8);
+    // Process \r\n as a single linebreak so we emit one `\n` literal
+    // instead of two.
+    let mut chars = name.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => {
+                out.push('\\');
+                out.push('\\');
+            }
+            '\r' => {
+                // Collapse \r\n → \n (then escape).
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+                out.push_str("\\n");
+            }
+            '\n' => out.push_str("\\n"),
+            // Inline-code delimiter — escape so the closing backtick
+            // can't break out into attacker-controlled content.
+            '`' => {
+                out.push('\\');
+                out.push('`');
+            }
+            // Emphasis chars — escape singly. Doubled (`**`, `__`)
+            // forms are also covered because we escape each char.
+            '*' | '_' => {
+                out.push('\\');
+                out.push(c);
+            }
+            // Link / wikilink syntax — escape so the name can't
+            // become a clickable link or `[[wikilink]]`.
+            '[' | ']' | '(' | ')' => {
+                out.push('\\');
+                out.push(c);
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
 fn render_agents_md(project: &Project) -> String {
     let mut out = String::new();
     out.push_str("# AGENTS.md\n\n");
@@ -109,7 +184,14 @@ fn render_agents_md(project: &Project) -> String {
     ));
 
     out.push_str("## Project\n\n");
-    out.push_str(&format!("- name: `{}`\n", project.name));
+    // v0.20.2 audit-followup #47: escape project / repo names so a
+    // poisoned `coral.toml` (e.g. `name = "evil\n## injection"`)
+    // can't land arbitrary Markdown in AGENTS.md / CLAUDE.md. See
+    // `escape_markdown_token` for the escape rules.
+    out.push_str(&format!(
+        "- name: `{}`\n",
+        escape_markdown_token(&project.name)
+    ));
     out.push_str(&format!("- repos: {}\n", project.repos.len()));
     out.push('\n');
 
@@ -130,7 +212,12 @@ fn render_agents_md(project: &Project) -> String {
             } else {
                 r.depends_on.join(",")
             };
-            out.push_str(&format!("| `{}` | {} | {} |\n", r.name, tags, deps));
+            out.push_str(&format!(
+                "| `{}` | {} | {} |\n",
+                escape_markdown_token(&r.name),
+                tags,
+                deps
+            ));
         }
         out.push('\n');
     }
@@ -195,14 +282,20 @@ projects.\n\n",
 fn render_cursor_rules(project: &Project) -> String {
     let mut out = String::new();
     out.push_str("---\n");
+    // v0.20.2 audit-followup #47: name lands in YAML frontmatter
+    // here. The escape we apply works for Markdown and is also safe
+    // for single-quoted YAML scalars (we don't introduce single
+    // quotes; we don't drop backslashes that would break the YAML
+    // either — the only thing that would break the YAML literal is
+    // an unescaped newline, which we collapse to `\n` literally).
     out.push_str(&format!(
         "description: Coral project '{}' conventions\n",
-        project.name
+        escape_markdown_token(&project.name)
     ));
     out.push_str("alwaysApply: true\n");
     out.push_str("globs: [\"**/*\"]\n");
     out.push_str("---\n\n");
-    out.push_str(&format!("# {}\n\n", project.name));
+    out.push_str(&format!("# {}\n\n", escape_markdown_token(&project.name)));
     out.push_str(&format!(
         "This is a multi-repo Coral project ({} repo(s)). Run `coral mcp serve` to \
 expose the wiki + manifest as MCP resources, then use `coral query \"<question>\"` to \
@@ -219,7 +312,10 @@ ground answers in the wiki.\n\n",
 
 fn render_copilot(project: &Project) -> String {
     let mut out = String::new();
-    out.push_str(&format!("# Copilot instructions — {}\n\n", project.name));
+    out.push_str(&format!(
+        "# Copilot instructions — {}\n\n",
+        escape_markdown_token(&project.name)
+    ));
     out.push_str(
         "This repository is managed by [Coral](https://github.com/agustincbajo/Coral). \
 The `coral.toml` declares the multi-repo project layout, and `coral mcp serve` exposes \
@@ -233,7 +329,7 @@ the wiki as MCP resources to coding agents.\n\n",
     out.push_str("- Use `coral test --tag smoke` to validate functional behavior.\n\n");
     out.push_str("## Repos\n\n");
     for r in &project.repos {
-        out.push_str(&format!("- `{}`\n", r.name));
+        out.push_str(&format!("- `{}`\n", escape_markdown_token(&r.name)));
     }
     out
 }
@@ -243,7 +339,7 @@ fn render_llms_txt(project: &Project) -> String {
     // pass over a project. We render an index pointing at the wiki +
     // a one-paragraph project summary.
     let mut out = String::new();
-    out.push_str(&format!("# {}\n\n", project.name));
+    out.push_str(&format!("# {}\n\n", escape_markdown_token(&project.name)));
     out.push_str(&format!(
         "> Coral-managed multi-repo project ({} repos). The wiki is the source of truth.\n\n",
         project.repos.len()
@@ -332,6 +428,166 @@ mod tests {
         assert!(body.starts_with("# demo\n"));
         assert!(body.contains("coral.toml"));
         assert!(body.contains("coral.lock"));
+    }
+
+    /// v0.20.2 audit-followup #47: project names with literal
+    /// newlines must NOT escape into a fresh Markdown line. Pre-fix
+    /// `name = "evil\n## injection"` would land a real heading in
+    /// AGENTS.md; post-fix it survives as the literal `\n`
+    /// two-character sequence.
+    #[test]
+    fn agents_md_escapes_newlines_in_project_name() {
+        let mut project = fixture_project();
+        project.name = "evil\n## injected heading".into();
+        let body = render(&project, AgentFormat::AgentsMd);
+        // The synthetic heading must NOT appear as a real heading
+        // (i.e. there must not be a fresh `## injected heading` line
+        // outside our own `## Project` / `## Repos` etc.).
+        let lines: Vec<&str> = body.lines().collect();
+        assert!(
+            !lines.contains(&"## injected heading"),
+            "newline-injected heading reached output: {body}"
+        );
+        // The escaped name should appear with the literal `\n`.
+        assert!(
+            body.contains("evil\\n## injected heading"),
+            "expected literal escaped name in output: {body}"
+        );
+    }
+
+    /// v0.20.2 audit-followup #47: backticks in a name must NOT
+    /// close an inline-code span. Post-fix the backtick is escaped
+    /// as `\``.
+    #[test]
+    fn agents_md_escapes_backticks_in_project_name() {
+        let mut project = fixture_project();
+        project.name = "evil`code`injection".into();
+        let body = render(&project, AgentFormat::AgentsMd);
+        // The escaped form is `evil\`code\`injection` inside the
+        // backtick-wrapped span.
+        assert!(
+            body.contains("evil\\`code\\`injection"),
+            "expected backtick-escaped name: {body}"
+        );
+    }
+
+    /// v0.20.2 audit-followup #47: wikilink-shaped name must NOT
+    /// render as a real link.
+    #[test]
+    fn agents_md_escapes_wikilink_brackets_in_project_name() {
+        let mut project = fixture_project();
+        project.name = "[[evil-link]]".into();
+        let body = render(&project, AgentFormat::AgentsMd);
+        // Each `[` and `]` should be escaped.
+        assert!(
+            body.contains("\\[\\[evil-link\\]\\]"),
+            "expected escaped brackets in name: {body}"
+        );
+    }
+
+    /// v0.20.2 audit-followup #47: emphasis chars (`*`, `_`) must
+    /// NOT make text bold/italic.
+    #[test]
+    fn agents_md_escapes_emphasis_chars_in_project_name() {
+        let mut project = fixture_project();
+        project.name = "name *with* _emphasis_".into();
+        let body = render(&project, AgentFormat::AgentsMd);
+        assert!(
+            body.contains("name \\*with\\* \\_emphasis\\_"),
+            "expected escaped emphasis chars: {body}"
+        );
+    }
+
+    /// v0.20.2 audit-followup #47: \r\n line endings (Windows-style)
+    /// must collapse to a single literal `\n`.
+    #[test]
+    fn agents_md_escapes_crlf_in_project_name() {
+        let mut project = fixture_project();
+        project.name = "evil\r\n## crlf injection".into();
+        let body = render(&project, AgentFormat::AgentsMd);
+        let lines: Vec<&str> = body.lines().collect();
+        assert!(
+            !lines.contains(&"## crlf injection"),
+            "CRLF-injected heading reached output: {body}"
+        );
+        // Should be exactly ONE `\n` literal, not two (the \r is
+        // collapsed into the \n).
+        assert!(
+            body.contains("evil\\n## crlf injection"),
+            "expected single \\n literal: {body}"
+        );
+        assert!(
+            !body.contains("evil\\n\\n## crlf injection"),
+            "CRLF should collapse to one \\n, got double: {body}"
+        );
+    }
+
+    /// v0.20.2 audit-followup #47: repo names follow the same
+    /// escape rules. The repo name allowlist already rejects `../`
+    /// etc, but a backtick is technically valid in a slug allowlist
+    /// configured permissively, so escape defensively.
+    #[test]
+    fn agents_md_escapes_repo_names_too() {
+        let mut project = fixture_project();
+        project.repos[0].name = "evil\nrepo".into();
+        let body = render(&project, AgentFormat::AgentsMd);
+        // Repo name lands in the table row; the literal `\n` should
+        // be there, not a newline that breaks the table.
+        assert!(
+            body.contains("`evil\\nrepo`"),
+            "expected escaped repo name in table: {body}"
+        );
+    }
+
+    /// v0.20.2 audit-followup #47: the escape is also applied in
+    /// CLAUDE.md (which delegates to render_agents_md).
+    #[test]
+    fn claude_md_inherits_escape_from_agents_md() {
+        let mut project = fixture_project();
+        project.name = "evil\n## injection".into();
+        let body = render(&project, AgentFormat::ClaudeMd);
+        let lines: Vec<&str> = body.lines().collect();
+        assert!(
+            !lines.contains(&"## injection"),
+            "injection reached CLAUDE.md: {body}"
+        );
+    }
+
+    /// v0.20.2 audit-followup #47: the escape is also applied to
+    /// the cursor-rules / copilot / llms-txt formats.
+    #[test]
+    fn cursor_rules_copilot_llms_txt_all_escape_project_name() {
+        let mut project = fixture_project();
+        project.name = "evil\n## injection".into();
+        for fmt in [
+            AgentFormat::CursorRules,
+            AgentFormat::Copilot,
+            AgentFormat::LlmsTxt,
+        ] {
+            let body = render(&project, fmt);
+            let lines: Vec<&str> = body.lines().collect();
+            assert!(
+                !lines.contains(&"## injection"),
+                "{fmt:?} did not escape newline in project name: {body}"
+            );
+        }
+    }
+
+    /// v0.20.2 audit-followup #47: pure-text well-formed names go
+    /// through unchanged so the happy path stays readable.
+    #[test]
+    fn escape_markdown_token_is_pass_through_for_safe_input() {
+        for safe in ["demo", "demo-app", "Demo App", "alpha-beta-9"] {
+            assert_eq!(escape_markdown_token(safe), safe);
+        }
+    }
+
+    /// v0.20.2 audit-followup #47: backslash itself is escaped so
+    /// downstream `\n` literal can't be re-interpreted as an escape
+    /// sequence.
+    #[test]
+    fn escape_markdown_token_doubles_existing_backslash() {
+        assert_eq!(escape_markdown_token("a\\b"), "a\\\\b");
     }
 
     #[test]

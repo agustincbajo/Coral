@@ -6,6 +6,7 @@
 //! HTTP shape. v0.4 ships [`VoyageProvider`] and [`MockEmbeddingsProvider`]; a
 //! second real provider can land as one new file in this module.
 
+use crate::body_tempfile::{TempFileGuard, body_tempfile_path, write_body_tempfile_secure};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::process::Command;
@@ -27,28 +28,63 @@ pub enum EmbeddingsError {
 
 pub type EmbedResult<T> = std::result::Result<T, EmbeddingsError>;
 
+/// Build the curl `Command` for a POST with a stdin-piped secret header
+/// and a tempfile-routed body.
+///
+/// Pure construction — does not spawn. Tests can inspect the resulting
+/// argv to assert that neither the secret nor the body appear there.
+///
+/// v0.20.2 audit-followup #44: pre-fix the body was passed via `-d
+/// body` in argv. The provider is responsible for writing `body` to
+/// `body_path` BEFORE spawning (via [`write_body_tempfile_secure`])
+/// and binding a [`TempFileGuard`] for cleanup.
+fn build_curl_post_with_secret_header(
+    url: &str,
+    extra_headers: &[(&str, &str)],
+    body_path: &std::path::Path,
+) -> Command {
+    let mut cmd = Command::new("curl");
+    cmd.args(["-s", "--fail-with-body", "-X", "POST", url, "-H", "@-"]);
+    for (k, v) in extra_headers {
+        cmd.args(["-H", &format!("{k}: {v}")]);
+    }
+    // v0.20.2 #44: body via tempfile referenced as `--data-binary
+    // @<path>`. Stays out of argv where `ps` / `/proc/<pid>/cmdline`
+    // would otherwise expose it.
+    cmd.args(["--data-binary", &format!("@{}", body_path.display())]);
+    cmd.stdin(std::process::Stdio::piped());
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    cmd
+}
+
 /// Run `curl POST` with the provided header line piped through stdin
+/// instead of placed in argv, AND with the request body written to a
+/// per-call mode-0600 tempfile referenced via `--data-binary @<path>`
 /// instead of placed in argv.
 ///
 /// v0.19.5 audit H6: API keys must NEVER appear in argv (visible to
 /// every other process via `ps` / `/proc`). curl's `@-` form for `-H`
 /// reads header lines from stdin until EOF; we pipe the bearer
 /// header in and EOF the stream so curl moves on to the body.
+///
+/// v0.20.2 audit-followup #44: lift the same body-via-tempfile
+/// pattern that [`crate::http::HttpRunner`] already uses (v0.19.6 N2,
+/// v0.19.7 #24/#25 hardening). For embeddings the body is text-to-
+/// embed which can include user wiki content; for `coral notion-push`
+/// it's the page payload. Either way: argv-leakage closed, mode-0600
+/// tempfile, RAII cleanup on every return path.
 fn curl_post_with_secret_header(
     url: &str,
     secret_header: &str,
     extra_headers: &[(&str, &str)],
     body: &str,
 ) -> std::io::Result<std::process::Output> {
-    let mut cmd = Command::new("curl");
-    cmd.args(["-s", "--fail-with-body", "-X", "POST", url, "-H", "@-"]);
-    for (k, v) in extra_headers {
-        cmd.args(["-H", &format!("{k}: {v}")]);
-    }
-    cmd.args(["-d", body]);
-    cmd.stdin(std::process::Stdio::piped());
-    cmd.stdout(std::process::Stdio::piped());
-    cmd.stderr(std::process::Stdio::piped());
+    let body_path = body_tempfile_path("coral-embed-body");
+    write_body_tempfile_secure(&body_path, body.as_bytes())?;
+    let _guard = TempFileGuard::new(Some(body_path.clone()));
+
+    let mut cmd = build_curl_post_with_secret_header(url, extra_headers, &body_path);
     let mut child = cmd.spawn()?;
     if let Some(mut stdin) = child.stdin.take() {
         // curl reads header lines from stdin until EOF for @- inputs.
@@ -58,8 +94,12 @@ fn curl_post_with_secret_header(
             line.push('\n');
         }
         std::io::Write::write_all(&mut stdin, line.as_bytes())?;
+        // Drop stdin so curl sees EOF and proceeds to read the body
+        // file. Without this the child blocks waiting for more bytes.
+        drop(stdin);
     }
     child.wait_with_output()
+    // _guard drops here → tempfile removed on every return path.
 }
 
 /// An embeddings provider: turns batches of text into fixed-dimension vectors.
@@ -624,26 +664,19 @@ mod tests {
         assert!(result.is_empty());
     }
 
-    /// v0.19.5 audit H6: regression — `curl_post_with_secret_header`
-    /// must NOT place the secret header in argv. We can't observe the
-    /// stdin write directly here; instead we assert the only `-H @-`
-    /// sentinel is in argv, and no string starting with
-    /// `Authorization:` / `x-api-key:` / containing the actual secret.
+    /// v0.19.5 audit H6 + v0.20.2 #44 regression: the secret header
+    /// must NOT be in argv (read from stdin via `@-`), AND the body
+    /// must NOT be in argv (read from a tempfile via `--data-binary
+    /// @<path>`). Both ride together through the same shared helper.
     #[test]
-    fn curl_helper_does_not_leak_secret_into_argv() {
-        // Spawn helper builds a Command; we don't actually run it
-        // (would shell out to curl) but we can inspect the argv it
-        // would produce by replicating the construction here.
+    fn curl_helper_does_not_leak_secret_or_body_into_argv() {
         let url = "https://example.invalid/v1/embeddings";
         let secret = "Authorization: Bearer sk-test-supersecret";
         let extra = [("Content-Type", "application/json")];
-        let body = "{}";
-        let mut cmd = Command::new("curl");
-        cmd.args(["-s", "--fail-with-body", "-X", "POST", url, "-H", "@-"]);
-        for (k, v) in &extra {
-            cmd.args(["-H", &format!("{k}: {v}")]);
-        }
-        cmd.args(["-d", body]);
+        let body = r#"{"input":["pineapple-42"],"model":"voyage-3"}"#;
+        // Use the real helper so this test pins the actual contract.
+        let body_path = std::path::PathBuf::from("/tmp/coral-embed-test-body.json");
+        let cmd = build_curl_post_with_secret_header(url, &extra, &body_path);
         let argv: Vec<String> = cmd
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
@@ -658,7 +691,24 @@ mod tests {
         );
         assert!(
             argv.iter().any(|a| a == "@-"),
-            "missing @- sentinel: {argv:?}"
+            "missing @- sentinel for stdin-piped header: {argv:?}"
+        );
+        // v0.20.2 #44: body via tempfile, not via `-d <body>` argv.
+        assert!(
+            argv.iter().all(|a| !a.contains("pineapple-42")),
+            "argv leaked the body content: {argv:?}"
+        );
+        assert!(
+            argv.iter().all(|a| !a.contains(body)),
+            "argv leaked the body verbatim: {argv:?}"
+        );
+        assert!(
+            !argv.iter().any(|a| a == "-d"),
+            "argv still has bare `-d`; body migration to --data-binary missing: {argv:?}"
+        );
+        assert!(
+            argv.iter().any(|a| a.starts_with('@') && a != "@-"),
+            "expected `--data-binary @<path>` body reference: {argv:?}"
         );
     }
 

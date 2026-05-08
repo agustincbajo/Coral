@@ -23,6 +23,7 @@
 //! - Response parsing failures become `RunnerError::Io(io::Error::other(_))`
 //!   — `RunnerError` has no dedicated `Parse` variant in this iteration.
 
+use crate::body_tempfile::{TempFileGuard, body_tempfile_path, write_body_tempfile_secure};
 use crate::runner::{
     Prompt, RunOutput, Runner, RunnerError, RunnerResult, combine_outputs, is_auth_failure,
     scrub_secrets,
@@ -188,80 +189,12 @@ pub(crate) fn build_curl(
     cmd
 }
 
-/// Resolve a per-call temp file path for the curl request body.
-/// Pid + nanos + atomic counter keeps it unique without bringing in a
-/// new dep. Created via [`write_body_tempfile_secure`] and cleaned up
-/// by [`TempFileGuard`]'s `Drop` impl.
-///
-/// v0.19.6 audit N2.
-fn runner_body_tempfile_path() -> std::path::PathBuf {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static N: AtomicU64 = AtomicU64::new(0);
-    let counter = N.fetch_add(1, Ordering::Relaxed);
-    let pid = std::process::id();
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    std::env::temp_dir().join(format!("coral-runner-body-{pid}-{nanos}-{counter}.json"))
-}
-
-/// Write `contents` to `path` with `O_CREAT | O_EXCL | mode 0600` on
-/// Unix so the prompt body in `/tmp` can't be `cat`-ed by another
-/// local user during the in-flight curl call.
-///
-/// v0.19.7 audit-followup #24: pre-v0.19.7 the body went out at
-/// `mode 0644` (default umask), which restricted WRITE but not READ
-/// on Linux multi-tenant hosts where `/tmp` is shared across UIDs.
-/// macOS is unaffected because `$TMPDIR` is per-user under
-/// `/var/folders/<hash>/T/`. We `create_new(true)` so a pre-positioned
-/// symlink at the target path can't trick us into clobbering an
-/// attacker-chosen file (defense-in-depth; the path-generation already
-/// produces collision-resistant names).
-fn write_body_tempfile_secure(path: &std::path::Path, contents: &[u8]) -> std::io::Result<()> {
-    use std::io::Write;
-    let mut opts = std::fs::OpenOptions::new();
-    opts.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
-    }
-    let mut f = opts.open(path)?;
-    f.write_all(contents)
-}
-
-/// RAII cleanup for the per-call request-body tempfile. Pre-v0.19.7
-/// the cleanup was hand-rolled at the success path plus a couple of
-/// the error paths; the validator agent caught three error paths
-/// (`stdin.write_all` for header, `stdin.write_all` for body,
-/// `child.wait_with_output()`) where the file leaked. RAII makes
-/// cleanup uniform across every return path including panic unwinding.
-///
-/// v0.19.7 audit-followup #25.
-struct TempFileGuard {
-    path: Option<std::path::PathBuf>,
-}
-
-impl TempFileGuard {
-    /// Bind a guard to `path`. `None` means "no tempfile in play"
-    /// (e.g. the no-API-key code path that streams the body via
-    /// stdin); the guard's `Drop` is then a no-op.
-    fn new(path: Option<std::path::PathBuf>) -> Self {
-        Self { path }
-    }
-    fn as_path(&self) -> Option<&std::path::Path> {
-        self.path.as_deref()
-    }
-}
-
-impl Drop for TempFileGuard {
-    fn drop(&mut self) {
-        if let Some(p) = self.path.take() {
-            let _ = std::fs::remove_file(&p);
-        }
-    }
-}
+// v0.20.2 lift: `runner_body_tempfile_path`, `write_body_tempfile_secure`,
+// and `TempFileGuard` moved to `crate::body_tempfile` so `coral
+// notion-push` (#43) and the embeddings providers (#44) can share
+// the same hardening. Local construction sites below now call
+// `body_tempfile_path("coral-runner-body")` to keep the same prefix
+// for triage continuity.
 
 impl Runner for HttpRunner {
     fn run(&self, prompt: &Prompt) -> RunnerResult<RunOutput> {
@@ -289,7 +222,7 @@ impl Runner for HttpRunner {
         // every return path (including the three the v0.19.6 review
         // flagged: header-write fail, body-write fail, wait-output fail).
         let (body_guard, body_via_stdin) = if self.api_key.is_some() {
-            let p = runner_body_tempfile_path();
+            let p = body_tempfile_path("coral-runner-body");
             write_body_tempfile_secure(&p, body.as_bytes()).map_err(|e| {
                 RunnerError::Io(std::io::Error::other(format!(
                     "writing request body to {}: {e}",
@@ -713,67 +646,7 @@ mod tests {
         );
     }
 
-    /// v0.19.7 hardening (#24): the request-body tempfile is created with
-    /// mode 0600 on Unix so other local users can't `cat` it from
-    /// `/tmp`. Pre-v0.19.7 the file was created via `std::fs::write`
-    /// which lands at the umask default (0644 typically), restricting
-    /// WRITE but not READ — a privacy leak on shared Linux hosts.
-    #[cfg(unix)]
-    #[test]
-    fn body_tempfile_is_created_mode_0600() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = tempfile::TempDir::new().unwrap();
-        let path = dir.path().join("body.json");
-        write_body_tempfile_secure(&path, b"hello").unwrap();
-        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
-        assert_eq!(
-            mode, 0o600,
-            "tempfile mode is {mode:o}, expected 0600 — see GitHub issue #24"
-        );
-    }
-
-    /// v0.19.7 hardening (#24): `create_new(true)` semantics — refuse
-    /// to clobber a pre-existing file. Defense-in-depth against a
-    /// pre-positioned symlink at the target path even though our
-    /// path-generation already produces collision-resistant names.
-    #[cfg(unix)]
-    #[test]
-    fn body_tempfile_secure_refuses_to_clobber() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let path = dir.path().join("body.json");
-        std::fs::write(&path, b"existing").unwrap();
-        let err = write_body_tempfile_secure(&path, b"new").expect_err("must fail");
-        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
-    }
-
-    /// v0.19.7 hardening (#25): `TempFileGuard` cleans up on Drop.
-    /// Pre-v0.19.7 the cleanup was hand-rolled at three of the four
-    /// return paths; the fourth (`stdin.write_all` for the body)
-    /// leaked. RAII makes cleanup uniform across success, error, and
-    /// panic-unwind paths.
-    #[test]
-    fn temp_file_guard_removes_path_on_drop() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let path = dir.path().join("guarded.json");
-        std::fs::write(&path, b"x").unwrap();
-        assert!(path.exists());
-        {
-            let _g = TempFileGuard::new(Some(path.clone()));
-        }
-        assert!(
-            !path.exists(),
-            "TempFileGuard did not remove the file on drop"
-        );
-    }
-
-    /// v0.19.7 hardening (#25): a guard with `None` is a no-op on Drop.
-    /// (Used on the no-API-key code path where the body streams via
-    /// stdin and there's no tempfile in play.)
-    #[test]
-    fn temp_file_guard_with_none_is_noop() {
-        let g = TempFileGuard::new(None);
-        drop(g);
-        // No panic, no file to assert on — the absence of error is
-        // the contract.
-    }
+    // v0.20.2 lift: the body-tempfile mode/clobber/guard tests moved
+    // to `crate::body_tempfile::tests` along with the helpers. The
+    // hardening contract is exercised once, at the helper module.
 }

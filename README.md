@@ -5,7 +5,7 @@
 [![CI](https://github.com/agustincbajo/Coral/actions/workflows/ci.yml/badge.svg)](https://github.com/agustincbajo/Coral/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/agustincbajo/Coral?display_name=tag)](https://github.com/agustincbajo/Coral/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-1068%20passing-brightgreen)](#testing--ci)
+[![Tests](https://img.shields.io/badge/tests-1108%20passing-brightgreen)](#testing--ci)
 [![Codecov](https://codecov.io/gh/agustincbajo/Coral/branch/main/graph/badge.svg)](https://codecov.io/gh/agustincbajo/Coral)
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange?logo=rust)](rust-toolchain.toml)
 [![MCP](https://img.shields.io/badge/MCP-2025--11--25-blue?logo=anthropic)](https://modelcontextprotocol.io/)
@@ -76,10 +76,10 @@ Plus:
 - **5 LLM runner implementations** (`Claude`, `Gemini`, `Local` llama.cpp, `Http` OpenAI-compat, `Mock` for tests). API keys never appear in process argv (piped via stdin); request bodies never appear in argv either (per-call tempfile mode 0600 via RAII guard).
 - **3 embeddings providers** (`Voyage`, `OpenAI`, `Anthropic`).
 - **2 storage backends** (JSON default, SQLite via `CORAL_EMBEDDINGS_BACKEND=sqlite`).
-- **11 structural lint checks** (incl. `unreviewed-distilled` v0.20 + `injection-suspected` v0.19.5 default-on since v0.20.1) + 1 LLM-driven semantic check + auto-fix routing.
+- **11 structural lint checks** (incl. `unreviewed-distilled` v0.20 + `injection-suspected` v0.19.5 default-on since v0.20.2) + 1 LLM-driven semantic check + auto-fix routing.
 - **5 export formats** for the wiki (`markdown-bundle`, `json`, `notion-json`, `jsonl`, `html`).
 - **5 export formats** for AI agent instructions (`agents-md`, `claude-md`, `cursor-rules`, `copilot`, `llms-txt`) — manifest-driven, NOT LLM-driven.
-- **9 `TestKind` variants** (`Healthcheck`, `UserDefined`, `LlmGenerated`, `Contract`, `PropertyBased`, `Recorded`, `Event`, `Trace`, `E2eBrowser`).
+- **3 user-reachable test kinds today** (`Healthcheck`, `UserDefined`, `MockTestRunner` for tests) **+ 6 reserved variants** (`LlmGenerated`, `Contract`, `PropertyBased`, `Recorded`, `Event`, `Trace`, `E2eBrowser`) on the `TestKind` enum for forward-compat. Only the first three are wired to a `TestRunner` impl; the reserved variants exist on the data type so the wire format stays stable when their runners ship.
 - **6 MCP resources + 5 read-only tools (3 more behind `--allow-write-tools`) + 3 prompts** exposed via JSON-RPC 2.0 stdio. MCP `mimeType` matches actual payload per resource (catalog-driven). `.coral/audit.log` rotates at 16 MiB. Notification methods (no `id`) silently no-op per JSON-RPC 2.0 §4.1.
 - **End-to-end concurrency safety**: atomic writes (`tmp + rename`), cross-process `flock(2)` locking, race-free parallel `coral ingest` AND `coral project sync`. `WikiLog::append_atomic` is race-free under contending writers (header+entry sequence cannot be reordered).
 - **Hardened against adversarial inputs**: slug allowlist (`is_safe_filename_slug` + `is_safe_repo_name`) at every interpolation site; `--` separator before user-controlled positionals in every `git` invocation (CVE-2017-1000117 / CVE-2024-32004 family); 32 MiB cap on every `read_to_string` of user-supplied content; secret scrubbing in every `RunnerError` Display.
@@ -135,7 +135,7 @@ Unit tests don't tell you if your microservices actually work together. End-to-e
 ### From a tagged release (recommended)
 
 ```bash
-cargo install --locked --git https://github.com/agustincbajo/Coral --tag v0.20.1 coral-cli
+cargo install --locked --git https://github.com/agustincbajo/Coral --tag v0.20.2 coral-cli
 ```
 
 ### From `main` (latest)
@@ -158,10 +158,10 @@ cargo build --release
 Each tagged release ships pre-built binaries for x86_64 Linux, x86_64 macOS, and aarch64 macOS (Apple Silicon) on the [Releases page](https://github.com/agustincbajo/Coral/releases). Download `coral-vX.Y.Z-<target>.tar.gz`, verify the SHA-256, extract the `coral` binary, place it on your `$PATH`.
 
 ```bash
-curl -L -o coral.tar.gz https://github.com/agustincbajo/Coral/releases/download/v0.20.1/coral-v0.20.1-aarch64-apple-darwin.tar.gz
+curl -L -o coral.tar.gz https://github.com/agustincbajo/Coral/releases/download/v0.20.2/coral-v0.20.2-aarch64-apple-darwin.tar.gz
 shasum -a 256 -c coral.tar.gz.sha256  # if you also downloaded the .sha256 sidecar
 tar -xzf coral.tar.gz
-sudo mv coral-v0.20.1-aarch64-apple-darwin/coral /usr/local/bin/
+sudo mv coral-v0.20.2-aarch64-apple-darwin/coral /usr/local/bin/
 coral --version
 ```
 
@@ -612,7 +612,7 @@ If your wiki is committed to a public repo and accepts external PRs, lock it dow
 
 ```bash
 # 1. Reject prompt-injection patterns at lint time. The scan is
-#    **on by default since v0.20.1** — keep it that way (or pass
+#    **on by default since v0.20.2** — keep it that way (or pass
 #    `--no-check-injection` only if you have a parallel mitigation).
 coral lint --severity warning
 # Detects `<|system|>`, `</system>`, base64 runs >100 chars, unicode
@@ -641,12 +641,18 @@ See the next section ([MCP client integration](#mcp-client-integration)) for ven
 # Boot Coral as an MCP server (stdio transport, read-only by default).
 coral mcp serve --transport stdio &
 
-# Need wider tool access? --read-only false enables the 5 read-only
-# tools; --allow-write-tools additionally enables the 3 write tools.
-coral mcp serve --transport stdio --read-only false &
+# Need wider tool access? `--read-only` is on by default; the 5 read-only
+# tools (query, search, find_backlinks, affected_repos, verify) are
+# advertised in `tools/list` and dispatched in `tools/call` regardless.
+# To unlock the 3 write tools (run_test, up, down) — both in the catalog
+# AND in the dispatcher — pass `--allow-write-tools`. Pre-v0.20.2 the
+# behaviour drifted: `--read-only false` alone listed write tools but
+# the dispatcher then rejected calls; v0.20.2 #38 collapses both
+# surfaces onto `--allow-write-tools`.
+coral mcp serve --transport stdio --allow-write-tools &
 ```
 
-> **Transport status (v0.20.x).** Only `--transport stdio` ships in v0.20.x — every shipped MCP client (Claude Desktop, Cursor, Continue, Cline, OpenCode, Crush, Goose, Codex CLI) uses stdio anyway, so this isn't a constraint in practice. HTTP/SSE transport is tracked for a later release; once it ships we'll add a `--transport http --port <p>` documented path. (See v0.20.1 audit cycle 4, item H6.)
+> **Transport status (v0.20.x).** Only `--transport stdio` ships in v0.20.x — every shipped MCP client (Claude Desktop, Cursor, Continue, Cline, OpenCode, Crush, Goose, Codex CLI) uses stdio anyway, so this isn't a constraint in practice. HTTP/SSE transport is tracked for a later release; once it ships we'll add a `--transport http --port <p>` documented path. (See v0.20.2 audit cycle 4, item H6.)
 
 Test the boot manually:
 
@@ -750,7 +756,7 @@ For any client that speaks raw MCP JSON-RPC, `coral mcp serve --transport stdio`
 
 ### HTTP/SSE transport (deferred)
 
-Not yet shipped. `coral mcp serve --transport http --port <p>` is tracked for a follow-up release; v0.20.x is stdio-only. Every shipped MCP client (Claude Desktop, Cursor, Continue, Cline, OpenCode, Crush, Goose, Codex CLI) speaks stdio, so this isn't a blocker for normal use. (See v0.20.1 audit cycle 4 H6.)
+Not yet shipped. `coral mcp serve --transport http --port <p>` is tracked for a follow-up release; v0.20.x is stdio-only. Every shipped MCP client (Claude Desktop, Cursor, Continue, Cline, OpenCode, Crush, Goose, Codex CLI) speaks stdio, so this isn't a blocker for normal use. (See v0.20.2 audit cycle 4 H6.)
 
 ### Resources catalog
 
@@ -965,7 +971,7 @@ Exit 0 by default; `--strict` raises warnings to errors and exits non-zero.
 | `coral bootstrap [--apply]` | First-time wiki compilation from `HEAD`. `--dry-run` (default) prints plan; `--apply` writes pages. | Yes |
 | `coral ingest [--from SHA] [--apply]` | Incremental update from `last_commit`. Same dry-run / apply semantics. | Yes |
 | `coral query <q>` | Streamed answer using the wiki as context. Cites slugs. | Yes |
-| `coral lint [--structural\|--semantic\|--all] [--fix] [--rule R] [--no-check-injection]` | 11 structural + 1 LLM semantic check, optional auto-fix. The `injection-suspected` scan is on by default since v0.20.1; pass `--no-check-injection` to suppress. Exit 1 on critical. | Optional |
+| `coral lint [--structural\|--semantic\|--all] [--fix] [--rule R] [--no-check-injection]` | 11 structural + 1 LLM semantic check, optional auto-fix. The `injection-suspected` scan is on by default since v0.20.2; pass `--no-check-injection` to suppress. Exit 1 on critical. | Optional |
 | `coral consolidate [--apply]` | Suggest merges, retirements, splits. Output YAML — caller decides. | Yes |
 | `coral stats [--format markdown\|json]` | Health dashboard. JSON validates against `docs/schemas/stats.schema.json`. | No |
 | `coral search <q> [--engine tfidf\|embeddings] [--algorithm tfidf\|bm25] [--limit N]` | TF-IDF default; Voyage embeddings opt-in. `--algorithm bm25` switches the offline ranker (better precision on 100+ page wikis). Top-N pages with score + snippet. | No (TF-IDF/BM25) / Voyage key (embeddings) |
@@ -1028,8 +1034,8 @@ Exit 0 by default; `--strict` raises warnings to errors and exits non-zero.
 | `coral session capture <path> [--source claude-code] [--no-scrub --yes-i-really-mean-it]` | Copy an agent transcript into `.coral/sessions/<date>_<source>_<sha8>.jsonl` and update `.coral/sessions/index.json`. Runs the privacy scrubber by default. | No |
 | `coral session list [--format markdown\|json]` | Tabular view of captured sessions with redaction counts and a `distilled: yes/no` column. | No |
 | `coral session show <id> [--messages] [--limit N]` | Inspect a captured session — metadata + first/last N messages. | No |
-| `coral session distill <id> [--apply] [--model MODEL]` | Single-pass `Runner::run` that emits 1–3 wiki findings per session under `.coral/sessions/distilled/<slug>.md`. With `--apply`, also writes to `.wiki/synthesis/<slug>.md` with `reviewed: false` frontmatter. The `unreviewed-distilled` lint blocks commits until a human flips the flag (qualified — see v0.20.1 H2: only fires for pages that carry both `reviewed: false` AND a populated `source.runner` field). | Yes |
-| `coral session forget <id>` | Delete the raw transcript, every distilled output, the optional `--apply` mirror under `.wiki/synthesis/`, and the matching index entry. v0.20.1+: tracks per-finding output filenames so cleanup is no longer best-effort. | No |
+| `coral session distill <id> [--apply] [--model MODEL]` | Single-pass `Runner::run` that emits 1–3 wiki findings per session under `.coral/sessions/distilled/<slug>.md`. With `--apply`, also writes to `.wiki/synthesis/<slug>.md` with `reviewed: false` frontmatter. The `unreviewed-distilled` lint blocks commits until a human flips the flag (qualified — see v0.20.2 H2: only fires for pages that carry both `reviewed: false` AND a populated `source.runner` field). | Yes |
+| `coral session forget <id>` | Delete the raw transcript, every distilled output, the optional `--apply` mirror under `.wiki/synthesis/`, and the matching index entry. v0.20.2+: tracks per-finding output filenames so cleanup is no longer best-effort. | No |
 
 ---
 
@@ -1310,7 +1316,7 @@ Where Coral is **explicitly not trying to compete**:
 
 ## Security model
 
-Coral has been hardened across four audit cycles (v0.19.3 → v0.20.1) with explicit threat-model boundaries. **The threat surface is "a malicious commit / PR to a Coral-managed repo": adversary can supply arbitrary `coral.toml`, `openapi.yaml`, wiki page bodies, and test YAML.** Hardening below mitigates the high-impact vectors of that threat model.
+Coral has been hardened across four audit cycles (v0.19.3 → v0.20.2) with explicit threat-model boundaries. **The threat surface is "a malicious commit / PR to a Coral-managed repo": adversary can supply arbitrary `coral.toml`, `openapi.yaml`, wiki page bodies, and test YAML.** Hardening below mitigates the high-impact vectors of that threat model.
 
 ### Process-level secret hygiene
 
@@ -1356,9 +1362,9 @@ Coral shells out to `git` (clone, fetch, checkout, merge, diff, rev-parse, ls-fi
 - Unicode bidi controls (`U+202E`) and tag chars (`U+E0000`–`U+E007F`).
 - Confidence-drop instruction patterns ("ignore previous instructions", "you are now…").
 
-Surfaces hits as `LintCode::InjectionSuspected` (warning severity). **Default-on since v0.20.1** (audit cycle 4 H4) — pass `--no-check-injection` to suppress when you need a fast lint loop. The bundled pre-commit hook (`template/hooks/pre-commit.sh`) also invokes it alongside the `unreviewed-distilled` gate so distilled pages with injection-shaped bodies are surfaced before they land in the repo.
+Surfaces hits as `LintCode::InjectionSuspected` (warning severity). **Default-on since v0.20.2** (audit cycle 4 H4) — pass `--no-check-injection` to suppress when you need a fast lint loop. The bundled pre-commit hook (`template/hooks/pre-commit.sh`) also invokes it alongside the `unreviewed-distilled` gate so distilled pages with injection-shaped bodies are surfaced before they land in the repo.
 
-In addition to the lint, every command that interpolates a wiki body into an LLM prompt (`coral query`, `coral diff --semantic`, `coral lint --auto-fix`, `coral lint --suggest-sources`) now wraps each body in a `<wiki-page>` CDATA fence and appends an explicit "untrusted content boundaries" notice to the system prompt. The CDATA terminator (`]]>`) is defanged on the way in so a malicious body cannot escape its envelope (added in v0.20.1, audit cycle 4 H3).
+In addition to the lint, every command that interpolates a wiki body into an LLM prompt (`coral query`, `coral diff --semantic`, `coral lint --auto-fix`, `coral lint --suggest-sources`) now wraps each body in a `<wiki-page>` CDATA fence and appends an explicit "untrusted content boundaries" notice to the system prompt. The CDATA terminator (`]]>`) is defanged on the way in so a malicious body cannot escape its envelope (added in v0.20.2, audit cycle 4 H3).
 
 ### What Coral does NOT defend against
 
@@ -1366,7 +1372,7 @@ In addition to the lint, every command that interpolates a wiki body into an LLM
 - **A compromised local user (Linux multi-tenant).** macOS isolates tempfiles per-user under `$TMPDIR`; Linux's `/tmp` is shared across UIDs but Coral mitigates via mode-0600 tempfiles. A user with the same UID as you can still read your tempfiles — that's a kernel-level isolation question, not a Coral one.
 - **A compromised `coral` binary.** Verify SHA-256 against the GitHub release; ad-hoc codesigning is included for first-launch macOS Gatekeeper but doesn't establish vendor identity.
 - **Network-level MITM on git clone.** Use `https://` with cert pinning, or `ssh://` (Coral always honors your git config; no special handling).
-- **CSRF on a future MCP HTTP/SSE transport.** v0.20.x ships stdio-only; HTTP/SSE is deferred (see v0.20.1 audit cycle 4 H6). Once it lands, the same advice will apply: don't expose `coral mcp serve --transport http` to untrusted networks.
+- **CSRF on a future MCP HTTP/SSE transport.** v0.20.x ships stdio-only; HTTP/SSE is deferred (see v0.20.2 audit cycle 4 H6). Once it lands, the same advice will apply: don't expose `coral mcp serve --transport http` to untrusted networks.
 
 ---
 
@@ -1528,9 +1534,9 @@ crates/
 ├── coral-env/        # EnvBackend trait + ComposeBackend (compose YAML render + subprocess);
 │                     # Healthcheck model (Http/Tcp/Exec/Grpc + timing); EnvPlan + status;
 │                     # MockBackend for upstream tests; runtime detection (docker/podman).
-├── coral-test/       # TestRunner trait + 9 TestKind variants; HealthcheckRunner + UserDefinedRunner +
-│                     # HurlRunner + OpenAPI Discovery; probe (TCP/HTTP/exec/gRPC); JUnit emit;
-│                     # MockTestRunner.
+├── coral-test/       # TestRunner trait + 9 TestKind variants (3 wired today: Healthcheck, UserDefined,
+│                     # MockTestRunner; 6 reserved for future runners); HurlRunner + OpenAPI Discovery;
+│                     # probe (TCP/HTTP/exec/gRPC); JUnit emit.
 ├── coral-mcp/        # JSON-RPC 2.0 stdio MCP server; ResourceProvider trait; static catalogs
 │                     # (resources, tools, prompts); read-only enforcement; protocol 2025-11-25.
 ├── coral-runner/     # Runner trait (Send+Sync); 5 impls: Claude, Gemini, Local, Http, Mock;
@@ -1538,10 +1544,10 @@ crates/
 │                     # (Voyage, OpenAI, Anthropic, Mock).
 ├── coral-lint/       # 11 structural checks + 1 LLM semantic check; auto-fix routing;
 │                     # `unreviewed-distilled` (qualified-on, v0.20+) + `injection-suspected`
-│                     # (default-on since v0.20.1).
+│                     # (default-on since v0.20.2).
 ├── coral-session/    # `coral session` family — capture/list/show/forget/distill;
 │                     # privacy scrubber (default-on); distilled output tracking with
-│                     # per-finding cleanup (v0.20.1+).
+│                     # per-finding cleanup (v0.20.2+).
 └── coral-stats/      # StatsReport (totals, by_type/status, confidence stats).
 ```
 
@@ -1805,7 +1811,7 @@ Coral-specific terminology used throughout this README and in the source.
 - **Service** — a single container in an environment. Declared at `[environments.services.<name>]`.
 - **Healthcheck** — declarative liveness probe on a service. `kind = "http" | "tcp" | "exec" | "grpc"` + timing.
 - **Mode** — `managed` (Coral generates compose YAML) or `adopt` (user brings their own; v0.20+ only).
-- **TestKind** — discriminator for `TestCase`: `Healthcheck`, `UserDefined`, `LlmGenerated`, `Contract`, `PropertyBased`, `Recorded`, `Event`, `Trace`, `E2eBrowser`. Only the first 4 are wired today.
+- **TestKind** — discriminator for `TestCase`. The enum carries 9 variants for forward-compat (`Healthcheck`, `UserDefined`, `LlmGenerated`, `Contract`, `PropertyBased`, `Recorded`, `Event`, `Trace`, `E2eBrowser`); only **3 are user-reachable today** (`Healthcheck`, `UserDefined`, plus `MockTestRunner` for tests). The remaining 6 are reserved markers — their runners ship in later cycles.
 - **Runner** — the `Runner` trait in `coral-runner` plus its 5 implementations (`Claude`, `Gemini`, `Local`, `Http`, `Mock`). Provider-agnostic LLM call abstraction.
 - **EnvBackend** — the `EnvBackend` trait in `coral-env`. Wraps the env-orchestration tool; `ComposeBackend` is the only impl today.
 - **TestRunner** — the `TestRunner` trait in `coral-test`. Multiple impls: `HealthcheckRunner`, `UserDefinedRunner`, `HurlRunner`, `DiscoveryRunner`.
@@ -1902,7 +1908,7 @@ The pluggable trait pattern (`Runner` → `EnvBackend` → `TestRunner` → `Res
 
 ### Multi-agent audit pipeline
 
-The v0.19.x sprint shipped 10 patch releases (v0.19.0 → v0.20.1) closing ~70 bugs surfaced by **four audit cycles**, each cycle running multiple parallel agents with non-overlapping mandates:
+The v0.19.x sprint shipped 10 patch releases (v0.19.0 → v0.20.2) closing ~70 bugs surfaced by **four audit cycles**, each cycle running multiple parallel agents with non-overlapping mandates:
 
 | Cycle | Agents | Focus | Findings |
 |---|---|---|---|

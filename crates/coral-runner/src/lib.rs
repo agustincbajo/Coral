@@ -5,6 +5,7 @@
 //! binary in headless `--print` mode with versioned prompts and subagent system
 //! prompts.
 
+pub mod body_tempfile;
 pub mod embeddings;
 pub mod gemini;
 pub mod http;

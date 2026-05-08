@@ -569,9 +569,24 @@ pub(crate) fn apply_auto_fix_plan(
             new_page.body.push('\n');
             new_page.body.push_str(append);
         }
-        new_page
-            .write()
-            .with_context(|| format!("writing fixed page `{}`", entry.slug))?;
+        // v0.20.2 audit-followup #46: hold an exclusive lock keyed
+        // on the page path while we write so two concurrent `coral
+        // lint --apply` runs against the same wiki can't interleave
+        // the body_append + status field updates. Per-page atomicity
+        // already holds (`Page::write()` calls `atomic_write_string`
+        // internally), but the read-modify-write window between the
+        // `pages.iter().find` above and `new_page.write()` here is
+        // unprotected against a parallel run that already finished
+        // writing a different version. Same pattern as the v0.19.5
+        // H7 ingest fix.
+        let page_path = new_page.path.clone();
+        let slug = entry.slug.clone();
+        coral_core::atomic::with_exclusive_lock(&page_path, || {
+            new_page
+                .write()
+                .map_err(|e| coral_core::error::CoralError::Walk(format!("writing {slug}: {e}")))
+        })
+        .with_context(|| format!("writing fixed page `{}`", entry.slug))?;
         written += 1;
     }
     Ok(written)
@@ -1626,6 +1641,104 @@ mod tests {
         apply_auto_fix_plan(&plan, std::slice::from_ref(&page), &wiki).unwrap();
         let on_disk = std::fs::read_to_string(&page_path).unwrap();
         assert!(on_disk.contains("status: stale"));
+    }
+
+    /// v0.20.2 audit-followup #46: regression — two concurrent
+    /// `coral lint --apply` runs against the same page must not
+    /// produce a torn write. The exclusive lock around the
+    /// `Page::write()` call serializes the body_append + status
+    /// field updates so the final file always contains a single,
+    /// well-formed plan output rather than an interleave of two.
+    ///
+    /// Pre-fix: `Page::write()` is per-page-atomic (sibling-tempfile + rename),
+    /// but two parallel applies still race on the read-modify-write window
+    /// between `pages.iter().find` and `new_page.write()`. The lock closes
+    /// that gap.
+    #[test]
+    fn auto_fix_apply_serializes_concurrent_writes() {
+        use coral_core::frontmatter::{Confidence, Frontmatter, PageType, Status};
+        use coral_core::page::Page;
+        use std::sync::Arc;
+        use std::thread;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let wiki = tmp.path().join(".wiki");
+        let modules = wiki.join("modules");
+        std::fs::create_dir_all(&modules).unwrap();
+        let page_path = modules.join("racey.md");
+
+        let base_page = Page {
+            path: page_path.clone(),
+            frontmatter: Frontmatter {
+                slug: "racey".into(),
+                page_type: PageType::Module,
+                last_updated_commit: "abc".into(),
+                confidence: Confidence::try_new(0.9).unwrap(),
+                sources: vec![],
+                backlinks: vec![],
+                status: Status::Verified,
+                generated_at: None,
+                extra: Default::default(),
+            },
+            body: "Original body.".into(),
+        };
+        base_page.write().unwrap();
+
+        // Build two distinct plans (different append strings) so we
+        // can later verify the on-disk file contains exactly ONE of
+        // the two — never a half-and-half interleave.
+        let plan_a = Arc::new(AutoFixPlan {
+            fixes: vec![AutoFixEntry {
+                slug: "racey".into(),
+                action: AutoFixAction::Update,
+                confidence: Some(0.5),
+                status: Some("draft".into()),
+                body_append: Some("_TAG-A-MARKER_".into()),
+                rationale: "thread A".into(),
+            }],
+        });
+        let plan_b = Arc::new(AutoFixPlan {
+            fixes: vec![AutoFixEntry {
+                slug: "racey".into(),
+                action: AutoFixAction::Update,
+                confidence: Some(0.6),
+                status: Some("draft".into()),
+                body_append: Some("_TAG-B-MARKER_".into()),
+                rationale: "thread B".into(),
+            }],
+        });
+
+        let pages = Arc::new(vec![base_page]);
+        let wiki_arc = Arc::new(wiki.clone());
+
+        let pages_a = Arc::clone(&pages);
+        let wiki_a = Arc::clone(&wiki_arc);
+        let plan_a_clone = Arc::clone(&plan_a);
+        let h_a =
+            thread::spawn(move || apply_auto_fix_plan(&plan_a_clone, &pages_a, &wiki_a).unwrap());
+        let pages_b = Arc::clone(&pages);
+        let wiki_b = Arc::clone(&wiki_arc);
+        let plan_b_clone = Arc::clone(&plan_b);
+        let h_b =
+            thread::spawn(move || apply_auto_fix_plan(&plan_b_clone, &pages_b, &wiki_b).unwrap());
+        let _ = h_a.join().unwrap();
+        let _ = h_b.join().unwrap();
+
+        let on_disk = std::fs::read_to_string(&page_path).unwrap();
+        // The file must be parseable as a Page (no torn frontmatter,
+        // no spliced body).
+        let _: Page =
+            Page::from_content(&on_disk, &page_path).expect("torn write — file no longer parses");
+        // The body must contain exactly one of the two append
+        // markers, never both, never neither.
+        let has_a = on_disk.contains("_TAG-A-MARKER_");
+        let has_b = on_disk.contains("_TAG-B-MARKER_");
+        assert!(has_a || has_b, "neither write landed: {on_disk}");
+        assert!(
+            !(has_a && has_b),
+            "torn interleave: both A and B markers present: {on_disk}"
+        );
     }
 
     #[test]

@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.2] - 2026-05-08
+
+**Patch release: closes 15 cycle-4 follow-up issues (#34–#48).** No new features. Hardens the boundaries v0.20.1 left for follow-up: body-via-tempfile RAII helper now shared across `HttpRunner` + `coral notion-push` + embeddings providers; MCP `tools/list` and `render_page` now respect the same trust gate the v0.20.1 lint applies; mock implementations match real-impl contracts. **1108 tests pass** (was 1068, +40).
+
+### Fixed (bugs)
+
+- **#36** — `coral validate-pin --remote <url>` inserts `--` between `--tags` and the URL. Modern git ≥2.30 mitigates option-injection via strange-hostname blocking; consistency with v0.19.5's git-clone fix matters; covers older-git CI environments. Defense-in-depth.
+- **#37** — MCP `render_page` and per-page resource list skip `reviewed: false` distilled pages (matches v0.20.1 H2 lint qualifier exactly). New `--include-unreviewed` opt-in. New e2e suite `crates/coral-mcp/tests/mcp_unreviewed_e2e.rs`.
+- **#38** — MCP `tools/list` filters write tools symmetrically with the dispatcher: default → 5 read-only; `--read-only false` → still 5; `--read-only false --allow-write-tools` → all 8. Doc-vs-reality drift fixed.
+- **#41** — `coral session show <prefix>` raises `InvalidInput` on >1 matches (matches `forget`/`distill` semantics).
+- **#42** — `coral session forget` (no `--yes`) exits non-zero on user-abort. Prompt displays canonical resolved short-id.
+- **#45** — `coral env import --write` uses `coral_core::atomic::atomic_write_string` (sibling tempfile + rename).
+- **#46** — `coral lint --apply` wraps `Page::write()` in `with_exclusive_lock` for parallel-apply safety.
+- **#47** — Project/repo names rendered into AGENTS.md / CLAUDE.md / cursor-rules / copilot / llms-txt now route through `escape_markdown_token` (escapes newlines, backticks, emphasis chars, brackets, parens, backslashes). Pre-fix `name = "evil\n## injection"` landed arbitrary Markdown in agent docs.
+
+### Hardening
+
+- **#34** — `coral session capture` enforces a 32 MiB cap on input JSONL. Returns `SessionError::TooLarge` with size + cap.
+- **#43, #44** — `coral notion-push` + embeddings providers (Voyage / OpenAI / Anthropic) route bodies through the new shared `coral_runner::body_tempfile` module: `body_tempfile_path` + `write_body_tempfile_secure` (mode 0600 + `create_new`) + `TempFileGuard` (RAII cleanup). Bodies never appear in `Command::get_args()`.
+
+### Mock-vs-real parity
+
+- **#39** — `MockBackend::up` rejects `EnvMode::Adopt` with the same `EnvError::InvalidSpec` `ComposeBackend::up` returns.
+- **#40** — `MockRunner::with_timeout_handler(impl FnMut(Duration) -> RunnerResult<RunOutput>)` lets tests verify timeout-honoring contracts without `thread::sleep`.
+
+### Documentation
+
+- **#35** — CHANGELOG v0.20.0 stale "1049 tests" → corrected to actual 1052.
+- **#48** — README "9 TestKind variants" reframed to "3 user-reachable + 6 reserved for forward-compat (runners ship in v0.21+)".
+
+### Pipeline note
+
+Same shape as v0.19.5/6/8 / v0.20.0/1: fix agent landed all 15 fixes in one in-progress commit (terminated mid-finalize); maintainer applied 3 inline `doc_lazy_continuation` clippy fixes, bumped version, wrote this entry, ran `scripts/ci-locally.sh` green before tagging. No `Co-Authored-By: Claude` trailer per working-agreements.
+
 ## [0.20.1] - 2026-05-08
 
 **Patch release: cycle-4 audit fixes (3 Critical + 7 High).** All 10 changes are bug fixes — no new features. The cycle-4 audit pipeline (multiple parallel agents, non-overlapping mandates, surfaced ~ten findings) caught three live security gaps that the v0.20.0 release left open: cache poisoning could short-circuit the new `unreviewed-distilled` lint gate, the single-file HTML export's slug interpolation reopened the v0.19.5 C5 XSS surface, and the multi-page export's TOC inherited a parallel XSS via the same vector. The seven High-priority fixes harden the prompt-injection posture (default-on lint scan, fenced wiki bodies in every LLM-bound prompt, qualified `unreviewed-distilled` rule), close the `coral session forget` orphaned-output bug, and clean up README/docs counts that drifted in v0.20.0. **1068 tests pass (was 1052; +16).** BC contract holds.
@@ -43,7 +77,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.20.0] - 2026-05-08
 
-**Major feature release: `coral session capture / list / forget / distill / show`** ([#16](https://github.com/agustincbajo/Coral/issues/16)). The wiki finally captures the conversations that produced it. Five new CLI subcommands; one new crate (`coral-session`); one new lint rule (`unreviewed-distilled`, Critical) that gates any LLM-generated wiki page until a human reviews + signs off. 1049 tests pass (was 977; +72). BC contract holds. The v0.19.x audit-driven hardening sprint is complete; this is the first feature release on top of that.
+**Major feature release: `coral session capture / list / forget / distill / show`** ([#16](https://github.com/agustincbajo/Coral/issues/16)). The wiki finally captures the conversations that produced it. Five new CLI subcommands; one new crate (`coral-session`); one new lint rule (`unreviewed-distilled`, Critical) that gates any LLM-generated wiki page until a human reviews + signs off. 1052 tests pass at v0.20.0 ship (was 977; +75); count grew to 1068 by v0.20.1. BC contract holds. The v0.19.x audit-driven hardening sprint is complete; this is the first feature release on top of that.
 
 ### Added
 

@@ -6,9 +6,19 @@ use std::time::Duration;
 
 use crate::runner::{Prompt, RunOutput, Runner, RunnerError, RunnerResult};
 
+/// Closure type for `with_timeout_handler`. Receives the
+/// `prompt.timeout` of every call so tests can assert their plumbing
+/// passed it correctly. Returns `Some(result)` to short-circuit the
+/// scripted response queue (e.g. for synthetic `RunnerError::Timeout`
+/// returns); `None` to fall through to the FIFO.
+///
+/// v0.20.2 audit-followup #40.
+pub type TimeoutHandler =
+    Box<dyn FnMut(Option<Duration>) -> Option<RunnerResult<RunOutput>> + Send + Sync>;
+
 /// A mock runner that returns scripted responses in FIFO order.
 /// Used in tests to avoid invoking real `claude`.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct MockRunner {
     responses: Mutex<VecDeque<RunnerResult<RunOutput>>>,
     /// Captures the prompts the runner has been called with, in order.
@@ -17,6 +27,33 @@ pub struct MockRunner {
     /// as `responses`. `None` => default behaviour (single chunk in
     /// `run_streaming`).
     streaming_chunks: Mutex<VecDeque<Option<Vec<String>>>>,
+    /// v0.20.2 audit-followup #40: optional handler invoked at the
+    /// top of `run` / `run_streaming` with the `prompt.timeout` of
+    /// the call. Lets tests assert that callers thread `timeout`
+    /// through correctly without `std::thread::sleep`-ing for the
+    /// real duration. Default behaviour (handler is `None`) is
+    /// unchanged from pre-v0.20.2: returns the next scripted
+    /// response immediately.
+    timeout_handler: Mutex<Option<TimeoutHandler>>,
+}
+
+impl std::fmt::Debug for MockRunner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MockRunner")
+            .field("responses", &self.responses)
+            .field("calls", &self.calls)
+            .field("streaming_chunks", &self.streaming_chunks)
+            .field(
+                "timeout_handler",
+                &self
+                    .timeout_handler
+                    .try_lock()
+                    .ok()
+                    .map(|g| if g.is_some() { "Some(_)" } else { "None" })
+                    .unwrap_or("<locked>"),
+            )
+            .finish()
+    }
 }
 
 impl MockRunner {
@@ -63,11 +100,59 @@ impl MockRunner {
     pub fn remaining(&self) -> usize {
         self.responses.lock().unwrap().len()
     }
+
+    /// Install a closure invoked at the top of every `run` /
+    /// `run_streaming` call with the `prompt.timeout` of that call.
+    /// The handler can:
+    ///
+    /// - Record the value (e.g. into a captured `Mutex<Option<Duration>>`)
+    ///   to assert the caller threaded `timeout` through correctly.
+    /// - Return `Some(Err(RunnerError::Timeout(t)))` to synthesize a
+    ///   timeout outcome without actually sleeping.
+    /// - Return `None` to fall through to the FIFO scripted response
+    ///   queue.
+    ///
+    /// v0.20.2 audit-followup #40: pre-fix `MockRunner` ignored
+    /// `prompt.timeout` entirely, so tests using it could never
+    /// validate that `LocalRunner` / `HttpRunner` / `GeminiRunner`'s
+    /// timeout-honoring behaviour was actually wired by callers.
+    /// Real runners pass `prompt.timeout` to `--max-time` (curl) or
+    /// `wait_timeout` (subprocess); the mock now lets tests pin that
+    /// contract.
+    pub fn with_timeout_handler<F>(self, handler: F) -> Self
+    where
+        F: FnMut(Option<Duration>) -> Option<RunnerResult<RunOutput>> + Send + Sync + 'static,
+    {
+        *self.timeout_handler.lock().unwrap() = Some(Box::new(handler));
+        self
+    }
+
+    /// Variant for `&self` so a test that has already moved the
+    /// runner into an `Arc` can install the handler later.
+    pub fn set_timeout_handler<F>(&self, handler: F)
+    where
+        F: FnMut(Option<Duration>) -> Option<RunnerResult<RunOutput>> + Send + Sync + 'static,
+    {
+        *self.timeout_handler.lock().unwrap() = Some(Box::new(handler));
+    }
 }
 
 impl Runner for MockRunner {
     fn run(&self, prompt: &Prompt) -> RunnerResult<RunOutput> {
         self.calls.lock().unwrap().push(prompt.clone());
+        // v0.20.2 audit-followup #40: invoke the timeout handler
+        // (if installed) BEFORE consuming the FIFO queue, so a
+        // handler that returns `Some(Err(Timeout))` short-circuits
+        // without burning a scripted response. Default behaviour
+        // (handler `None`) is unchanged.
+        if let Some(handler) = self.timeout_handler.lock().unwrap().as_mut() {
+            if let Some(short_circuit) = handler(prompt.timeout) {
+                // Drain the streaming-chunks slot too so the FIFOs
+                // stay aligned with `responses`.
+                let _ = self.streaming_chunks.lock().unwrap().pop_front();
+                return short_circuit;
+            }
+        }
         // Pop the streaming side too so the FIFOs stay aligned.
         let _ = self.streaming_chunks.lock().unwrap().pop_front();
         match self.responses.lock().unwrap().pop_front() {
@@ -86,6 +171,15 @@ impl Runner for MockRunner {
         on_chunk: &mut dyn FnMut(&str),
     ) -> RunnerResult<RunOutput> {
         self.calls.lock().unwrap().push(prompt.clone());
+        // v0.20.2 audit-followup #40: same handler hook on the
+        // streaming path so tests don't have to special-case the
+        // two surfaces.
+        if let Some(handler) = self.timeout_handler.lock().unwrap().as_mut() {
+            if let Some(short_circuit) = handler(prompt.timeout) {
+                let _ = self.streaming_chunks.lock().unwrap().pop_front();
+                return short_circuit;
+            }
+        }
         let chunks = self.streaming_chunks.lock().unwrap().pop_front().flatten();
         let response = self.responses.lock().unwrap().pop_front();
         match response {
@@ -229,5 +323,114 @@ mod tests {
             .unwrap();
         assert_eq!(received, vec!["xyz".to_string()]);
         assert_eq!(out.stdout, "xyz");
+    }
+
+    /// v0.20.2 audit-followup #40: a `with_timeout_handler` records
+    /// the `prompt.timeout` of every call so tests can assert
+    /// callers thread the timeout through correctly. Returning
+    /// `None` from the handler falls through to the FIFO scripted
+    /// response (the default behaviour), so a recorder that doesn't
+    /// short-circuit is observably equivalent to the pre-fix mock.
+    #[test]
+    fn mock_runner_records_prompt_timeout_via_handler() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let recorded: Arc<Mutex<Vec<Option<Duration>>>> = Arc::new(Mutex::new(Vec::new()));
+        let counter = Arc::new(AtomicUsize::new(0));
+        let recorded_clone = Arc::clone(&recorded);
+        let counter_clone = Arc::clone(&counter);
+
+        let m = MockRunner::new().with_timeout_handler(move |t| {
+            recorded_clone.lock().unwrap().push(t);
+            counter_clone.fetch_add(1, Ordering::SeqCst);
+            None // fall through to FIFO
+        });
+        m.push_ok("scripted-1");
+        m.push_ok("scripted-2");
+
+        // Two calls with distinct timeouts.
+        let p1 = Prompt {
+            user: "a".into(),
+            timeout: Some(Duration::from_secs(7)),
+            ..Default::default()
+        };
+        let p2 = Prompt {
+            user: "b".into(),
+            timeout: None,
+            ..Default::default()
+        };
+        let r1 = m.run(&p1).unwrap();
+        let r2 = m.run(&p2).unwrap();
+
+        assert_eq!(r1.stdout, "scripted-1");
+        assert_eq!(r2.stdout, "scripted-2");
+        let captured = recorded.lock().unwrap().clone();
+        assert_eq!(
+            captured,
+            vec![Some(Duration::from_secs(7)), None],
+            "recorded timeouts must mirror the prompts"
+        );
+        assert_eq!(counter.load(Ordering::SeqCst), 2);
+    }
+
+    /// v0.20.2 audit-followup #40: handler returning
+    /// `Some(Err(Timeout))` short-circuits the FIFO queue. The
+    /// scripted response stays in place for the next call. This
+    /// matches the contract real runners follow: a timed-out call
+    /// doesn't consume backend state.
+    #[test]
+    fn mock_runner_timeout_handler_short_circuits_without_consuming_fifo() {
+        let m = MockRunner::new().with_timeout_handler(|t| t.map(|d| Err(RunnerError::Timeout(d))));
+        m.push_ok("would-be-scripted");
+        let p = Prompt {
+            user: "x".into(),
+            timeout: Some(Duration::from_millis(250)),
+            ..Default::default()
+        };
+        let err = m.run(&p).unwrap_err();
+        match err {
+            RunnerError::Timeout(d) => assert_eq!(d, Duration::from_millis(250)),
+            other => panic!("expected Timeout, got {other:?}"),
+        }
+        // FIFO still has the scripted response since the handler
+        // short-circuited — it should NOT have been popped.
+        // (The streaming-chunks slot is popped to keep alignment;
+        // that's fine — the next push_ok will land both queues in
+        // sync again. We verify this by another `push_ok` then
+        // `run` returning the second message.)
+        m.push_ok("post-timeout");
+        // The first scripted ("would-be-scripted") was not consumed
+        // by the timeout call (timeout drained the streaming-chunks
+        // slot, but `responses` was untouched). So the next no-
+        // timeout call returns the original scripted response.
+        let p_no_timeout = Prompt {
+            user: "y".into(),
+            timeout: None,
+            ..Default::default()
+        };
+        let out = m.run(&p_no_timeout).unwrap();
+        assert_eq!(out.stdout, "would-be-scripted");
+    }
+
+    /// v0.20.2 audit-followup #40: default (no handler) behaviour is
+    /// unchanged — `prompt.timeout` is recorded in `calls()` but
+    /// otherwise ignored, and the FIFO scripted response queue
+    /// drives the return value.
+    #[test]
+    fn mock_runner_without_handler_ignores_timeout_field() {
+        let m = MockRunner::new();
+        m.push_ok("ok");
+        let p = Prompt {
+            user: "x".into(),
+            timeout: Some(Duration::from_secs(99)),
+            ..Default::default()
+        };
+        let out = m.run(&p).unwrap();
+        assert_eq!(out.stdout, "ok");
+        // Timeout still recorded in `calls()` for assertion.
+        let calls = m.calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].timeout, Some(Duration::from_secs(99)));
     }
 }
