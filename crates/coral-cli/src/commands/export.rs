@@ -250,7 +250,14 @@ fn render_html(pages: &[Page]) -> String {
     for p in pages {
         let translated = translate_wikilinks_to_anchors(&p.body);
         let mut html_body = String::new();
-        let parser = Parser::new_ext(&translated, opts);
+        // v0.19.8 #30 audit-gap conversion: pulldown-cmark passes raw
+        // HTML through verbatim (CommonMark behavior). A wiki page body
+        // with `<script>...</script>` would land in the rendered output
+        // unchanged — XSS in any browser viewing the static export.
+        // pulldown-cmark 0.13 has no `Options::ENABLE_HTML` flag, so we
+        // sanitize at the Event level: every `Html` / `InlineHtml`
+        // chunk is replaced with its HTML-escaped text equivalent.
+        let parser = Parser::new_ext(&translated, opts).map(escape_raw_html_event);
         html::push_html(&mut html_body, parser);
         sections.push_str(&format!(
             "<section id=\"{slug}\" class=\"page page-{ty}\">\n  <header><h1>{slug_esc}</h1>\n  <p class=\"meta\">type: <code>{ty}</code> · status: <code>{status}</code> · confidence: <code>{conf:.2}</code> · last_commit: <code>{commit}</code></p></header>\n  <div class=\"body\">{html_body}</div>\n</section>\n",
@@ -446,7 +453,9 @@ pub(crate) fn render_html_multi(pages: &[Page], out_dir: &Path) -> Result<usize>
 
         let translated = translate_wikilinks_to_multi(&p.body, &slug_to_type);
         let mut html_body = String::new();
-        let parser = Parser::new_ext(&translated, opts);
+        // v0.19.8 #30: same Html-event sanitizer as `render_html`.
+        // See the comment there for rationale.
+        let parser = Parser::new_ext(&translated, opts).map(escape_raw_html_event);
         html::push_html(&mut html_body, parser);
 
         let page_html = format!(
@@ -485,6 +494,97 @@ fn html_escape(s: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+}
+
+/// v0.19.8 #30 audit-gap conversion: turn a `pulldown_cmark::Event`
+/// carrying raw HTML into its escaped-text equivalent and neutralize
+/// unsafe URL schemes in link destinations.
+///
+/// Two failure modes the audit flagged:
+///
+///   1. CommonMark allows raw HTML in markdown; `pulldown-cmark` 0.13
+///      emits `Event::Html(s)` (block-level HTML lines, e.g.
+///      `<script>...</script>` on its own line) and `Event::InlineHtml(s)`
+///      (HTML in a paragraph, e.g. `<img onerror=...>`). Both pass
+///      through `html::push_html` verbatim by default. Re-emitting
+///      them as `Event::Text` produces HTML-escaped output —
+///      `<script>` becomes `&lt;script&gt;`, never reaching the
+///      browser as a tag.
+///
+///   2. CommonMark allows arbitrary URL schemes in link destinations.
+///      `[click me](javascript:alert(1))` would render as
+///      `<a href="javascript:alert(1)">click me</a>` — XSS the
+///      moment a reader clicks. We rewrite such hrefs to a benign
+///      placeholder (`#`) and add a `data-coral-unsafe-href` attr
+///      via the link-text trick: actually we substitute the
+///      `dest_url` to `#` directly. The unsafe scheme list is the
+///      common XSS surface: `javascript:`, `data:`, `vbscript:`,
+///      `file:`. Everything else (relative paths, `http://`,
+///      `https://`, `mailto:`, `tel:`, `#fragment`) is allowed.
+///
+/// This is the smallest possible XSS hardening. It does NOT attempt
+/// HTML sanitization (allowlisting tags / attributes); a future
+/// "rich HTML pages" feature would need a real sanitizer dep.
+/// Coral's stance: wikis are markdown-first; raw HTML is never
+/// rendered.
+fn escape_raw_html_event(ev: pulldown_cmark::Event<'_>) -> pulldown_cmark::Event<'_> {
+    use pulldown_cmark::{CowStr, Event, Tag};
+    match ev {
+        Event::Html(s) => Event::Text(CowStr::Boxed(s.to_string().into_boxed_str())),
+        Event::InlineHtml(s) => Event::Text(CowStr::Boxed(s.to_string().into_boxed_str())),
+        Event::Start(Tag::Link {
+            link_type,
+            dest_url,
+            title,
+            id,
+        }) if is_unsafe_url_scheme(&dest_url) => Event::Start(Tag::Link {
+            link_type,
+            dest_url: CowStr::Borrowed("#"),
+            title,
+            id,
+        }),
+        Event::Start(Tag::Image {
+            link_type,
+            dest_url,
+            title,
+            id,
+        }) if is_unsafe_url_scheme(&dest_url) => Event::Start(Tag::Image {
+            link_type,
+            dest_url: CowStr::Borrowed("#"),
+            title,
+            id,
+        }),
+        other => other,
+    }
+}
+
+/// v0.19.8 #30: returns `true` for URL schemes that the static-HTML
+/// export must NOT preserve (XSS sinks the moment a reader clicks
+/// the link). Comparison is ASCII-case-insensitive over the prefix
+/// before the first `:` — `JavaScript:` and `javascript:` both
+/// match. Whitespace before the scheme is also stripped (some
+/// browsers strip leading whitespace before parsing the scheme).
+fn is_unsafe_url_scheme(href: &str) -> bool {
+    let trimmed = href.trim_start();
+    // Strip ASCII control bytes that some browsers ignore inside
+    // schemes (`\t`, `\r`, `\n`, plus NUL through SP minus the ones
+    // already trimmed). E.g. `java\tscript:` triggers in some
+    // legacy parsers. Build a normalized prefix without those.
+    let mut normalized = String::new();
+    for b in trimmed.bytes() {
+        if b > 0x20 {
+            // Once we hit `:`, the scheme is over.
+            if b == b':' {
+                normalized.push(':');
+                break;
+            }
+            normalized.push(b.to_ascii_lowercase() as char);
+        }
+    }
+    matches!(
+        normalized.as_str(),
+        "javascript:" | "data:" | "vbscript:" | "file:"
+    )
 }
 
 const HTML_CSS: &str = "\
@@ -949,5 +1049,232 @@ mod tests {
         assert_eq!(v["slug"], "x");
         assert_eq!(v["prompt"], "q");
         assert_eq!(v["completion"], "a");
+    }
+
+    // -------------------------------------------------------------
+    // v0.19.8 #30 audit-gap conversion: HTML export XSS surface.
+    //
+    // The audit explicitly noted "didn't construct adversarial
+    // bodies for `coral export --format html`". These tests build
+    // every adversarial fixture the issue body enumerated and pin
+    // the v0.19.8 hardening:
+    //
+    //   - Raw `<script>` in body -> escaped, never reaches output
+    //     as an HTML tag.
+    //   - `[click me](javascript:alert(1))` -> `<a href="#">` (the
+    //     unsafe scheme is stripped).
+    //   - Frontmatter slug / commit interpolated into HTML attrs ->
+    //     already HTML-escaped (`html_escape` call sites pinned by
+    //     the existing `html_render_escapes_special_chars_in_slug_and_meta`
+    //     test, plus a new fixture for breakout-attempt slugs).
+    //   - `<img src=x onerror=...>` inline HTML -> escaped, attrs
+    //     don't reach the parser as a tag.
+    // -------------------------------------------------------------
+
+    /// #30 (1) — A page body containing `<script>...</script>` must
+    /// NOT land in the rendered HTML as a real script tag.
+    #[test]
+    fn xss_script_tag_in_body_is_escaped() {
+        let pages = vec![page(
+            "p",
+            PageType::Module,
+            "# P\n\n<script>document.body.innerText='owned'</script>\n",
+        )];
+        let html = render_html(&pages);
+        assert!(
+            !html.contains("<script>document.body.innerText='owned'</script>"),
+            "raw <script> tag leaked: {html}"
+        );
+        // The escaped form should be present so the page reader still
+        // sees what the wiki author wrote (as text).
+        assert!(
+            html.contains("&lt;script&gt;"),
+            "expected <script> to be HTML-escaped: {html}"
+        );
+    }
+
+    /// #30 (2) — Inline HTML attrs (`<img src=x onerror=alert(1)>`)
+    /// must also be escaped, not passed through as inline tags.
+    #[test]
+    fn xss_inline_img_onerror_is_escaped() {
+        let pages = vec![page(
+            "p",
+            PageType::Module,
+            "para with <img src=x onerror=alert(1)> embedded",
+        )];
+        let html = render_html(&pages);
+        assert!(
+            !html.contains("<img src=x onerror=alert(1)>"),
+            "inline <img onerror=...> leaked: {html}"
+        );
+        assert!(
+            html.contains("&lt;img"),
+            "inline HTML must be escaped: {html}"
+        );
+    }
+
+    /// #30 (3) — A markdown link with a `javascript:` href must
+    /// rewrite to a benign `#` href, not preserve the unsafe scheme.
+    #[test]
+    fn xss_javascript_link_scheme_is_neutralized() {
+        let pages = vec![page(
+            "p",
+            PageType::Module,
+            "# P\n\n[click me](javascript:alert(1))\n",
+        )];
+        let html = render_html(&pages);
+        assert!(
+            !html.contains("href=\"javascript:alert(1)\""),
+            "javascript: href leaked: {html}"
+        );
+        // Implementation detail: pulldown-cmark may percent-encode
+        // characters in the rewritten href, but the SCHEME `javascript:`
+        // must not appear anywhere in any href.
+        assert!(
+            !html.to_lowercase().contains("href=\"javascript:"),
+            "any javascript:-prefixed href is unsafe: {html}"
+        );
+    }
+
+    /// #30 — same hardening for `data:` (commonly used to embed
+    /// inline payloads) and `vbscript:`.
+    #[test]
+    fn xss_other_unsafe_schemes_are_neutralized() {
+        for unsafe_url in [
+            "data:text/html,<script>alert(1)</script>",
+            "vbscript:msgbox(1)",
+            "file:///etc/passwd",
+            // Case-insensitive check.
+            "JavaScript:alert(1)",
+            // Whitespace-prefix bypass.
+            "  javascript:alert(1)",
+        ] {
+            let pages = vec![page("p", PageType::Module, &format!("[c]({unsafe_url})"))];
+            let html = render_html(&pages);
+            // Lowercase scheme should not appear anywhere in any href.
+            let lc = html.to_lowercase();
+            assert!(
+                !lc.contains("href=\"javascript:")
+                    && !lc.contains("href=\"data:")
+                    && !lc.contains("href=\"vbscript:")
+                    && !lc.contains("href=\"file:"),
+                "unsafe scheme {unsafe_url:?} leaked: {html}"
+            );
+        }
+    }
+
+    /// #30 (4) — A wikilink with a `javascript:`-like target lands
+    /// in the markdown as `[label](#javascript:...)`. The leading `#`
+    /// is a fragment, NOT a scheme — so this is benign by virtue of
+    /// the wikilink translator's contract. Pinning it here so a
+    /// future translator change can't regress.
+    #[test]
+    fn xss_wikilink_with_jsalert_target_renders_as_fragment_only() {
+        let pages = vec![page(
+            "p",
+            PageType::Module,
+            "# P\n\n[[javascript:alert(1)]]\n",
+        )];
+        let html = render_html(&pages);
+        // The target becomes a `#javascript:alert(1)` fragment URL.
+        // Browsers don't interpret fragment URLs as scripts, but
+        // belt-and-braces: any `href="javascript:...` (without the `#`
+        // prefix) IS bad. Confirm only `#javascript:...` form appears.
+        let lc = html.to_lowercase();
+        assert!(
+            !lc.contains(r#"href="javascript:"#),
+            "wikilink leaked unsafe absolute javascript: href: {html}"
+        );
+    }
+
+    /// #30 (5) — Frontmatter values that try to break out of
+    /// HTML attribute context are escaped at every interpolation
+    /// site. The audit specifically called out the title field.
+    /// Coral's HTML export interpolates slug + commit + status +
+    /// type into the meta line; everything passes through
+    /// `html_escape` before reaching the template.
+    #[test]
+    fn xss_frontmatter_breakout_attempt_is_escaped_in_attrs() {
+        // We can't easily set last_updated_commit to a payload via
+        // `page()` — but the existing `html_render_escapes_special_chars_in_slug_and_meta`
+        // test pins the slug path. Add a parallel test for commit.
+        let mut p = page("breakout-attempt", PageType::Module, "# normal body");
+        p.frontmatter.last_updated_commit = r#""><script>alert(1)</script>"#.to_string();
+        let html = render_html(&[p]);
+        assert!(
+            !html.contains(r#""><script>alert(1)</script>"#),
+            "frontmatter commit field leaked breakout payload: {html}"
+        );
+        // The escaped form must be present.
+        assert!(
+            html.contains("&quot;&gt;&lt;script&gt;"),
+            "expected escaped breakout payload: {html}"
+        );
+    }
+
+    /// #30 multi-export equivalent of the body-script test. The
+    /// adversarial body must NOT render as a real script tag in any
+    /// of the per-page files.
+    #[test]
+    fn xss_script_tag_in_body_is_escaped_in_multi_export() {
+        let pages = vec![page(
+            "p",
+            PageType::Module,
+            "# P\n\n<script>alert(1)</script>\n",
+        )];
+        let tmp = tempfile::TempDir::new().unwrap();
+        let out_dir = tmp.path().join("public");
+        render_html_multi(&pages, &out_dir).unwrap();
+        let body = std::fs::read_to_string(out_dir.join("module/p.html")).unwrap();
+        assert!(
+            !body.contains("<script>alert(1)</script>"),
+            "raw <script> leaked into multi-export: {body}"
+        );
+        assert!(body.contains("&lt;script&gt;"));
+    }
+
+    /// #30 sanity: legitimate inline HTML constructs are also
+    /// escaped (they were never rendered safely anyway, but this
+    /// pins the new contract). A future "rich HTML" feature would
+    /// need a real sanitizer.
+    #[test]
+    fn xss_legitimate_inline_html_is_also_escaped_under_new_contract() {
+        let pages = vec![page("p", PageType::Module, "# P\n\n<em>emph</em>\n")];
+        let html = render_html(&pages);
+        assert!(
+            !html.contains("<em>emph</em>"),
+            "inline <em> would leak under the old policy; new policy escapes it: {html}"
+        );
+        assert!(html.contains("&lt;em&gt;"));
+    }
+
+    /// #30 helper: `is_unsafe_url_scheme` direct unit checks. Pinning
+    /// the matrix so a future relaxation can't silently regress.
+    #[test]
+    fn is_unsafe_url_scheme_matrix() {
+        for bad in [
+            "javascript:alert(1)",
+            "JavaScript:alert(1)",
+            "  javascript:alert(1)",
+            "data:text/html,<x>",
+            "vbscript:msgbox",
+            "file:///etc/passwd",
+            "JaVaScRiPt:foo",
+        ] {
+            assert!(is_unsafe_url_scheme(bad), "should reject {bad:?}");
+        }
+        for ok in [
+            "https://example.com",
+            "http://example.com",
+            "mailto:a@b.c",
+            "tel:+15551234",
+            "../foo/bar.html",
+            "/abs/path",
+            "#fragment",
+            "?query=1",
+            "",
+        ] {
+            assert!(!is_unsafe_url_scheme(ok), "should accept {ok:?}");
+        }
     }
 }

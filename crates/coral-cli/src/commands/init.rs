@@ -65,14 +65,34 @@ pub fn run(args: InitArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
         tracing::info!(path = %log_path.display(), "wrote log.md");
     }
 
-    // .gitignore — keep `.coral-cache.json` and `.coral-embeddings.json` out of
-    // git. Idempotent: when the file is missing we write both lines; when the
-    // user already manages a .gitignore, we append any missing entries without
+    // .gitignore — keep generated artifacts out of git. Idempotent: when
+    // the file is missing we write all entries; when the user already
+    // manages a .gitignore, we append any missing entries without
     // touching unrelated lines.
+    //
+    // v0.19.8 #32 (tracked deferral): `with_exclusive_lock` leaves
+    // zero-byte sentinel files at `<path>.lock` after release. The
+    // safe cleanup approach (unlink-after-release) breaks the
+    // cross-process flock contract by detaching the inode while a
+    // peer process holds the FD; documented in `atomic.rs`. Live with
+    // the litter, ignore it in git so users don't accidentally commit
+    // it. Patterns: `*.lock` covers single-suffix sentinels (e.g.
+    // `coral.toml.lock`); `*.lock.lock` is also added explicitly so
+    // a future user-managed `.gitignore` that drops `*.lock` still
+    // hides the doubled form from `git status`.
     let gitignore_path = root.join(".gitignore");
-    let needed = [".coral-cache.json", ".coral-embeddings.json"];
+    let needed = [
+        ".coral-cache.json",
+        ".coral-embeddings.json",
+        "*.lock",
+        "*.lock.lock",
+    ];
     if !gitignore_path.exists() {
-        let content = format!("{}\n{}\n", needed[0], needed[1]);
+        let mut content = String::new();
+        for entry in &needed {
+            content.push_str(entry);
+            content.push('\n');
+        }
         std::fs::write(&gitignore_path, content)
             .with_context(|| format!("writing {}", gitignore_path.display()))?;
         tracing::info!(path = %gitignore_path.display(), "wrote .gitignore");

@@ -543,6 +543,83 @@ fn init_gitignore_includes_embeddings() {
     assert!(gi.contains(".coral-embeddings.json"));
 }
 
+/// v0.19.8 #32 (tracked deferral): the bundled `.gitignore` template
+/// must list the `*.lock` and `*.lock.lock` patterns so the
+/// zero-byte sentinel files left behind by `with_exclusive_lock`
+/// don't end up accidentally committed. The lock-cleanup itself
+/// can't be safely added without breaking the cross-process flock
+/// contract — the gitignore is the agreed mitigation.
+#[test]
+fn init_gitignore_includes_lock_sentinel_patterns() {
+    let tmp = TempDir::new().unwrap();
+    Command::cargo_bin("coral")
+        .unwrap()
+        .current_dir(tmp.path())
+        .arg("init")
+        .assert()
+        .success();
+    let gi = std::fs::read_to_string(tmp.path().join(".wiki/.gitignore")).unwrap();
+    // `*.lock` covers `coral.toml.lock`, `index.md.lock`, etc.
+    assert!(
+        gi.lines().any(|l| l.trim() == "*.lock"),
+        "missing `*.lock` pattern in .gitignore: {gi}"
+    );
+    // Belt-and-braces: `*.lock.lock` is the doubled form some
+    // pre-v0.19.8 wikis still produce; pinning explicitly so a
+    // user-managed gitignore can't drop just `*.lock` and
+    // re-leak the doubled form.
+    assert!(
+        gi.lines().any(|l| l.trim() == "*.lock.lock"),
+        "missing `*.lock.lock` pattern in .gitignore: {gi}"
+    );
+}
+
+/// v0.19.8 #32: when a user already has a `.wiki/.gitignore` with
+/// `.coral-cache.json` listed, `coral init` must append the lock
+/// patterns idempotently — preserving the existing file and not
+/// duplicating any existing lines.
+#[test]
+fn init_gitignore_appends_lock_patterns_idempotently() {
+    let tmp = TempDir::new().unwrap();
+    let wiki = tmp.path().join(".wiki");
+    std::fs::create_dir_all(&wiki).unwrap();
+    let gi_path = wiki.join(".gitignore");
+    // Pre-existing user content — DOES NOT include lock patterns yet.
+    std::fs::write(
+        &gi_path,
+        "# user-managed entries\n.coral-cache.json\n.coral-embeddings.json\nfoo-private\n",
+    )
+    .unwrap();
+    // First init: should append `*.lock` + `*.lock.lock`.
+    Command::cargo_bin("coral")
+        .unwrap()
+        .current_dir(tmp.path())
+        .arg("init")
+        .assert()
+        .success();
+    let after_first = std::fs::read_to_string(&gi_path).unwrap();
+    assert!(after_first.contains("foo-private"), "user line preserved");
+    assert!(after_first.lines().any(|l| l.trim() == "*.lock"));
+    assert!(after_first.lines().any(|l| l.trim() == "*.lock.lock"));
+    // Second init (re-run): no duplication — same number of `*.lock`
+    // lines as after the first run.
+    Command::cargo_bin("coral")
+        .unwrap()
+        .current_dir(tmp.path())
+        .arg("init")
+        .assert()
+        .success();
+    let after_second = std::fs::read_to_string(&gi_path).unwrap();
+    let lock_count = after_second
+        .lines()
+        .filter(|l| l.trim() == "*.lock")
+        .count();
+    assert_eq!(
+        lock_count, 1,
+        "init should be idempotent on re-run; got {lock_count} `*.lock` lines: {after_second}"
+    );
+}
+
 #[test]
 fn lint_critical_issue_exits_1() {
     let tmp = TempDir::new().unwrap();

@@ -116,15 +116,22 @@ proptest! {
 
     /// Every returned target is non-empty and contains no newlines or
     /// characters the regex isn't supposed to admit.
+    ///
+    /// Note: literal `|` IS allowed in the target when the input contains
+    /// the escaped form `\|` (Obsidian semantics, #27). The hash `#` is
+    /// always stripped before this point — anchor-after-target syntax
+    /// has no escape form.
     #[test]
     fn extract_returns_only_alphanumeric_safe_targets(s in ".*") {
         for t in extract(&s) {
             prop_assert!(!t.is_empty(), "empty target in output");
             prop_assert!(!t.contains('\n'), "newline in target: {t:?}");
             prop_assert!(!t.contains(']'), "closing bracket in target: {t:?}");
-            // Pipe + hash should always be stripped before this point.
-            prop_assert!(!t.contains('|'), "pipe in target: {t:?}");
+            // Hash should always be stripped before this point.
             prop_assert!(!t.contains('#'), "hash in target: {t:?}");
+            // Backslash is rejected after escape-restoration, so it can
+            // never appear in the output target.
+            prop_assert!(!t.contains('\\'), "backslash in target: {t:?}");
         }
     }
 }

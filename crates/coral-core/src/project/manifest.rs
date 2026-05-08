@@ -171,6 +171,19 @@ impl Project {
                     repo.name
                 )));
             }
+            // v0.19.8 #28: `_default` is the MCP `coral://wiki/<repo>/_index`
+            // wildcard sentinel for the legacy single-repo case. A repo
+            // literally named `_default` would silently shadow the
+            // wildcard — reserve the name to make the collision impossible.
+            if repo.name == "_default" {
+                return Err(CoralError::Walk(format!(
+                    "invalid repo name '{}' in coral.toml: \
+                     `_default` is reserved as the MCP `coral://wiki/_default/_index` \
+                     wildcard sentinel for legacy single-repo wikis. \
+                     Pick a different name.",
+                    repo.name
+                )));
+            }
             if repo.url.is_none() && repo.remote.is_none() && self.defaults.remote.is_none() {
                 // The legacy single-repo case has `path = "."`. Allow
                 // it; the user hasn't asked Coral to resolve a URL.
@@ -632,6 +645,22 @@ depends_on = ["api"]
                 "expected invalid-name error for {bad:?}, got: {msg}"
             );
         }
+    }
+
+    /// v0.19.8 #28: `_default` is the MCP `coral://wiki/<repo>/_index`
+    /// wildcard sentinel. A repo literally named `_default` would
+    /// silently shadow the wildcard — validate must reject it with a
+    /// clear message naming the reservation.
+    #[test]
+    fn validate_rejects_reserved_repo_name_default() {
+        let mut p = make_project_with_repos(&["_default"]);
+        p.root = PathBuf::from("/work");
+        let err = p.validate().expect_err("must reject reserved name");
+        let msg = format!("{}", err);
+        assert!(
+            msg.contains("_default") && msg.contains("reserved"),
+            "expected reserved-name error naming `_default`, got: {msg}"
+        );
     }
 
     #[test]

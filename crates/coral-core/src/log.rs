@@ -34,6 +34,30 @@ fn log_re() -> &'static Regex {
     })
 }
 
+/// v0.19.8 #33: returns `true` when `op` matches the on-disk log v1
+/// format's `\w[\w-]*` constraint — single ASCII-alnum / `_`/`-`
+/// token, no whitespace, no leading hyphen. `WikiLog::append_atomic`
+/// debug-asserts on this; mismatches would otherwise silently drop
+/// the line on the next `WikiLog::parse`.
+fn is_valid_op_name(op: &str) -> bool {
+    let bytes = op.as_bytes();
+    if bytes.is_empty() {
+        return false;
+    }
+    // Regex `\w` ≡ `[A-Za-z0-9_]`; first char must be `\w`, NOT `-`.
+    let first = bytes[0];
+    if !(first.is_ascii_alphanumeric() || first == b'_') {
+        return false;
+    }
+    // Subsequent chars: `\w` or `-`.
+    for &b in &bytes[1..] {
+        if !(b.is_ascii_alphanumeric() || b == b'_' || b == b'-') {
+            return false;
+        }
+    }
+    true
+}
+
 impl WikiLog {
     pub fn new() -> Self {
         Self::default()
@@ -150,6 +174,28 @@ impl WikiLog {
     /// On the first write, seeds the YAML frontmatter + heading block.
     ///
     /// Creates parent dirs.
+    ///
+    /// # Op-name shape constraint (v0.19.8 #33)
+    ///
+    /// `op` must match the regex `\w[\w-]*` — i.e. a single token of
+    /// ASCII alphanumerics + `_`/`-`, with no whitespace, no leading
+    /// digit-only restriction, and no other punctuation. The on-disk
+    /// log v1 format depends on this: `WikiLog::parse` uses the same
+    /// regex shape and **silently skips** entries whose op doesn't
+    /// match (whitespace inside the op breaks the parser's
+    /// space-separated tokenization). Callers passing an op with
+    /// whitespace would write a line that subsequent `coral history`
+    /// reads disappear from history.
+    ///
+    /// Debug builds enforce this with a `debug_assert!` that panics
+    /// the offending caller. Release builds rely on the existing
+    /// single-token convention every in-tree caller already follows
+    /// (`init`, `bootstrap`, `ingest`, `lint`, `consolidate`,
+    /// `onboard`, `merge`, `split`, `retire`, …).
+    ///
+    /// A v1.0+ format-stability decision could relax this (quoted ops
+    /// for whitespace) but it would silently change the on-disk
+    /// format for upgraders. Tracked as deferred.
     pub fn append_atomic(
         path: impl AsRef<Path>,
         op: impl Into<String>,
@@ -170,6 +216,19 @@ impl WikiLog {
             op: op.into(),
             summary: summary.into(),
         };
+        // v0.19.8 #33: catch new bad callers in dev builds. Release
+        // builds skip the check (zero overhead) and rely on the
+        // single-token convention every in-tree caller already follows.
+        // The constraint matches `WikiLog::parse`'s regex (`\w[\w-]*`)
+        // exactly; a mismatch on the write path silently produces
+        // entries that get dropped on the read path.
+        debug_assert!(
+            is_valid_op_name(&entry.op),
+            "WikiLog::append_atomic: op {:?} does not match `\\w[\\w-]*` — \
+             entry would be silently dropped by `WikiLog::parse` (#33). \
+             Use a single-token op like `init`, `bootstrap`, etc.",
+            entry.op
+        );
         let line = format!(
             "- {} {}: {}\n",
             entry.timestamp.to_rfc3339(),
@@ -440,6 +499,94 @@ random nonsense
                 !line.starts_with("- "),
                 "found entry line before header in prelude: {line:?}"
             );
+        }
+    }
+
+    /// v0.19.8 #33: well-shaped op names pass without debug-asserting.
+    #[test]
+    fn append_atomic_accepts_well_shaped_op_names() {
+        let dir = TempDir::new().expect("tempdir");
+        for ok in [
+            "init",
+            "bootstrap",
+            "lint-fix",
+            "consolidate_pass",
+            "ok-op",
+            "OnboardV2",
+            "_internal",
+        ] {
+            let target = dir.path().join(format!("log-{ok}.md"));
+            WikiLog::append_atomic(&target, ok, "summary").expect("well-shaped op must succeed");
+        }
+    }
+
+    /// v0.19.8 #33: in dev builds, an op containing whitespace must
+    /// `debug_assert!`-panic so the bad caller is caught early. The
+    /// regex-shape constraint is enforced at PARSE time today
+    /// (silent skip); this assertion brings WRITE-time enforcement
+    /// to dev builds.
+    ///
+    /// Gated on `debug_assertions` because release builds disable the
+    /// assert (zero overhead) — the in-tree convention covers it.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "does not match")]
+    fn append_atomic_rejects_op_with_whitespace_in_dev_builds() {
+        let dir = TempDir::new().expect("tempdir");
+        let target = dir.path().join("log.md");
+        let _ = WikiLog::append_atomic(&target, "bad op", "summary");
+    }
+
+    /// Sibling: leading hyphen is also rejected (regex `\w` excludes `-`
+    /// at start position).
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "does not match")]
+    fn append_atomic_rejects_op_with_leading_hyphen_in_dev_builds() {
+        let dir = TempDir::new().expect("tempdir");
+        let target = dir.path().join("log.md");
+        let _ = WikiLog::append_atomic(&target, "-leading", "summary");
+    }
+
+    /// Sibling: empty op also rejected.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "does not match")]
+    fn append_atomic_rejects_empty_op_in_dev_builds() {
+        let dir = TempDir::new().expect("tempdir");
+        let target = dir.path().join("log.md");
+        let _ = WikiLog::append_atomic(&target, "", "summary");
+    }
+
+    /// `is_valid_op_name` direct unit checks. Pinning the helper because
+    /// `WikiLog::append_atomic` and `WikiLog::parse` need to agree.
+    #[test]
+    fn is_valid_op_name_matches_log_regex_shape() {
+        for ok in [
+            "init",
+            "x",
+            "x-y",
+            "x_y",
+            "v2",
+            "OnboardV2",
+            "_internal",
+            "ok-op",
+        ] {
+            assert!(is_valid_op_name(ok), "should accept {ok:?}");
+        }
+        for bad in [
+            "",
+            "-leading",
+            "with space",
+            "with\ttab",
+            "with.dot",
+            "with/slash",
+            "with:colon",
+            "with\nnewline",
+            "with\"quote",
+            "café",
+        ] {
+            assert!(!is_valid_op_name(bad), "should reject {bad:?}");
         }
     }
 }

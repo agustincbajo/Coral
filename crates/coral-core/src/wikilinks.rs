@@ -51,20 +51,32 @@ pub fn extract(content: &str) -> Vec<String> {
                 continue;
             }
             let target_raw = cap.get(1).expect("group 1 captured").as_str();
+            // Honor `\|` as an escaped pipe inside the link body — Obsidian
+            // semantics (#27). Substitute a sentinel byte (UNIT SEPARATOR,
+            // U+001F) that cannot legally occur in slugs before alias-splitting,
+            // then restore it as a literal `|` afterward.
+            const PIPE_SENTINEL: char = '\u{1f}';
+            let escaped = target_raw.replace(r"\|", &PIPE_SENTINEL.to_string());
             // Strip alias (after `|`) and anchor (after `#`).
-            let mut target = target_raw;
+            let mut target: &str = &escaped;
             if let Some(idx) = target.find('|') {
                 target = &target[..idx];
             }
             if let Some(idx) = target.find('#') {
                 target = &target[..idx];
             }
-            let target = target.trim();
+            // Restore escaped pipes back to literal `|`.
+            let target = target.trim().replace(PIPE_SENTINEL, "|");
             if target.is_empty() {
                 continue;
             }
-            if seen.insert(target.to_string()) {
-                out.push(target.to_string());
+            // Reject any leftover backslash in the resulting slug — keeps the
+            // existing slug allowlist behavior strict.
+            if target.contains('\\') {
+                continue;
+            }
+            if seen.insert(target.clone()) {
+                out.push(target);
             }
         }
 
@@ -165,5 +177,47 @@ paragraph mentioning [[link-three]] and [[link-one]] again.
     #[test]
     fn extract_no_wikilinks() {
         assert!(extract("plain markdown with no links at all").is_empty());
+    }
+
+    /// #27 — escaped pipe `\|` is preserved as a literal `|` in the target.
+    /// Regression: previously the regex saw `\|` as a literal char, so the
+    /// alias split picked the `\|` and the target became `a\` (broken slug).
+    #[test]
+    fn extract_honors_escaped_pipe() {
+        let result = extract(r"see [[a\|b]]");
+        assert_eq!(result, vec!["a|b"]);
+    }
+
+    /// #27 — plain alias `[[a|b]]` (unescaped) keeps the existing semantics:
+    /// alias is stripped, target is `a`.
+    #[test]
+    fn extract_unescaped_pipe_still_strips_alias() {
+        let result = extract("see [[a|b]]");
+        assert_eq!(result, vec!["a"]);
+    }
+
+    /// #27 — multiple escaped pipes inside one wikilink body.
+    #[test]
+    fn extract_multiple_escaped_pipes() {
+        let result = extract(r"see [[a\|b\|c]]");
+        assert_eq!(result, vec!["a|b|c"]);
+    }
+
+    /// #27 — escaped pipe BEFORE an unescaped one: split on the unescaped
+    /// pipe (alias starts there), keep the escape.
+    #[test]
+    fn extract_escaped_then_unescaped_pipe() {
+        let result = extract(r"see [[a\|b|alias]]");
+        assert_eq!(result, vec!["a|b"]);
+    }
+
+    /// #27 — an unrelated trailing backslash in the slug must be rejected
+    /// (escape was for the pipe, not the rest of the slug).
+    #[test]
+    fn extract_rejects_backslash_in_slug() {
+        // No `\|` here — just a stray backslash. Old behavior dropped this
+        // through to the slug; new behavior rejects it.
+        let result = extract(r"see [[a\b]]");
+        assert!(result.is_empty(), "stray backslash leaked: {result:?}");
     }
 }

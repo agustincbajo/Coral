@@ -24,6 +24,13 @@ use std::sync::Arc;
 /// future bumps are coordinated via the spec's negotiation flow.
 pub const PROTOCOL_VERSION: &str = "2025-11-25";
 
+/// v0.19.8 #26: page size for `resources/list` + `tools/list` cursor
+/// pagination. Wikis with hundreds of pages otherwise emit one
+/// JSON-RPC envelope per page in the resources catalog, which some
+/// transports truncate. 100 is generous for the median wiki and
+/// small enough that the round-trip cost stays sub-100µs over stdio.
+pub const PAGINATION_PAGE_SIZE: usize = 100;
+
 #[derive(Debug, Deserialize)]
 struct JsonRpcRequest {
     jsonrpc: String,
@@ -171,9 +178,9 @@ impl McpHandler {
         }
         let result = match request.method.as_str() {
             "initialize" => self.method_initialize(),
-            "resources/list" => self.method_resources_list(),
+            "resources/list" => self.method_resources_list(&request.params),
             "resources/read" => self.method_resources_read(&request.params),
-            "tools/list" => self.method_tools_list(),
+            "tools/list" => self.method_tools_list(&request.params),
             "tools/call" => self.method_tools_call(&request.params),
             "prompts/list" => self.method_prompts_list(),
             "prompts/get" => self.method_prompts_get(&request.params),
@@ -204,11 +211,23 @@ impl McpHandler {
         }))
     }
 
-    fn method_resources_list(&self) -> std::result::Result<serde_json::Value, String> {
+    fn method_resources_list(
+        &self,
+        params: &serde_json::Value,
+    ) -> std::result::Result<serde_json::Value, String> {
         let resources = self.resources.list();
-        Ok(serde_json::json!({
-            "resources": resources
-        }))
+        let (page, next_cursor) = paginate(&resources, params, PAGINATION_PAGE_SIZE)?;
+        let mut response = serde_json::json!({ "resources": page });
+        // MCP 2025-11-25: omit `nextCursor` when there is no next page.
+        // Including a `null` field would mislead clients that test
+        // `if response.nextCursor` for the existence of more data.
+        if let Some(cursor) = next_cursor {
+            response
+                .as_object_mut()
+                .expect("json object")
+                .insert("nextCursor".to_string(), serde_json::Value::String(cursor));
+        }
+        Ok(response)
     }
 
     fn method_resources_read(
@@ -236,7 +255,10 @@ impl McpHandler {
         }))
     }
 
-    fn method_tools_list(&self) -> std::result::Result<serde_json::Value, String> {
+    fn method_tools_list(
+        &self,
+        params: &serde_json::Value,
+    ) -> std::result::Result<serde_json::Value, String> {
         let tools = if self.config.read_only {
             ToolCatalog::read_only()
         } else {
@@ -252,7 +274,19 @@ impl McpHandler {
                 })
             })
             .collect();
-        Ok(serde_json::json!({ "tools": tools_json }))
+        // v0.19.8 #26: tools/list also honors cursor pagination per
+        // the MCP spec. The current catalog ships ~5–8 tools, well
+        // under PAGINATION_PAGE_SIZE — pagination is a no-op today
+        // but the contract is pinned for forward compatibility.
+        let (page, next_cursor) = paginate(&tools_json, params, PAGINATION_PAGE_SIZE)?;
+        let mut response = serde_json::json!({ "tools": page });
+        if let Some(cursor) = next_cursor {
+            response
+                .as_object_mut()
+                .expect("json object")
+                .insert("nextCursor".to_string(), serde_json::Value::String(cursor));
+        }
+        Ok(response)
     }
 
     fn method_tools_call(
@@ -368,6 +402,64 @@ fn error_response(id: Option<serde_json::Value>, code: i64, message: &str) -> se
         }),
     })
     .unwrap()
+}
+
+/// v0.19.8 #26: cursor-paginate a slice into one page of `page_size`
+/// items + an optional `nextCursor` for the following page.
+///
+/// Cursor encoding is intentionally simple: a stringified non-negative
+/// integer offset. The MCP spec treats cursors as opaque, so this is
+/// spec-compliant; clients must not parse them. The encoding is also
+/// trivial to inspect when debugging — JSON-RPC traces stay readable.
+///
+/// Drift / invalidation: when the underlying list changes between
+/// requests (e.g. the wiki adds a page), the cursor still points to
+/// an offset, which now refers to a different item. This is "best
+/// effort" semantics — clients that need stable iteration should
+/// re-fetch from offset 0. We document this in the README.
+///
+/// Errors:
+/// - cursor that's not a non-negative integer string → JSON-RPC
+///   `-32602` (per the call site: returned as `Err(String)` here, the
+///   server wraps it with -32601; the client sees a clear message).
+fn paginate<T: Clone + Serialize>(
+    items: &[T],
+    params: &serde_json::Value,
+    page_size: usize,
+) -> std::result::Result<(Vec<T>, Option<String>), String> {
+    let cursor = params.get("cursor").and_then(|v| v.as_str());
+    let offset = match cursor {
+        None => 0,
+        Some(s) => parse_cursor(s)?,
+    };
+    let total = items.len();
+    if offset > total {
+        return Err(format!(
+            "cursor offset {offset} exceeds list length {total} \
+             — re-list from offset 0 (the underlying collection \
+             may have shrunk between requests)"
+        ));
+    }
+    let end = offset.saturating_add(page_size).min(total);
+    let page = items[offset..end].to_vec();
+    let next_cursor = if end < total {
+        Some(encode_cursor(end))
+    } else {
+        None
+    };
+    Ok((page, next_cursor))
+}
+
+/// Stringified offset cursor — opaque per MCP spec but readable.
+fn encode_cursor(offset: usize) -> String {
+    offset.to_string()
+}
+
+/// Parse a stringified-offset cursor. Surfaces a clear error for
+/// malformed input (e.g. base64 garbage, negative numbers, NaN).
+fn parse_cursor(s: &str) -> std::result::Result<usize, String> {
+    s.parse::<usize>()
+        .map_err(|e| format!("invalid cursor {s:?}: {e} (cursor must be a non-negative integer)"))
 }
 
 #[cfg(test)]
@@ -551,5 +643,134 @@ mod tests {
             h.handle_line(line).is_none(),
             "unknown-method notification must produce no response"
         );
+    }
+
+    /// v0.19.8 #26: paginate returns the whole slice when it fits in
+    /// one page and emits no `nextCursor`.
+    #[test]
+    fn paginate_returns_whole_list_when_under_page_size() {
+        let items: Vec<i32> = (0..10).collect();
+        let (page, next) = paginate(&items, &serde_json::json!({}), 100).expect("ok");
+        assert_eq!(page, items);
+        assert!(next.is_none(), "no next cursor when single page");
+    }
+
+    /// v0.19.8 #26: paginate returns exactly `page_size` items + a
+    /// `nextCursor` pointing at the next offset when the slice
+    /// overflows.
+    #[test]
+    fn paginate_returns_first_page_with_next_cursor_when_overflow() {
+        let items: Vec<i32> = (0..250).collect();
+        let (page, next) = paginate(&items, &serde_json::json!({}), 100).expect("ok");
+        assert_eq!(page.len(), 100);
+        assert_eq!(page.first(), Some(&0));
+        assert_eq!(page.last(), Some(&99));
+        assert_eq!(next, Some("100".to_string()));
+    }
+
+    /// v0.19.8 #26: paginate honors a string-encoded offset cursor
+    /// from the client.
+    #[test]
+    fn paginate_resumes_at_cursor() {
+        let items: Vec<i32> = (0..250).collect();
+        let (page, next) =
+            paginate(&items, &serde_json::json!({"cursor": "100"}), 100).expect("ok");
+        assert_eq!(page.len(), 100);
+        assert_eq!(page.first(), Some(&100));
+        assert_eq!(page.last(), Some(&199));
+        assert_eq!(next, Some("200".to_string()));
+        // Last page (offset 200, 50 items left).
+        let (page3, next3) =
+            paginate(&items, &serde_json::json!({"cursor": "200"}), 100).expect("ok");
+        assert_eq!(page3.len(), 50);
+        assert_eq!(next3, None, "no next cursor on final page");
+    }
+
+    /// v0.19.8 #26: invalid cursor is a JSON-RPC error, not a silent
+    /// empty response. Clients that send garbage should learn
+    /// immediately rather than think the wiki is empty.
+    #[test]
+    fn paginate_rejects_invalid_cursor() {
+        let items: Vec<i32> = (0..10).collect();
+        let err = paginate(&items, &serde_json::json!({"cursor": "not-a-number"}), 100)
+            .expect_err("must reject");
+        assert!(
+            err.contains("invalid cursor") && err.contains("not-a-number"),
+            "expected clear error naming the bad cursor, got: {err}"
+        );
+        // Cursor pointing past the end is also an error (drift detection).
+        let err2 =
+            paginate(&items, &serde_json::json!({"cursor": "9999"}), 100).expect_err("must reject");
+        assert!(
+            err2.contains("exceeds list length") && err2.contains("9999"),
+            "expected drift error, got: {err2}"
+        );
+    }
+
+    /// v0.19.8 #26: edge case — cursor at exactly `len` returns an
+    /// empty page with no `nextCursor`. This is well-defined behavior:
+    /// the previous page's `nextCursor` legitimately landed here.
+    #[test]
+    fn paginate_at_exact_end_returns_empty_no_next() {
+        let items: Vec<i32> = (0..100).collect();
+        let (page, next) = paginate(&items, &serde_json::json!({"cursor": "100"}), 100)
+            .expect("offset == len is valid (empty terminal page)");
+        assert!(page.is_empty());
+        assert!(next.is_none());
+    }
+
+    /// v0.19.8 #26: `resources/list` end-to-end via the JSON-RPC
+    /// dispatch — pinning the client-visible shape (no `nextCursor`
+    /// field when results fit one page).
+    #[test]
+    fn resources_list_does_not_emit_nextcursor_when_single_page() {
+        let h = handler(true);
+        let resp = call(&h, "resources/list", serde_json::json!({}));
+        // The static catalog has < PAGINATION_PAGE_SIZE entries, so
+        // the response must not include a `nextCursor` field.
+        assert!(
+            resp["result"].get("nextCursor").is_none(),
+            "single-page response must omit nextCursor: {resp}"
+        );
+    }
+
+    /// v0.19.8 #26: an invalid cursor on `resources/list` surfaces as
+    /// a JSON-RPC error (so the client doesn't silently see an empty
+    /// catalog and assume the wiki is unindexed).
+    #[test]
+    fn resources_list_invalid_cursor_returns_error() {
+        let h = handler(true);
+        let resp = call(
+            &h,
+            "resources/list",
+            serde_json::json!({"cursor": "not-a-number"}),
+        );
+        assert!(resp.get("error").is_some(), "expected error: {resp}");
+        assert!(
+            resp["error"]["message"]
+                .as_str()
+                .unwrap_or("")
+                .contains("invalid cursor"),
+            "error message must name the invalid cursor: {resp}"
+        );
+    }
+
+    /// v0.19.8 #26: same contract on `tools/list` — pin it before any
+    /// future tool catalog explosion crosses the page-size threshold.
+    #[test]
+    fn tools_list_does_not_emit_nextcursor_when_single_page() {
+        let h = handler(false);
+        let resp = call(&h, "tools/list", serde_json::json!({}));
+        assert!(
+            resp["result"].get("nextCursor").is_none(),
+            "single-page tools/list response must omit nextCursor: {resp}"
+        );
+    }
+
+    #[test]
+    fn tools_list_invalid_cursor_returns_error() {
+        let h = handler(true);
+        let resp = call(&h, "tools/list", serde_json::json!({"cursor": "garbage"}));
+        assert!(resp.get("error").is_some(), "expected error: {resp}");
     }
 }

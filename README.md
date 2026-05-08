@@ -133,7 +133,7 @@ Unit tests don't tell you if your microservices actually work together. End-to-e
 ### From a tagged release (recommended)
 
 ```bash
-cargo install --locked --git https://github.com/agustincbajo/Coral --tag v0.19.7 coral-cli
+cargo install --locked --git https://github.com/agustincbajo/Coral --tag v0.19.8 coral-cli
 ```
 
 ### From `main` (latest)
@@ -156,10 +156,10 @@ cargo build --release
 Each tagged release ships pre-built binaries for x86_64 Linux, x86_64 macOS, and aarch64 macOS (Apple Silicon) on the [Releases page](https://github.com/agustincbajo/Coral/releases). Download `coral-vX.Y.Z-<target>.tar.gz`, verify the SHA-256, extract the `coral` binary, place it on your `$PATH`.
 
 ```bash
-curl -L -o coral.tar.gz https://github.com/agustincbajo/Coral/releases/download/v0.19.7/coral-v0.19.7-aarch64-apple-darwin.tar.gz
+curl -L -o coral.tar.gz https://github.com/agustincbajo/Coral/releases/download/v0.19.8/coral-v0.19.8-aarch64-apple-darwin.tar.gz
 shasum -a 256 -c coral.tar.gz.sha256  # if you also downloaded the .sha256 sidecar
 tar -xzf coral.tar.gz
-sudo mv coral-v0.19.7-aarch64-apple-darwin/coral /usr/local/bin/
+sudo mv coral-v0.19.8-aarch64-apple-darwin/coral /usr/local/bin/
 coral --version
 ```
 
@@ -719,10 +719,12 @@ coral mcp serve --transport http --port 3737
 | `coral://lock` | `application/json` | `coral.lock` with resolved SHAs |
 | `coral://stats` | `application/json` | `StatsReport` (page count, avg confidence, orphans) |
 | `coral://wiki/_index` | `application/json` | aggregated slug list cross-repo |
-| `coral://wiki/<repo>/_index` | `application/json` | per-repo slug list (`_default` = aggregate) |
+| `coral://wiki/<repo>/_index` | `application/json` | per-repo slug list (`_default` = aggregate, see below) |
 | `coral://wiki/<repo>/<slug>` | `application/json` | `{slug, type, status, confidence, last_updated_commit, sources, backlinks, body}` |
 
 Each per-page resource is JSON not raw markdown — clients render the body field as markdown if they want to.
+
+> **`_default` is a reserved repo-name sentinel.** `coral://wiki/_default/_index` returns the aggregated cross-repo slug list (it is the same payload as `coral://wiki/_index`, kept for backwards compatibility with single-repo clients). Because of this, `_default` cannot be used as a real repo name in `coral.toml` — `Project::validate()` rejects `[[repos]] name = "_default"` with a message naming the reservation. The legacy single-repo case (no `[[repos]]` blocks) is rendered under `_default` automatically.
 
 ### Tools catalog
 
@@ -1255,7 +1257,7 @@ Where Coral is **explicitly not trying to compete**:
 
 ## Security model
 
-Coral has been hardened across three audit cycles (v0.19.3 → v0.19.7) with explicit threat-model boundaries. **The threat surface is "a malicious commit / PR to a Coral-managed repo": adversary can supply arbitrary `coral.toml`, `openapi.yaml`, wiki page bodies, and test YAML.** Hardening below mitigates the high-impact vectors of that threat model.
+Coral has been hardened across three audit cycles (v0.19.3 → v0.19.8) with explicit threat-model boundaries. **The threat surface is "a malicious commit / PR to a Coral-managed repo": adversary can supply arbitrary `coral.toml`, `openapi.yaml`, wiki page bodies, and test YAML.** Hardening below mitigates the high-impact vectors of that threat model.
 
 ### Process-level secret hygiene
 
@@ -1770,7 +1772,7 @@ Coral-specific terminology used throughout this README and in the source.
 - `coral context-build` (smart context loader under explicit token budget).
 - 700+ unit tests + 30+ E2E across 8 crates.
 
-✅ **Shipped (v0.19.1 → v0.19.7 — audit-driven hardening sprint):**
+✅ **Shipped (v0.19.1 → v0.19.8 — audit-driven hardening sprint):**
 
 A 3-cycle multi-agent audit found and resolved ~50 bugs across reliability, security, doc-vs-reality, concurrency, and adversarial-input handling. Highlights:
 
@@ -1831,7 +1833,7 @@ The pluggable trait pattern (`Runner` → `EnvBackend` → `TestRunner` → `Res
 
 ### Multi-agent audit pipeline
 
-The v0.19.x sprint shipped 8 patch releases (v0.19.0 → v0.19.7) closing ~50 bugs surfaced by **three audit cycles**, each cycle running multiple parallel agents with non-overlapping mandates:
+The v0.19.x sprint shipped 9 patch releases (v0.19.0 → v0.19.8) closing ~58 bugs surfaced by **three audit cycles**, each cycle running multiple parallel agents with non-overlapping mandates:
 
 | Cycle | Agents | Focus | Findings |
 |---|---|---|---|

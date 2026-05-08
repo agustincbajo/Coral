@@ -123,7 +123,36 @@ fn is_openapi_filename(name: &str) -> bool {
 /// Parse a single OpenAPI file. Returns one (TestCase, YamlSuite) pair
 /// per (path, method) operation that has at least one declared
 /// success response (2xx).
+///
+/// v0.19.8 #29 audit-gap conversion: enforce a 32 MiB file-size cap on
+/// the spec, matching the cap `coral_core::walk::read_pages` applied
+/// to wiki pages in v0.19.5 (audit N3). Without it a multi-GiB
+/// `openapi.yaml` (whether malicious or accidentally-checked-in) is
+/// loaded into RAM by `read_to_string` and parsed by the YAML deserializer
+/// — DoS vector that's reachable from a downstream repo's `coral test
+/// discover` invocation.
 fn parse_spec_file(path: &Path) -> TestResult<Vec<(TestCase, YamlSuite)>> {
+    /// Same value as `coral_core::walk::read_pages`'s cap. Kept inline
+    /// to avoid a cross-crate API surface for a single constant.
+    const MAX_SPEC_BYTES: u64 = 32 * 1024 * 1024;
+    if let Ok(meta) = std::fs::metadata(path)
+        && meta.len() > MAX_SPEC_BYTES
+    {
+        tracing::warn!(
+            path = %path.display(),
+            bytes = meta.len(),
+            cap = MAX_SPEC_BYTES,
+            "skipping OpenAPI spec: file exceeds 32 MiB cap (#29)"
+        );
+        return Err(TestError::InvalidSpec {
+            path: path.to_path_buf(),
+            reason: format!(
+                "spec file exceeds {MAX_SPEC_BYTES}-byte cap ({} bytes); \
+                 refusing to parse",
+                meta.len()
+            ),
+        });
+    }
     let raw = std::fs::read_to_string(path).map_err(|source| TestError::Io {
         path: path.to_path_buf(),
         source,
