@@ -91,7 +91,7 @@ fn stdio_transcript_response_shape_is_byte_identical_to_v0_21_0() {
     // sprint — the JSON-RPC envelope shape is byte-identical to
     // v0.21.0 across every patch in the cycle.
     assert!(
-        matches!(server_version, "0.21.0" | "0.21.1" | "0.21.2"),
+        matches!(server_version, "0.21.0" | "0.21.1" | "0.21.2" | "0.21.3"),
         "unexpected server version: {server_version}"
     );
     // Capabilities surface stable across the refactor.

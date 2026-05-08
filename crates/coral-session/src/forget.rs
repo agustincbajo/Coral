@@ -137,6 +137,34 @@ pub fn forget_session(opts: &ForgetOptions) -> SessionResult<()> {
             })?;
         }
 
+        // v0.21.3: clean up `.coral/sessions/patches/<id>-<idx>.patch`
+        // and `.coral/sessions/patches/<id>-<idx>.json` written by
+        // `coral session distill --as-patch`. Same path-traversal
+        // defense as `distilled_outputs`. We DO NOT touch `.wiki/`
+        // here — `--apply --as-patch` mutations are one-way (the
+        // user owns the wiki post-apply). See spec §4 D7.
+        let patches_dir = sessions_dir.join("patches");
+        for basename in &entry.patch_outputs {
+            if basename.contains('/')
+                || basename.contains('\\')
+                || basename.contains("..")
+                || basename.starts_with('.')
+            {
+                tracing::warn!(
+                    basename = %basename,
+                    "skipping suspicious patch output filename"
+                );
+                continue;
+            }
+            let p = patches_dir.join(basename);
+            if p.exists() {
+                std::fs::remove_file(&p).map_err(|source| coral_core::error::CoralError::Io {
+                    path: p.clone(),
+                    source,
+                })?;
+            }
+        }
+
         // Drop the entry and persist the index.
         index.sessions.remove(idx);
         write_atomic_index(&index_path, &index)
@@ -205,6 +233,7 @@ mod tests {
             redaction_count: 0,
             distilled: false,
             distilled_outputs: Vec::new(),
+            patch_outputs: Vec::new(),
         }
     }
 
@@ -288,6 +317,7 @@ mod tests {
             redaction_count: 0,
             distilled: false,
             distilled_outputs: Vec::new(),
+            patch_outputs: Vec::new(),
         };
         let idx = SessionIndex {
             sessions: vec![entry],

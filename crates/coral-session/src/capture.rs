@@ -143,6 +143,17 @@ pub struct IndexEntry {
     /// `.coral/sessions/distilled/` manually.
     #[serde(default)]
     pub distilled_outputs: Vec<String>,
+    /// v0.21.3: filenames (basenames only — no leading directory) of
+    /// every `.patch` and sidecar `.json` written under
+    /// `.coral/sessions/patches/` by `coral session distill --as-patch`.
+    /// Two entries per patch (e.g. `<id>-0.patch` + `<id>-0.json`).
+    /// `forget` walks the list to sweep them; `.wiki/` mutations from
+    /// `--apply --as-patch` are NOT undone (the contract is that
+    /// `forget` cleans up Coral-owned artifacts, not user pages).
+    /// Pre-v0.21.3 indexes deserialize cleanly — `#[serde(default)]`
+    /// gives them an empty vec.
+    #[serde(default)]
+    pub patch_outputs: Vec<String>,
 }
 
 /// On-disk shape of `.coral/sessions/index.json`.
@@ -231,6 +242,7 @@ pub fn capture_from_path(opts: &CaptureOptions) -> SessionResult<CaptureOutcome>
             redaction_count: redactions.len(),
             distilled: false,
             distilled_outputs: Vec::new(),
+            patch_outputs: Vec::new(),
         };
         // Replace any prior entry for the same session_id.
         index.sessions.retain(|e| e.session_id != entry.session_id);
@@ -525,5 +537,42 @@ mod tests {
         let path = dir.path().join("small.jsonl");
         std::fs::write(&path, b"under cap content").unwrap();
         ensure_within_size_cap(&path).expect("under-cap file must pass");
+    }
+
+    /// v0.21.3 BC: an `index.json` written by v0.20.x / v0.21.2 — i.e.
+    /// without the `patch_outputs` field — must deserialize cleanly
+    /// into the post-v0.21.3 [`IndexEntry`] shape, with `patch_outputs`
+    /// defaulting to an empty vec. Pre-fix (without `#[serde(default)]`),
+    /// older indexes would fail to load and the user's session list
+    /// would appear empty.
+    #[test]
+    fn index_without_patch_outputs_field_deserializes() {
+        // Hand-rolled JSON shaped like a v0.21.2 entry. No
+        // `patch_outputs` key — `serde(default)` must fill it in.
+        let json = r#"{
+  "sessions": [
+    {
+      "session_id": "old-021-session",
+      "source": "claude-code",
+      "captured_at": "2026-05-08T10:00:00Z",
+      "captured_path": "/tmp/old.jsonl",
+      "message_count": 3,
+      "redaction_count": 0,
+      "distilled": true,
+      "distilled_outputs": ["existing-finding.md"]
+    }
+  ]
+}"#;
+        let parsed: SessionIndex =
+            serde_json::from_str(json).expect("v0.21.2-shape index must deserialize");
+        assert_eq!(parsed.sessions.len(), 1);
+        let entry = &parsed.sessions[0];
+        assert_eq!(entry.session_id, "old-021-session");
+        assert_eq!(entry.distilled_outputs, vec!["existing-finding.md"]);
+        assert!(
+            entry.patch_outputs.is_empty(),
+            "missing field must default to empty vec, got: {:?}",
+            entry.patch_outputs
+        );
     }
 }

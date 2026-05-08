@@ -108,6 +108,7 @@ mod tests {
             redaction_count: 1,
             distilled: false,
             distilled_outputs: Vec::new(),
+            patch_outputs: Vec::new(),
         }
     }
 

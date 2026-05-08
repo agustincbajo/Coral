@@ -33,6 +33,10 @@
 pub mod capture;
 pub mod claude_code;
 pub mod distill;
+/// v0.21.3: option (b) / distill-as-patch — kept disjoint from
+/// `distill` so the option (a) byte-identical BC contract can't be
+/// regressed by a stray edit. See module docstring for rationale.
+pub mod distill_patch;
 pub mod error;
 pub mod forget;
 pub mod list;
@@ -41,6 +45,9 @@ pub mod scrub;
 pub use capture::{CaptureOptions, CaptureOutcome, CaptureSource, capture_from_path};
 pub use claude_code::{ClaudeCodeMessage, ClaudeCodeRecord, find_latest_for_cwd};
 pub use distill::{DistillOptions, DistillOutcome, distill_session};
+pub use distill_patch::{
+    DistillPatchOptions, DistillPatchOutcome, Patch, PatchSidecar, distill_patch_session,
+};
 pub use error::{SessionError, SessionResult};
 pub use forget::{ForgetOptions, forget_session};
 pub use list::{ListFormat, SessionEntry, list_sessions};

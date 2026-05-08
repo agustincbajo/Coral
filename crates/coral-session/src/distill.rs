@@ -380,6 +380,7 @@ mod tests {
             redaction_count: 0,
             distilled: false,
             distilled_outputs: Vec::new(),
+            patch_outputs: Vec::new(),
         };
         let idx = SessionIndex {
             sessions: vec![entry.clone()],
@@ -589,5 +590,68 @@ mod tests {
         assert!(page.contains("session_id: \"sess-x\""));
         assert!(page.contains("captured_at: \"2026-05-08T10:00:00+00:00\""));
         assert!(page.contains("- \"src/lib.rs\""));
+    }
+
+    /// v0.21.3 spec test #14 — pin the byte-identical contract on the
+    /// option (a) page-emit path. Anything new in v0.21.3 lives strictly
+    /// behind `--as-patch`; running `distill_session` (no patch flag)
+    /// against a fixed input MUST produce the exact same page bytes
+    /// that v0.21.2 produced.
+    ///
+    /// We pin the page bytes (modulo the `generated_at` timestamp,
+    /// which is always `now()` and would defeat any byte-identity
+    /// check). The frontmatter / body / source-block shape are the
+    /// load-bearing parts.
+    #[test]
+    fn distill_without_as_patch_byte_identical_to_v0212() {
+        let f = Finding {
+            slug: "fixed-slug".into(),
+            title: "Fixed Title".into(),
+            body: "A representative body that v0.21.2 would render verbatim into the page.".into(),
+            sources: vec!["src/lib.rs".into(), "src/main.rs".into()],
+        };
+        let page = render_page(&f, "claude", "sess-fixed", "2026-05-08T10:00:00+00:00");
+        // Strip the timestamp line so the rest of the page can be
+        // pinned byte-for-byte against v0.21.2 output. We pin the
+        // expected envelope here so a future edit that quietly shifts
+        // the schema (e.g. moving `confidence:` ahead of `slug:`) is
+        // caught at test time.
+        let lines: Vec<&str> = page
+            .lines()
+            .filter(|l| !l.starts_with("generated_at:"))
+            .collect();
+        let stable = lines.join("\n");
+        // NB: `render_page` is a hand-rolled string builder. The
+        // sources list and `source:` sub-block are written with a
+        // 2-space indent; the rest of the frontmatter is at column
+        // zero. This is the v0.21.2 shape — pinned here so a future
+        // "fix" that touches the indent is caught (existing on-disk
+        // pages would round-trip differently).
+        let expected = "---\n\
+slug: fixed-slug\n\
+type: synthesis\n\
+last_updated_commit: unknown\n\
+confidence: 0.4\n\
+status: draft\n\
+sources:\n  \
+- \"src/lib.rs\"\n  \
+- \"src/main.rs\"\n\
+backlinks: []\n\
+reviewed: false\n\
+source:\n  \
+runner: \"claude\"\n  \
+prompt_version: 1\n  \
+session_id: \"sess-fixed\"\n  \
+captured_at: \"2026-05-08T10:00:00+00:00\"\n\
+---\n\
+\n\
+# Fixed Title\n\
+\n\
+A representative body that v0.21.2 would render verbatim into the page.";
+        assert_eq!(
+            stable, expected,
+            "v0.21.3 must keep page-emit byte-identical to v0.21.2 (modulo `generated_at`).\n\
+             Got:\n{stable}\n\nExpected:\n{expected}\n"
+        );
     }
 }

@@ -7,6 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.3] - 2026-05-08
+
+**Feature release: `coral session distill --as-patch` (option (b) / distill-as-patch).** Adds a second emit mode to `coral session distill`. Default behavior — `coral session distill <id>` (no `--as-patch`) — stays byte-identical to v0.21.2: still emits 1-3 NEW synthesis pages under `.coral/sessions/distilled/`. With `--as-patch`, the LLM instead proposes 1-N **unified-diff patches** against EXISTING `.wiki/<slug>.md` pages. Patches save to `.coral/sessions/patches/<id>-<idx>.patch` plus a sidecar `<id>-<idx>.json` carrying target slug + LLM rationale + provenance. With `--apply` the patches are `git apply`-ed in turn AND each touched page's frontmatter is rewritten so `reviewed: false` (Coral OWNS the flip — the LLM's job is body content). Pre-apply atomicity: if ANY patch fails its `git apply --check`, NO files are written and the command exits non-zero with the patch index + git stderr verbatim. Validation is layered — every component of the path-style `target_slug` must pass `coral_core::slug::is_safe_filename_slug`, the resolved page must already exist in `list_page_paths(.wiki)`, the diff `--- a/X.md` / `+++ b/X.md` headers must agree with the target, AND `git apply --check --unsafe-paths --directory=.wiki <patch>` must succeed. Top-K BM25 candidate pages from `coral_core::search::search_bm25` are surfaced in the prompt by default (K=10, override via `--candidates N`, `0` skips). **No new workspace dependencies** — the orchestrator picked subprocess `git apply` over `diffy` (zero net additions to `Cargo.lock`). **BC sacred: option (a) page-emit path is byte-identical to v0.21.2** — pinned by `crates/coral-session/src/distill.rs::tests::distill_without_as_patch_byte_identical_to_v0212`. **`IndexEntry.patch_outputs` is `#[serde(default)]`** so a v0.21.2 `index.json` deserializes cleanly. **1196 tests pass (was 1174; +22).** `bc_regression` green.
+
+### Added
+
+- **`coral session distill --as-patch`.** Opt-in flag to switch from option (a) (page-emit) to option (b) (patch-emit). Absence preserves byte-identical behavior to v0.21.2.
+- **`coral session distill --candidates N`.** Top-K BM25-ranked candidate pages to include in the patch-mode prompt (default `10`, set `0` to skip candidate collection — the LLM call still runs but without page context). Only applies with `--as-patch`; ignored otherwise.
+- **`crates/coral-session/src/distill_patch.rs`.** New module disjoint from `distill.rs` so option (a)'s byte-identical contract cannot be regressed by edits here. Public types: `DistillPatchOptions`, `DistillPatchOutcome`, `Patch`, `PatchSidecar`, `PageCandidate`. Public fns: `build_patch_prompt`, `parse_patches`, `select_candidates`, `distill_patch_session`. Public consts: `DISTILL_PATCH_PROMPT_VERSION = 2`, `MAX_PATCHES_PER_SESSION = 5`, `DEFAULT_CANDIDATES = 10`.
+- **`IndexEntry.patch_outputs: Vec<String>`** (with `#[serde(default)]`). Tracks every `.patch` and `.json` basename written under `.coral/sessions/patches/` so `forget` can clean up. Empty for sessions captured pre-v0.21.3.
+
+### Changed
+
+- **`coral session forget <id>`** now sweeps `.coral/sessions/patches/<basename>` for every entry in `IndexEntry.patch_outputs`, alongside the existing `distilled_outputs` cleanup. **`.wiki/` mutations from `--apply --as-patch` are NOT undone** — distill-as-patch's apply is one-way (the user owns the wiki post-apply). Path-traversal defense (`/`, `\`, `..`, `.`-prefix → skip with warn) mirrors the `distilled_outputs` loop verbatim.
+- **README "Distillation" section** gains a new "Patch mode (`--as-patch`, v0.21.3+)" subsection covering the flag, the validation pipeline, the on-disk artifact shape, and the `--apply` semantics.
+
+### Internal
+
+- **`distill_patch::git_apply_inner` runs `git apply --unsafe-paths --directory=.wiki`** so LLM-emitted diff headers (`--- a/<target>.md`) resolve relative to `.wiki/` without the LLM needing to know the wiki path. `--unsafe-paths` permits paths outside the index — NOT untrusted paths. Real safety comes from the slug allow-list check that runs BEFORE git ever sees the diff.
+- **`parse_patches` defensively appends a trailing `\n`** to any diff that doesn't end with one. YAML block-scalar `|` (CLIP) sometimes drops the trailing newline when the source ends mid-line; git apply rejects unterminated patches with "corrupt patch at line N". Defensive normalization keeps a subtly-broken YAML mis-emit applying cleanly.
+- **Pre-apply atomicity**: every patch validates against a system-tempfile copy in `.coral/sessions/patches-validate/` BEFORE any durable artifact lands. On any failure, no `.patch` / `.json` is written and `.wiki/` is untouched (spec D6).
+- **`Page::from_file → set extra["reviewed"] = Bool(false) → Page::write()`** rewrites the frontmatter post-apply so the unreviewed-distilled lint gate fires regardless of what the LLM emitted. Coral OWNS the flip.
+- **No new dependencies.** Orchestrator chose subprocess `git apply` over `diffy` to avoid a workspace dep. Zero net additions to `Cargo.lock`.
+
+### Tests (+22)
+
+- **#1-#10 e2e (`crates/coral-session/tests/distill_patch_e2e.rs`)**: `distill_patch_writes_pairs_under_patches_dir`, `distill_patch_apply_mutates_wiki_and_resets_reviewed`, `patch_with_unknown_target_rejects_pre_io`, `malformed_diff_rejects_atomically`, `one_bad_patch_rolls_back_all`, `patch_with_dotdot_target_rejects`, `diff_header_mismatch_rejects_when_only_minus_is_wrong`, `patch_count_capped_at_five`, `forget_removes_patch_basenames`, `distilled_and_patch_outputs_track_independently`. Every test drives a `MockRunner` with a hand-rolled YAML response so the LLM call is deterministic.
+- **#11-#19 unit (in `distill_patch::tests`)**: `select_candidates_is_deterministic`, `zero_candidates_skips_page_load`, `candidates_flag_truncates_to_n`, `is_safe_path_slug_rejects_dotdot_segments`, `diff_targets_slug_matches_a_and_b_prefixes`, `parse_patches_handles_yaml_code_fence`, `parse_patches_caps_at_five`, `parse_patches_rejects_dotdot_target`, `parse_patches_rejects_header_mismatch`.
+- **#20 BC pin (in `distill::tests`)**: `distill_without_as_patch_byte_identical_to_v0212` — pins the page-emit envelope so any future edit that quietly shifts the schema is caught at test time.
+- **#21 BC pin (in `capture::tests`)**: `index_without_patch_outputs_field_deserializes` — proves a v0.20.x / v0.21.2-shaped `index.json` deserializes cleanly with `patch_outputs` defaulting to empty.
+- **#22 CLI integration smoke (in `commands::session::tests`)**: `run_distill_as_patch_writes_patches_dir_via_mock_runner` — drives `run_distill` with `--as-patch` and an injected `MockRunner`, asserts the patches dir has the right files and the index is updated.
+
+### Acceptance criteria — 15/15 met
+
+1. `coral session distill <id> --as-patch` writes 1-N `<id>-<idx>.patch` + `<id>-<idx>.json` pairs under `.coral/sessions/patches/` ✓ (`distill_patch_writes_pairs_under_patches_dir`).
+2. Each emitted `.patch` validates via `git apply --check --unsafe-paths --directory=.wiki` BEFORE any file is written ✓ (`distill_patch_session` validation loop precedes write loop).
+3. If ANY patch fails validation, NO files written, NO `.wiki/` mutation, command exits non-zero with patch index + git stderr verbatim ✓ (`one_bad_patch_rolls_back_all`).
+4. `--as-patch --apply` mutates each `.wiki/<target>.md`. Post-apply, every modified page's frontmatter has `reviewed: false` ✓ (`distill_patch_apply_mutates_wiki_and_resets_reviewed`).
+5. `--as-patch` without `--apply` leaves `.wiki/` byte-unchanged ✓ (`distill_patch_writes_pairs_under_patches_dir` snapshots wiki bytes pre/post).
+6. LLM prompt includes top-K BM25-ranked candidate pages, default K=10 ✓ (`select_candidates` uses `coral_core::search::search_bm25`).
+7. `--candidates 0` sends no candidates, LLM call still runs ✓ (`zero_candidates_skips_page_load` + `distill_patch_session` short-circuits page load when `candidates == 0`).
+8. Sidecar `.json` carries `target_slug`, `rationale`, `prompt_version`, `runner_name`, `session_id`, `captured_at`, `reviewed: false` ✓ (`distill_patch_writes_pairs_under_patches_dir` asserts every field).
+9. `coral session forget <id>` cleans BOTH `distilled_outputs` AND `patch_outputs`, `.wiki/` mutations NOT undone ✓ (`forget_removes_patch_basenames`).
+10. `IndexEntry` deserializes v0.20.x / v0.21.2 index file (no `patch_outputs` field) without error ✓ (`index_without_patch_outputs_field_deserializes`).
+11. Page-emit (option a) path byte-identical to v0.21.2 ✓ (`distill_without_as_patch_byte_identical_to_v0212`).
+12. `bc-regression` passes unmodified ✓ (`scripts/ci-locally.sh` step 4 green).
+13. Patch with target not in `list_page_paths(.wiki)` rejected at parse time, BEFORE `git apply --check` ✓ (`patch_with_unknown_target_rejects_pre_io`).
+14. Patch with malformed unified-diff header (mismatched paths) rejected at parse time ✓ (`malformed_diff_rejects_atomically`, `diff_header_mismatch_rejects_when_only_minus_is_wrong`).
+15. CLI stdout lists patch index, target slug, rationale; "written" block has `.patch` AND `.json`; "applied" block (only `--apply`) has `.wiki/<slug>.md (reviewed: false)` ✓ (`run_distill_as_patch` in `crates/coral-cli/src/commands/session.rs`).
+
+### Pipeline note
+
+Patch release within the v0.21 sprint (fourth feature of the five-feature batch). No `Co-Authored-By: Claude` trailer per working-agreements.
+
 ## [0.21.2] - 2026-05-08
 
 **Feature release: `coral up --watch` (live reload via compose `develop.watch`).** Wire the wave-1 `WatchSpec` / `SyncRule` types through the YAML renderer and `ComposeBackend::up` so `coral up --watch` runs `docker compose watch` foreground after `up -d --wait` completes. The wave-1 v0.17 schema reserved `[services.<name>.watch]` (with `sync` + `rebuild` + `restart` + `initial_sync`) but the renderer dropped it on the floor — v0.21.2 closes that gap. After `up -d --wait` succeeds, `compose watch` streams sync events ("syncing X files to Y", "rebuilding service Z") to the terminal until Ctrl-C; SIGINT (exit code 130) is treated as a clean exit. `coral env watch` is a thin alias for `coral up --watch` so the surface area stays small. macOS users hit a known fsevents flakiness in Docker Desktop ([docker/for-mac#7832](https://github.com/docker/for-mac/issues/7832)) — Coral emits a one-line `WARNING:` banner to stderr before the watch subprocess starts so the issue is never silent. **`EnvCapabilities::watch` flips from `false` to `true`.** **BC sacred: services without `[services.*.watch]` emit byte-identical YAML to v0.21.1** — pinned by `compose_yaml::tests::watch_absent_yields_yaml_identical_to_pre_watch` and `crates/coral-env/tests/watch_yaml_render.rs::service_without_watch_emits_no_develop_block`. **1174 tests pass (was 1155; +19).** `bc_regression` green.

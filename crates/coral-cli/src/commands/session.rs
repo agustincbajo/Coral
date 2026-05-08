@@ -28,6 +28,7 @@ use coral_runner::Runner;
 use coral_session::capture::{CaptureOptions, CaptureSource, capture_from_path};
 use coral_session::claude_code::{find_latest_for_cwd, parse_transcript};
 use coral_session::distill::{DistillOptions, distill_session};
+use coral_session::distill_patch::{DistillPatchOptions, distill_patch_session};
 use coral_session::forget::{ForgetOptions, forget_session};
 use coral_session::list::{ListFormat, list_sessions};
 use std::path::{Path, PathBuf};
@@ -148,6 +149,26 @@ pub struct DistillArgs {
     /// `haiku`).
     #[arg(long)]
     pub model: Option<String>,
+
+    /// v0.21.3: switch to option (b) — emit unified-diff patches
+    /// against EXISTING `.wiki/<slug>.md` pages instead of creating
+    /// new synthesis pages. Patches save to
+    /// `.coral/sessions/patches/<id>-<idx>.patch` with a sidecar
+    /// `<id>-<idx>.json`. With `--apply` the patches are `git apply`-ed
+    /// and the touched pages get `reviewed: false` (Coral OWNS the
+    /// flip — the LLM's job is body content). Default behavior (no
+    /// `--as-patch`) is byte-identical to v0.21.2.
+    #[arg(long)]
+    pub as_patch: bool,
+
+    /// v0.21.3: top-K candidate pages to surface in the patch-mode
+    /// prompt, ranked by BM25 against the captured transcript. `0`
+    /// skips candidate collection (the LLM call still runs but
+    /// without page context — useful when the wiki is empty or you
+    /// want to test prompt-only output). Only applies with
+    /// `--as-patch`; ignored otherwise.
+    #[arg(long, default_value_t = 10)]
+    pub candidates: usize,
 }
 
 #[derive(Args, Debug)]
@@ -300,6 +321,12 @@ fn resolve_session_for_forget(project_root: &Path, prefix: &str) -> Result<Strin
 /// `run_distill` factored to take an optional injected runner so the
 /// integration tests can swap in a `MockRunner` without re-routing
 /// through clap. Public-but-not-doc-published.
+///
+/// v0.21.3: branches on `args.as_patch`. Default (false) preserves
+/// byte-identical behavior to v0.21.2 (option (a) / page emit). True
+/// dispatches to the new patch-emit flow, which writes
+/// `<id>-<idx>.patch` + `<id>-<idx>.json` pairs under
+/// `.coral/sessions/patches/`.
 pub(crate) fn run_distill(
     args: DistillArgs,
     project_root: &Path,
@@ -314,6 +341,14 @@ pub(crate) fn run_distill(
             (r, format!("{provider:?}").to_lowercase())
         }
     };
+
+    if args.as_patch {
+        return run_distill_as_patch(&args, project_root, runner, &runner_name);
+    }
+
+    // Option (a) / page-emit path. Byte-identical to v0.21.2 — the
+    // outcome printer below MUST stay frozen. New behavior in v0.21.3
+    // lives strictly behind `--as-patch`.
     let opts = DistillOptions {
         project_root: project_root.to_path_buf(),
         session_id: args.session_id.clone(),
@@ -336,6 +371,60 @@ pub(crate) fn run_distill(
     }
     println!(
         "\nNOTE: every emitted page is `reviewed: false`. Flip to `true` after human review;\n\
+         `coral lint` blocks any commit that contains an unreviewed page."
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Patch-emit branch. Surfaces a structured CLI block:
+///   - "distilled <id> → N patch(es):" header with index + slug + rationale
+///   - "written:" listing every `<id>-<idx>.patch` + `.json`
+///   - "applied:" only when `--apply` was passed
+fn run_distill_as_patch(
+    args: &DistillArgs,
+    project_root: &Path,
+    runner: Box<dyn Runner>,
+    runner_name: &str,
+) -> Result<ExitCode> {
+    let opts = DistillPatchOptions {
+        project_root: project_root.to_path_buf(),
+        session_id: args.session_id.clone(),
+        apply: args.apply,
+        model: args.model.clone(),
+        candidates: args.candidates,
+    };
+    let outcome = distill_patch_session(&opts, runner.as_ref(), runner_name)
+        .map_err(|e| anyhow::anyhow!(e))?;
+
+    println!(
+        "distilled {} → {} patch(es):",
+        outcome.session_id,
+        outcome.patches.len()
+    );
+    for (i, p) in outcome.patches.iter().enumerate() {
+        // One-line rationale: take the first non-empty line so a
+        // multi-line rationale doesn't blow up the CLI block. (The
+        // full rationale lives in the `.json` sidecar.)
+        let one_line = p
+            .rationale
+            .lines()
+            .map(str::trim)
+            .find(|l| !l.is_empty())
+            .unwrap_or("(no rationale)");
+        println!("  {i}. {}: {}", p.target_slug, one_line);
+    }
+    println!("written:");
+    for w in &outcome.written {
+        println!("  - {}", w.display());
+    }
+    if args.apply {
+        println!("applied:");
+        for t in &outcome.applied_targets {
+            println!("  - {} (reviewed: false)", t.display());
+        }
+    }
+    println!(
+        "\nNOTE: every applied page is `reviewed: false`. Flip to `true` after human review;\n\
          `coral lint` blocks any commit that contains an unreviewed page."
     );
     Ok(ExitCode::SUCCESS)
@@ -490,6 +579,7 @@ mod tests {
                 redaction_count: 0,
                 distilled: false,
                 distilled_outputs: Vec::new(),
+                patch_outputs: Vec::new(),
             });
         }
         write_index(&index_path, &idx).unwrap();
@@ -540,6 +630,7 @@ mod tests {
             redaction_count: 0,
             distilled: false,
             distilled_outputs: Vec::new(),
+            patch_outputs: Vec::new(),
         });
         let index_path = sessions_dir.join("index.json");
         write_index(&index_path, &idx).unwrap();
@@ -592,6 +683,7 @@ mod tests {
             redaction_count: 0,
             distilled: false,
             distilled_outputs: Vec::new(),
+            patch_outputs: Vec::new(),
         });
         write_index(&sessions_dir.join("index.json"), &idx).unwrap();
         let canonical = resolve_session_for_forget(dir.path(), "5c359").unwrap();
@@ -619,6 +711,7 @@ mod tests {
                 redaction_count: 0,
                 distilled: false,
                 distilled_outputs: Vec::new(),
+                patch_outputs: Vec::new(),
             });
         }
         write_index(&sessions_dir.join("index.json"), &idx).unwrap();
@@ -649,6 +742,7 @@ mod tests {
             redaction_count: 0,
             distilled: false,
             distilled_outputs: Vec::new(),
+            patch_outputs: Vec::new(),
         });
         write_index(&sessions_dir.join("index.json"), &idx).unwrap();
         let args = ForgetArgs {
@@ -658,5 +752,112 @@ mod tests {
         let exit = run_forget(args, dir.path()).expect("--yes path must succeed");
         assert_eq!(exit, ExitCode::SUCCESS);
         assert!(!captured.exists(), "session must be deleted");
+    }
+
+    /// v0.21.3 spec test #15 — CLI integration smoke for option (b).
+    /// Drives `run_distill` with `--as-patch` and an injected
+    /// `MockRunner`, then asserts:
+    ///   - exit code is success
+    ///   - the patches dir contains both a `<id>-0.patch` and
+    ///     `<id>-0.json` for the single emitted patch
+    ///   - the index entry got `patch_outputs` populated
+    ///
+    /// Stops short of asserting stdout shape (the unit-test side of
+    /// the e2e suite already pins `outcome.written`); this CLI smoke
+    /// is the wiring check.
+    #[test]
+    fn run_distill_as_patch_writes_patches_dir_via_mock_runner() {
+        use chrono::TimeZone;
+        use coral_runner::MockRunner;
+        use coral_session::capture::{
+            CaptureSource, IndexEntry, SessionIndex, read_index, write_index,
+        };
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path();
+        let sessions_dir = root.join(".coral/sessions");
+        std::fs::create_dir_all(&sessions_dir).unwrap();
+        let captured_path = sessions_dir.join("smoke.jsonl");
+        std::fs::write(
+            &captured_path,
+            r#"{"type":"user","sessionId":"smoke-test-001","timestamp":"2026-05-08T10:00:00Z","cwd":"/x","message":{"content":"how does sliding window work?"}}
+{"type":"assistant","sessionId":"smoke-test-001","timestamp":"2026-05-08T10:00:01Z","message":{"role":"assistant","content":"sliding window"}}
+"#,
+        )
+        .unwrap();
+
+        let mut idx = SessionIndex::default();
+        idx.sessions.push(IndexEntry {
+            session_id: "smoke-test-001".into(),
+            source: CaptureSource::ClaudeCode,
+            captured_at: chrono::Utc.with_ymd_and_hms(2026, 5, 8, 10, 0, 0).unwrap(),
+            captured_path: captured_path.clone(),
+            message_count: 2,
+            redaction_count: 0,
+            distilled: false,
+            distilled_outputs: Vec::new(),
+            patch_outputs: Vec::new(),
+        });
+        write_index(&sessions_dir.join("index.json"), &idx).unwrap();
+
+        // A real `.wiki/<slug>.md` page so the allow-list check passes.
+        let wiki = root.join(".wiki/modules");
+        std::fs::create_dir_all(&wiki).unwrap();
+        std::fs::write(
+            wiki.join("auth.md"),
+            "---\n\
+slug: auth\n\
+type: module\n\
+last_updated_commit: aaa\n\
+confidence: 0.5\n\
+status: draft\n\
+---\n\
+\n\
+# auth\n\
+\n\
+Line one of body content.\n\
+Line two of body content.\n\
+Line three of body content.\n",
+        )
+        .unwrap();
+
+        // The runner emits a YAML patch shaped per the v0.21.3 spec.
+        // Use 6-space indent inside the `diff: |` block scalar plus a
+        // single trailing space-only line to anchor the YAML CLIP.
+        let runner = MockRunner::new();
+        runner.push_ok(
+            "patches:\n  - target: modules/auth\n    rationale: |\n      Adds a sliding window note.\n    diff: |\n      --- a/modules/auth.md\n      +++ b/modules/auth.md\n      @@ -10,3 +10,4 @@\n       Line one of body content.\n       Line two of body content.\n       Line three of body content.\n      +Sliding-window note.\n",
+        );
+
+        let args = DistillArgs {
+            session_id: "smoke-test-001".into(),
+            apply: false,
+            provider: None,
+            model: None,
+            as_patch: true,
+            candidates: 5,
+        };
+        let exit =
+            run_distill(args, root, Some(Box::new(runner))).expect("--as-patch path must succeed");
+        assert_eq!(exit, ExitCode::SUCCESS);
+
+        let patches_dir = sessions_dir.join("patches");
+        assert!(patches_dir.join("smoke-test-001-0.patch").exists());
+        assert!(patches_dir.join("smoke-test-001-0.json").exists());
+
+        let post = read_index(&sessions_dir.join("index.json")).unwrap();
+        let entry = &post.sessions[0];
+        assert!(entry.distilled);
+        assert_eq!(entry.patch_outputs.len(), 2);
+        assert!(
+            entry
+                .patch_outputs
+                .contains(&"smoke-test-001-0.patch".to_string())
+        );
+        assert!(
+            entry
+                .patch_outputs
+                .contains(&"smoke-test-001-0.json".to_string())
+        );
     }
 }

@@ -501,6 +501,65 @@ Privacy posture and the full design-question rationale live in [docs/SESSIONS.md
 - Distilled pages always carry `reviewed: false`. `coral lint --rule unreviewed-distilled` raises Critical and the bundled pre-commit hook blocks the commit.
 - Cross-format support is staged: Claude Code first; `--from cursor` and `--from chatgpt` exist as CLI flags but currently emit a clear "not yet implemented; track #16" error.
 
+### Patch mode (`--as-patch`, v0.21.3+)
+
+Default `coral session distill <id>` is **option (a) / page-emit**: 1–3 NEW synthesis pages land under `.coral/sessions/distilled/<slug>.md` (and at `.wiki/synthesis/<slug>.md` with `--apply`). When the session's insight is a small **edit to an EXISTING page** rather than a whole new page, that's the wrong shape.
+
+v0.21.3 adds an opt-in `--as-patch` flag — **option (b) / patch-emit**. Instead of synthesis pages, the LLM proposes 1–N **unified-diff patches** against existing `.wiki/<slug>.md` pages.
+
+```bash
+# 1. Capture as before.
+coral session capture --from claude-code
+
+# 2. Patch-emit. Top-K=10 BM25-ranked candidate pages from .wiki/ are
+#    surfaced in the prompt by default; tune with --candidates N (or 0
+#    to skip candidate collection entirely).
+coral session distill 5c359daf --as-patch --candidates 10
+# distilled 5c359daf… → 2 patch(es):
+#   0. modules/authentication: The session revealed JWT refresh uses sliding window
+#   1. modules/rate-limit: Per-tenant counters, not global
+# written:
+#   - .coral/sessions/patches/5c359daf-0.patch
+#   - .coral/sessions/patches/5c359daf-0.json
+#   - .coral/sessions/patches/5c359daf-1.patch
+#   - .coral/sessions/patches/5c359daf-1.json
+
+# 3. Review each .patch by eye, OR pre-validate with --apply.
+coral session distill 5c359daf --as-patch --apply
+# applied:
+#   - .wiki/modules/authentication.md (reviewed: false)
+#   - .wiki/modules/rate-limit.md (reviewed: false)
+```
+
+**Validation pipeline** — every patch passes through this gauntlet BEFORE any file lands:
+
+1. **Slug allow-list.** Each `/`-separated component of `target_slug` must pass `is_safe_filename_slug` (kebab/snake-case ASCII, no `..`, no leading `.`, no shell metacharacters).
+2. **Wiki existence.** The resolved page MUST exist in `list_page_paths(.wiki)`. Patches against non-existent pages reject at parse time.
+3. **Diff header agreement.** The `--- a/<X>.md` and `+++ b/<X>.md` headers must agree with `target_slug`. Mismatches reject at parse time.
+4. **`git apply --check`.** Every patch is dry-run-validated against `project_root` via `git apply --check --unsafe-paths --directory=.wiki <patch>`. (`--unsafe-paths` permits paths outside the index — NOT untrusted paths. By the time we shell out, the slug is already allow-list-validated.)
+
+**Pre-apply atomicity** — if ANY patch in the set fails its check, NO files are written and the command exits non-zero with the patch index + git stderr verbatim. This is the same all-or-nothing contract option (a) has always provided.
+
+**Sidecar `.json` shape:**
+
+```json
+{
+  "target_slug": "modules/authentication",
+  "rationale": "The session revealed JWT refresh uses a sliding window…",
+  "prompt_version": 2,
+  "runner_name": "claude",
+  "session_id": "5c359daf-…",
+  "captured_at": "2026-05-08T10:00:00+00:00",
+  "reviewed": false
+}
+```
+
+**`--apply` semantics** — Coral OWNS the `reviewed: false` flip. After each `git apply` succeeds, Coral re-reads the touched page, sets `frontmatter.extra["reviewed"] = false`, and re-writes. The LLM's job is body content; the trust gate is Coral's job. `coral lint --rule unreviewed-distilled` then blocks the commit until a human flips it.
+
+**Default vs. patch mode in one line:** if the LLM has something *new* to say (a clarifying paragraph, a counter-intuitive finding, an architectural note that didn't exist before) → page mode. If the LLM has a small surgical fix (a corrected line, an added caveat, a clarified sentence) → patch mode.
+
+**`forget` cleanup** — `coral session forget <id>` sweeps both `distilled_outputs` (page-mode artifacts) AND `patch_outputs` (patch-mode artifacts) from `.coral/sessions/`. **`.wiki/` mutations from `--apply --as-patch` are NOT undone** — distill-as-patch's apply is one-way (the user owns the wiki post-apply).
+
 ---
 
 ## Cookbook — common workflows
@@ -1126,7 +1185,8 @@ Exit 0 by default; `--strict` raises warnings to errors and exits non-zero.
 | `coral session list [--format markdown\|json]` | Tabular view of captured sessions with redaction counts and a `distilled: yes/no` column. | No |
 | `coral session show <id> [--messages] [--limit N]` | Inspect a captured session — metadata + first/last N messages. | No |
 | `coral session distill <id> [--apply] [--model MODEL]` | Single-pass `Runner::run` that emits 1–3 wiki findings per session under `.coral/sessions/distilled/<slug>.md`. With `--apply`, also writes to `.wiki/synthesis/<slug>.md` with `reviewed: false` frontmatter. The `unreviewed-distilled` lint blocks commits until a human flips the flag (qualified — see v0.20.2 H2: only fires for pages that carry both `reviewed: false` AND a populated `source.runner` field). | Yes |
-| `coral session forget <id>` | Delete the raw transcript, every distilled output, the optional `--apply` mirror under `.wiki/synthesis/`, and the matching index entry. v0.20.2+: tracks per-finding output filenames so cleanup is no longer best-effort. | No |
+| `coral session distill <id> --as-patch [--apply] [--candidates N] [--model MODEL]` | **v0.21.3.** Option (b) / patch-emit. Instead of new pages, propose 1–N **unified-diff patches** against existing `.wiki/<slug>.md` pages. Patches save to `.coral/sessions/patches/<id>-<idx>.patch` plus a sidecar `.json`. With `--apply`, each patch is `git apply`-ed and the touched page's frontmatter is rewritten so `reviewed: false`. Pre-apply atomicity: if any patch fails `git apply --check`, no files are written. `--candidates N` (default 10) controls how many BM25-ranked candidate pages are surfaced in the prompt; `--candidates 0` skips candidate collection. | Yes |
+| `coral session forget <id>` | Delete the raw transcript, every distilled output, the optional `--apply` mirror under `.wiki/synthesis/`, every `.patch`/`.json` recorded in `patch_outputs` under `.coral/sessions/patches/`, and the matching index entry. v0.21.3+: also sweeps the patch-emit artifacts. **`.wiki/` mutations from `--apply --as-patch` are NOT undone** — that flow is one-way. | No |
 
 ---
 
