@@ -13,6 +13,7 @@
 
 pub mod compose;
 pub mod compose_yaml;
+pub mod devcontainer;
 pub mod error;
 pub mod healthcheck;
 pub mod import;
@@ -20,6 +21,7 @@ pub mod mock;
 pub mod plan;
 pub mod spec;
 
+pub use devcontainer::{DevcontainerArtifact, DevcontainerOpts, render_devcontainer};
 pub use error::{EnvError, EnvResult};
 pub use mock::MockBackend;
 pub use plan::{

@@ -379,7 +379,10 @@ impl EnvBackend for ComposeBackend {
             exec: true,
             logs_follow: false, // CLI handles --follow via direct streaming
             port_forward_explicit: false,
-            emit_devcontainer: false,
+            // v0.21: `coral env devcontainer emit` lives in the env
+            // layer as a free function and works against any plan a
+            // ComposeBackend would accept.
+            emit_devcontainer: true,
         }
     }
 }

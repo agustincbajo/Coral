@@ -150,3 +150,29 @@ fn legacy_init_force_recreates_wiki() {
         .assert()
         .success();
 }
+
+/// v0.21 BC: `coral env devcontainer emit` against a v0.15-shape repo
+/// (no `coral.toml`) fails with the same actionable error the rest of
+/// the env layer uses ("no [[environments]] declared in coral.toml"),
+/// rather than panicking or emitting a nonsensical JSON. Mirrors the
+/// existing BC contract for `coral env status`, `coral up`, etc.
+#[test]
+fn legacy_env_devcontainer_emit_fails_without_environments_block() {
+    let dir = TempDir::new().unwrap();
+    Command::cargo_bin("coral")
+        .unwrap()
+        .arg("init")
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    Command::cargo_bin("coral")
+        .unwrap()
+        .args(["env", "devcontainer", "emit"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "no [[environments]] declared in coral.toml",
+        ));
+}

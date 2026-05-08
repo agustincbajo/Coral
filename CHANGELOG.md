@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-05-08
+
+**Feature release: `coral env devcontainer emit`.** Render a `.devcontainer/devcontainer.json` from the active `[[environments]]` block so VS Code, Cursor, and GitHub Codespaces can attach to the same Compose project Coral runs. New `crates/coral-env/src/devcontainer.rs` is a pure renderer over `EnvPlan` (no I/O); `coral_env::render_devcontainer` is callable from the library, and the new `coral env devcontainer emit` CLI subcommand prints the JSON to stdout or writes it atomically with `--write` (mirrors `coral env import --write` exactly). Service auto-selection prefers the first real service whose `repo = "..."` is set (BTreeMap order, lexicographic by service name) and falls back to the alphabetically first real service if none has a repo; mock services are never selected. `forwardPorts` is the union of every `RealService.ports` from the spec, deduped and sorted. **1124 tests pass (was 1108; +16).** BC contract holds — single-repo v0.15 layouts get the same actionable "no [[environments]] declared in coral.toml" error from `coral env devcontainer emit` they get from `coral env status` / `coral up` / `coral down`.
+
+### Added
+
+- **`coral env devcontainer emit [--env NAME] [--service NAME] [--write] [--out PATH]`.** Render `.devcontainer/devcontainer.json` from the active `[[environments]]` block. Stdout by default; `--write` lands `<project_root>/.devcontainer/devcontainer.json` via `coral_core::atomic::atomic_write_string` (sibling tempfile + `rename`, matches every other on-disk write in the workspace). `--service` overrides the auto-selection algorithm; `--out` overrides the destination path (only meaningful with `--write`).
+- **`coral_env::render_devcontainer(plan, opts)` library function.** Pure renderer returning `DevcontainerArtifact { json, additional_files, warnings }`. Reruns for an unchanged plan produce byte-identical output: keys are emitted in ASCII-alphabetic order (`serde_json::Value` defaults to a `BTreeMap` backing; we don't pull `serde_json/preserve_order` to keep the dep tree slim). Output ends with a trailing newline so editors don't churn the file on save.
+- **Capability flag flipped.** `EnvCapabilities { emit_devcontainer: true }` for both `ComposeBackend` and `MockBackend`. The trait gains no new method — devcontainer emit is a free function over `EnvPlan` because every backend produces a compatible plan.
+
+### JSON shape
+
+Keys land in ASCII-alphabetic order (renderer uses the default `BTreeMap`-backed `serde_json::Value`; the example below shows that order so it matches what users actually see):
+
+```json
+{
+  "customizations": { "vscode": { "extensions": [] } },
+  "dockerComposeFile": ["../.coral/env/compose/<8-char-hash>.yml"],
+  "forwardPorts": [<RealService.ports union, deduped, sorted ascending>],
+  "name": "coral-<env>",
+  "remoteUser": "root",
+  "service": "<auto-selected or --service override>",
+  "shutdownAction": "stopCompose",
+  "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}"
+}
+```
+
+`dockerComposeFile` is a **single-element array** (the JSON-Schema spec accepts string-or-array; we use the array form because it's forward-compatible — multi-file overlays land cleanly without a schema migration). `customizations.vscode.extensions` is `[]` by default — no curated list. `remoteUser` is hard-coded to `"root"`, the conventional default for Compose-backed devcontainers.
+
+### Tests
+
+10 new unit tests in `crates/coral-env/src/devcontainer.rs::tests` covering: `dockerComposeFile` array shape and relative path; service auto-selection (`repo`-preference, alphabetic fallback); `forwardPorts` union/dedup/sort; empty-services error message (must point at `coral env import` AND hand-authoring); only-mocks error; `--service` override; unknown-service-override → `ServiceNotFound`; byte-stable output across reruns; full JSON round-trip via `serde_json::Value`.
+
+5 new e2e tests in `crates/coral-cli/tests/env_devcontainer_emit_e2e.rs`: stdout-print parses, `--write` lands file at conventional path, unknown `--env` exits non-zero with available envs in stderr, `--service` override survives through `--write`, unknown service override errors.
+
+1 new BC regression test in `crates/coral-cli/tests/bc_regression.rs`: `coral env devcontainer emit` against a v0.15-shape repo (no `coral.toml`) fails with the same "no [[environments]] declared in coral.toml" error every other env subcommand uses. Mirrors the existing BC contract for `coral env status` / `coral up`.
+
+### Pipeline note
+
+Single-feature minor-version bump (no patches accumulated since v0.20.2). Spec was scoped from a maintainer-issued orchestrator brief; implementation followed the orchestrator's defaults (opt-in `--write`, `forwardPorts` from declared spec, `extensions: []`). No `Co-Authored-By: Claude` trailer per working-agreements.
+
 ## [0.20.2] - 2026-05-08
 
 **Patch release: closes 15 cycle-4 follow-up issues (#34–#48).** No new features. Hardens the boundaries v0.20.1 left for follow-up: body-via-tempfile RAII helper now shared across `HttpRunner` + `coral notion-push` + embeddings providers; MCP `tools/list` and `render_page` now respect the same trust gate the v0.20.1 lint applies; mock implementations match real-impl contracts. **1108 tests pass** (was 1068, +40).

@@ -159,7 +159,10 @@ impl EnvBackend for MockBackend {
             exec: true,
             logs_follow: true,
             port_forward_explicit: false,
-            emit_devcontainer: false,
+            // v0.21: matches `ComposeBackend` — devcontainer emit is
+            // implemented in the env layer as a free function over
+            // `EnvPlan` and works equally well against the mock.
+            emit_devcontainer: true,
         }
     }
 }

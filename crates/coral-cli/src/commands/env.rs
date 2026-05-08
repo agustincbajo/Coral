@@ -9,8 +9,8 @@ use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
 use coral_env::compose::{ComposeBackend, ComposeRuntime};
 use coral_env::{
-    EnvBackend, EnvPlan, EnvStatus, ExecOptions, HealthState, LogsOptions, ServiceState,
-    ServiceStatus,
+    DevcontainerOpts, EnvBackend, EnvPlan, EnvStatus, ExecOptions, HealthState, LogsOptions,
+    ServiceState, ServiceStatus,
 };
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -37,6 +37,41 @@ pub enum EnvCmd {
     /// `[[environments]]` block. Output is advisory — review before
     /// committing.
     Import(ImportArgs),
+    /// Devcontainer (.devcontainer/devcontainer.json) operations.
+    Devcontainer(DevcontainerArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct DevcontainerArgs {
+    #[command(subcommand)]
+    pub command: DevcontainerCmd,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum DevcontainerCmd {
+    /// Render a `.devcontainer/devcontainer.json` describing the
+    /// `[[environments]]` block. Print to stdout, or write to disk
+    /// with `--write`.
+    Emit(DevcontainerEmitArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct DevcontainerEmitArgs {
+    /// Environment to render. Default: first declared.
+    #[arg(long)]
+    pub env: Option<String>,
+    /// Force the `service:` field. Default: deterministic algorithm
+    /// (first real service with `repo = "..."`, fall back to
+    /// alphabetic).
+    #[arg(long)]
+    pub service: Option<String>,
+    /// Write to `<project_root>/.devcontainer/devcontainer.json`.
+    /// Mirrors `coral env import --write`.
+    #[arg(long)]
+    pub write: bool,
+    /// Override the destination path (only meaningful with `--write`).
+    #[arg(long)]
+    pub out: Option<std::path::PathBuf>,
 }
 
 #[derive(Args, Debug)]
@@ -98,6 +133,9 @@ pub fn run(args: EnvArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
         EnvCmd::Logs(a) => logs(a, wiki_root),
         EnvCmd::Exec(a) => exec(a, wiki_root),
         EnvCmd::Import(a) => import(a),
+        EnvCmd::Devcontainer(a) => match a.command {
+            DevcontainerCmd::Emit(emit) => devcontainer_emit(emit, wiki_root),
+        },
     }
 }
 
@@ -182,6 +220,44 @@ fn import(args: ImportArgs) -> Result<ExitCode> {
             result.warnings.len()
         );
         for w in &result.warnings {
+            eprintln!("  - {w}");
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn devcontainer_emit(args: DevcontainerEmitArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
+    let (_backend, plan, _env_name) = build_backend(wiki_root, args.env.as_deref())?;
+    let opts = DevcontainerOpts {
+        service_override: args.service,
+    };
+    let artifact = coral_env::render_devcontainer(&plan, &opts)
+        .map_err(|e| anyhow::anyhow!("rendering devcontainer.json: {e}"))?;
+
+    if args.write {
+        let dest = args
+            .out
+            .unwrap_or_else(|| plan.project_root.join(".devcontainer/devcontainer.json"));
+        // Mirror `coral env import --write`: atomic write so a crash
+        // mid-write can't leave a torn JSON on disk. The atomic
+        // helper creates the parent directory if missing.
+        coral_core::atomic::atomic_write_string(&dest, &artifact.json)
+            .with_context(|| format!("writing {}", dest.display()))?;
+        eprintln!("✔ wrote {}", dest.display());
+        eprintln!(
+            "  open the project in VS Code (or Cursor) and choose\n  \"Reopen in Container\" to use it."
+        );
+    } else {
+        print!("{}", artifact.json);
+    }
+
+    if !artifact.warnings.is_empty() {
+        eprintln!();
+        eprintln!(
+            "⚠ {} warning(s) — fields Coral didn't translate cleanly:",
+            artifact.warnings.len()
+        );
+        for w in &artifact.warnings {
             eprintln!("  - {w}");
         }
     }

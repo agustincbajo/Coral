@@ -5,7 +5,7 @@
 [![CI](https://github.com/agustincbajo/Coral/actions/workflows/ci.yml/badge.svg)](https://github.com/agustincbajo/Coral/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/agustincbajo/Coral?display_name=tag)](https://github.com/agustincbajo/Coral/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-1108%20passing-brightgreen)](#testing--ci)
+[![Tests](https://img.shields.io/badge/tests-1124%20passing-brightgreen)](#testing--ci)
 [![Codecov](https://codecov.io/gh/agustincbajo/Coral/branch/main/graph/badge.svg)](https://codecov.io/gh/agustincbajo/Coral)
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange?logo=rust)](rust-toolchain.toml)
 [![MCP](https://img.shields.io/badge/MCP-2025--11--25-blue?logo=anthropic)](https://modelcontextprotocol.io/)
@@ -65,7 +65,7 @@ A single `coral` binary (~6.3 MB stripped, statically linked, MSRV 1.85, ad-hoc-
 |---|---|---|
 | **Wiki** | `init` `bootstrap` `ingest` `query` `lint` `consolidate` `stats` `sync` `onboard` `prompts` `search` `export` `notion-push` `validate-pin` `diff` `status` `history` | v0.1+ |
 | **Multi-repo** | `project new/list/add/sync/doctor/lock/graph` | v0.16 |
-| **Environments** | `up` `down` `env status/logs/exec/import` | v0.17, v0.19.7 (`import`) |
+| **Environments** | `up` `down` `env status/logs/exec/import/devcontainer emit` | v0.17, v0.19.7 (`import`), v0.21.0 (`devcontainer emit`) |
 | **Functional testing** | `test` `test-discover` `verify` `contract check` | v0.18, v0.19 (`contract`) |
 | **AI ecosystem** | `mcp serve` `export-agents` `context-build` | v0.19 |
 | **Sessions** | `session capture/list/show/forget/distill` | v0.20 |
@@ -135,7 +135,7 @@ Unit tests don't tell you if your microservices actually work together. End-to-e
 ### From a tagged release (recommended)
 
 ```bash
-cargo install --locked --git https://github.com/agustincbajo/Coral --tag v0.20.2 coral-cli
+cargo install --locked --git https://github.com/agustincbajo/Coral --tag v0.21.0 coral-cli
 ```
 
 ### From `main` (latest)
@@ -158,10 +158,10 @@ cargo build --release
 Each tagged release ships pre-built binaries for x86_64 Linux, x86_64 macOS, and aarch64 macOS (Apple Silicon) on the [Releases page](https://github.com/agustincbajo/Coral/releases). Download `coral-vX.Y.Z-<target>.tar.gz`, verify the SHA-256, extract the `coral` binary, place it on your `$PATH`.
 
 ```bash
-curl -L -o coral.tar.gz https://github.com/agustincbajo/Coral/releases/download/v0.20.2/coral-v0.20.2-aarch64-apple-darwin.tar.gz
+curl -L -o coral.tar.gz https://github.com/agustincbajo/Coral/releases/download/v0.21.0/coral-v0.21.0-aarch64-apple-darwin.tar.gz
 shasum -a 256 -c coral.tar.gz.sha256  # if you also downloaded the .sha256 sidecar
 tar -xzf coral.tar.gz
-sudo mv coral-v0.20.2-aarch64-apple-darwin/coral /usr/local/bin/
+sudo mv coral-v0.21.0-aarch64-apple-darwin/coral /usr/local/bin/
 coral --version
 ```
 
@@ -1007,6 +1007,7 @@ Exit 0 by default; `--strict` raises warnings to errors and exits non-zero.
 | `coral env logs <service> [--env] [--tail N]` | Read recent logs (compose `logs --no-color --no-log-prefix --timestamps`). |
 | `coral env exec <service> [--env] -- <cmd>...` | One-shot exec inside a container. Exit code propagates. |
 | `coral env import <compose.yml> [--env NAME] [--write] [--out PATH]` | (v0.19.7+) Convert an existing `docker-compose.yml` into a starter `[[environments]]` block for `coral.toml`. Conservative + advisory: emits only fields that round-trip through `EnvironmentSpec`; everything else surfaces as a `# TODO:` comment. Heuristic infers `kind = "http"` from `CMD curl URL` patterns. |
+| `coral env devcontainer emit [--env NAME] [--service NAME] [--write] [--out PATH]` | (v0.21.0+) Render a `.devcontainer/devcontainer.json` from the active `[[environments]]` block so VS Code / Cursor / GitHub Codespaces can attach to the same Compose project Coral runs. Pure offline emit: `forwardPorts` from `RealService.ports`, `dockerComposeFile` points at `../.coral/env/compose/<hash>.yml`. `--service` overrides the auto-selection (first real service with `repo = "..."`, fallback alphabetic). `--write` lands the file atomically at `<project_root>/.devcontainer/devcontainer.json`. |
 
 ### Functional testing layer (v0.18+)
 
@@ -1778,7 +1779,7 @@ Per [Anthropic's context-engineering guidance](https://www.anthropic.com/enginee
 
 ### What's the SLA / support model?
 
-Hobby project. No SLA. Issues filed at [github.com/agustincbajo/Coral/issues](https://github.com/agustincbajo/Coral/issues) get triaged in best-effort timeframes. The codebase has 1068 tests + 4-cycle multi-agent audit history; quality bar is high but support cadence isn't.
+Hobby project. No SLA. Issues filed at [github.com/agustincbajo/Coral/issues](https://github.com/agustincbajo/Coral/issues) get triaged in best-effort timeframes. The codebase has 1124 tests + 4-cycle multi-agent audit history; quality bar is high but support cadence isn't.
 
 ### Can I use Coral's wiki schema with a different tool?
 
@@ -1870,7 +1871,11 @@ Full per-release detail in [CHANGELOG](CHANGELOG.md).
 
 - **[#16](https://github.com/agustincbajo/Coral/issues/16) — `coral session capture/distill`.** Capture agent transcripts (Claude Code JSONL today; Cursor / ChatGPT tracked) into `.coral/sessions/`, scrub secrets by default, distill into `reviewed: false` synthesis pages enforced by `coral lint`. New `coral-session` crate; five subcommands (`capture`, `list`, `forget`, `distill`, `show`); 25-pattern privacy scrubber + secrets fixture; full e2e against the Claude Code JSONL schema. See [docs/SESSIONS.md](docs/SESSIONS.md). 1068+ tests pass (was 977).
 
-🔮 **v0.21+ feature roadmap:**
+✅ **Shipped (v0.21.0 — `coral env devcontainer emit`):**
+
+- **`coral env devcontainer emit` (offline).** Render a `.devcontainer/devcontainer.json` from the active `[[environments]]` block so VS Code / Cursor / GitHub Codespaces can attach to the same Compose project Coral runs. Pure renderer in the env layer (`coral_env::render_devcontainer`), no I/O; `--write` lands the file atomically at `.devcontainer/devcontainer.json` (atomic-write, sibling tempfile + rename, matching `coral env import --write`). Service auto-selection prefers the first real service with a `repo = "..."` reference and falls back alphabetically; `--service` overrides explicitly. `forwardPorts` is the union of every `RealService.ports` from the spec, deduped and sorted. **1124 tests pass (was 1108; +16).**
+
+🔮 **v0.22+ feature roadmap:**
 
 - `coral session capture --from cursor` and `--from chatgpt` (the v0.20 flags currently emit a clear "not yet implemented" error pointing at #16).
 - `KindBackend`, `TiltBackend`, `K3dBackend` (k8s local, behind feature flags).
@@ -1885,7 +1890,7 @@ Full per-release detail in [CHANGELOG](CHANGELOG.md).
 - gRPC test steps (via `grpcurl` subprocess or `tonic` reflection).
 - Cross-repo glob (`[[repos]] glob = "services/*"`) and sub-manifests `<include>`.
 - `coral up --watch` (compose 2.22 `develop.watch`) — Linux first; macOS waits on the Docker bug.
-- `coral env attach <service>`, `coral env reset`, `coral env port-forward`, `coral env open`, `coral env prune`, `coral env devcontainer emit`.
+- `coral env attach <service>`, `coral env reset`, `coral env port-forward`, `coral env open`, `coral env prune`.
 - SWE-ContextBench benchmark publication.
 
 Detailed PRD covering every iteration (multi-repo, environments, testing, MCP, AGENTS.md research) is tracked in the maintainer's plans directory; per-release decisions and trade-offs are summarised in the [CHANGELOG](CHANGELOG.md).
