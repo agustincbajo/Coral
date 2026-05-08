@@ -172,9 +172,11 @@ source:
 
 Two layers enforce review:
 
-1. **`coral lint --rule unreviewed-distilled`** — surfaces a Critical issue for any page with `reviewed: false`. Critical issues flip `coral lint` to a non-zero exit, so any CI pipeline that runs lint will fail until the page is reviewed.
+1. **`coral lint --rule unreviewed-distilled`** — surfaces a Critical issue for any page that has `reviewed: false` **and** a populated `source.runner` field. Critical issues flip `coral lint` to a non-zero exit, so any CI pipeline that runs lint will fail until the page is reviewed.
 
-2. **Pre-commit hook** — the bundled `template/hooks/pre-commit.sh` runs `coral lint` against staged pages and refuses the commit if a `reviewed: false` page is staged. If you bypass with `git commit --no-verify` (please don't), CI will catch it.
+   The check is qualified: it only fires for pages whose `source.runner` field names an LLM provider (e.g. `claude-sonnet-4-5`, `gemini-pro`). Hand-authored drafts (no `source` block, or `source.runner: ""`) can use `reviewed: false` freely as a workflow signal — the security boundary is "LLM-generated content must be human-curated before commit", not "drafts must be final" (added in v0.20.1, audit cycle 4 H2).
+
+2. **Pre-commit hook** — the bundled `template/hooks/pre-commit.sh` runs `coral lint` against staged pages and refuses the commit if a `reviewed: false` distilled page is staged. If you bypass with `git commit --no-verify` (please don't), CI will catch it.
 
 Reviewers flip the flag manually:
 

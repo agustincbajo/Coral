@@ -9,6 +9,8 @@
 //! Future shared bits (config resolution, telemetry, error context)
 //! land here.
 
+pub mod untrusted_fence;
+
 use anyhow::{Context, Result};
 use coral_core::project::Project;
 use std::path::{Path, PathBuf};

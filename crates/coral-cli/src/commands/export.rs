@@ -220,14 +220,34 @@ fn render_html(pages: &[Page]) -> String {
     opts.insert(Options::ENABLE_STRIKETHROUGH);
     opts.insert(Options::ENABLE_TASKLISTS);
 
+    // v0.20.1 cycle-4 audit C2: filter out pages whose slug isn't a
+    // safe identifier BEFORE building any HTML. The slug ends up in
+    // both `id="..."` attributes and `<h1>` text in the single-bundle
+    // export — even with `html_escape`, an `id` attribute has no
+    // escape grammar by spec, so the only safe path is a strict
+    // allowlist (the same one already used by `render_html_multi`).
+    // A page with `slug: x"><script>alert(1)</script>` would otherwise
+    // produce live XSS in the exported single-file HTML bundle.
+    let safe_pages: Vec<&Page> = pages
+        .iter()
+        .filter(|p| {
+            if coral_core::slug::is_safe_filename_slug(&p.frontmatter.slug) {
+                true
+            } else {
+                tracing::warn!(slug = %p.frontmatter.slug, "skipping export: unsafe slug");
+                false
+            }
+        })
+        .collect();
+
     // Group pages by type for the sidebar TOC.
     let mut by_type: std::collections::BTreeMap<&str, Vec<&Page>> =
         std::collections::BTreeMap::new();
-    for p in pages {
+    for p in &safe_pages {
         by_type
             .entry(page_type_name(&p.frontmatter))
             .or_default()
-            .push(p);
+            .push(*p);
     }
 
     let mut toc = String::from("<nav class=\"toc\">\n<h2>Pages</h2>\n");
@@ -247,7 +267,7 @@ fn render_html(pages: &[Page]) -> String {
     toc.push_str("</nav>\n");
 
     let mut sections = String::new();
-    for p in pages {
+    for p in &safe_pages {
         let translated = translate_wikilinks_to_anchors(&p.body);
         let mut html_body = String::new();
         // v0.19.8 #30 audit-gap conversion: pulldown-cmark passes raw
@@ -286,7 +306,7 @@ fn render_html(pages: &[Page]) -> String {
 </body>\n\
 </html>\n",
         css = HTML_CSS,
-        count = pages.len(),
+        count = safe_pages.len(),
         toc = toc,
         sections = sections,
     )
@@ -363,11 +383,30 @@ pub(crate) fn render_html_multi(pages: &[Page], out_dir: &Path) -> Result<usize>
     opts.insert(Options::ENABLE_STRIKETHROUGH);
     opts.insert(Options::ENABLE_TASKLISTS);
 
+    // v0.20.1 cycle-4 audit C3: filter unsafe slugs BEFORE building
+    // the TOC. Pre-fix, the TOC builder iterated `pages` directly,
+    // baking unsafe slugs into `index.html` even though the per-page
+    // write (line ~446) skipped them — leaving live XSS in the index
+    // even though the per-page file was never created. The filter is
+    // hoisted here so TOC and disk stay consistent: both skip the
+    // unsafe page.
+    let safe_pages: Vec<&Page> = pages
+        .iter()
+        .filter(|p| {
+            if coral_core::slug::is_safe_filename_slug(&p.frontmatter.slug) {
+                true
+            } else {
+                tracing::warn!(slug = %p.frontmatter.slug, "skipping export: unsafe slug");
+                false
+            }
+        })
+        .collect();
+
     // Build a slug -> type lookup so wikilinks resolve to the correct
     // `<type>/<slug>.html` file across pages.
     let mut slug_to_type: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
-    for p in pages {
+    for p in &safe_pages {
         slug_to_type.insert(
             p.frontmatter.slug.clone(),
             page_type_name(&p.frontmatter).to_string(),
@@ -377,11 +416,11 @@ pub(crate) fn render_html_multi(pages: &[Page], out_dir: &Path) -> Result<usize>
     // Group pages by type for the TOC.
     let mut by_type: std::collections::BTreeMap<&str, Vec<&Page>> =
         std::collections::BTreeMap::new();
-    for p in pages {
+    for p in &safe_pages {
         by_type
             .entry(page_type_name(&p.frontmatter))
             .or_default()
-            .push(p);
+            .push(*p);
     }
 
     let mut files_written = 0usize;
@@ -427,7 +466,7 @@ pub(crate) fn render_html_multi(pages: &[Page], out_dir: &Path) -> Result<usize>
   <main>\n{toc}    <article>\n      <p>Browse pages in the sidebar.</p>\n    </article>\n  </main>\n\
 </body>\n\
 </html>\n",
-        count = pages.len(),
+        count = safe_pages.len(),
         toc = toc_html,
     );
     let index_path = out_dir.join("index.html");
@@ -435,18 +474,12 @@ pub(crate) fn render_html_multi(pages: &[Page], out_dir: &Path) -> Result<usize>
         .with_context(|| format!("writing {}", index_path.display()))?;
     files_written += 1;
 
-    // 3) one file per page under <type>/<slug>.html
-    for p in pages {
+    // 3) one file per page under <type>/<slug>.html. The slug
+    // safety check already happened above (see audit C3 comment) —
+    // `safe_pages` is guaranteed not to contain unsafe slugs.
+    for p in &safe_pages {
         let ty = page_type_name(&p.frontmatter);
         let slug = &p.frontmatter.slug;
-        // v0.19.5 audit C5: refuse to materialize a page whose
-        // frontmatter slug isn't safe for direct path interpolation.
-        // Without this guard, a poisoned `slug: ../../etc/passwd`
-        // would escape `out_dir` on `coral export-multi`.
-        if !coral_core::slug::is_safe_filename_slug(slug) {
-            tracing::warn!(slug = %slug, "skipping export: unsafe slug");
-            continue;
-        }
         let type_dir = out_dir.join(ty);
         std::fs::create_dir_all(&type_dir)
             .with_context(|| format!("creating {}", type_dir.display()))?;
@@ -929,15 +962,26 @@ mod tests {
         assert!(html.contains("<h1>Order</h1>") || html.contains("<h1>Outbox</h1>"));
     }
 
+    /// v0.20.1 cycle-4 audit C2 changed this test's contract: a slug
+    /// with an ampersand fails `is_safe_filename_slug` and is now
+    /// filtered out entirely (rather than relying on `html_escape` to
+    /// neutralize it). The strict allowlist is the right primitive
+    /// for HTML `id="..."` attributes, which have no escape grammar.
     #[test]
-    fn html_render_escapes_special_chars_in_slug_and_meta() {
-        let pages = vec![page("a&b", PageType::Module, "body")];
+    fn html_render_filters_unsafe_slug_chars_pre_render() {
+        let pages = vec![
+            page("safe", PageType::Module, "body"),
+            page("a&b", PageType::Module, "body"),
+        ];
         let html = render_html(&pages);
-        assert!(html.contains("a&amp;b"));
+        // Unsafe slug never lands in the output — neither raw nor escaped.
+        assert!(!html.contains("a&b"), "raw unsafe slug must not appear");
         assert!(
-            !html.contains(">a&b<"),
-            "raw ampersand in slug must be escaped"
+            !html.contains("a&amp;b"),
+            "even escaped, unsafe slugs are filtered out by C2 contract: {html}"
         );
+        // Safe slug went through normally.
+        assert!(html.contains("<section id=\"safe\""));
     }
 
     #[test]
@@ -991,6 +1035,72 @@ mod tests {
         assert!(!out_dir.join("module/../escape.html").exists());
         // Only the legit page (1) + index.html + style.css = 3 files.
         assert_eq!(written, 3, "unsafe slug page must be skipped");
+    }
+
+    /// v0.20.1 cycle-4 audit C2: the single-bundle HTML export
+    /// (`render_html`) interpolates the slug into both `id="…"`
+    /// attributes and `<h1>` text. Pre-fix, an adversarial slug
+    /// like `x"><script>alert(1)</script><span x="` produced a live
+    /// XSS in the exported HTML. The fix filters such slugs
+    /// out via `is_safe_filename_slug` before any HTML is built.
+    #[test]
+    fn render_html_skips_unsafe_slug_for_xss_in_id_attribute() {
+        let evil_slug = "x\"><script>alert(1)</script><span x=\"";
+        let pages = vec![
+            page("legit", PageType::Module, "# Legit"),
+            page(evil_slug, PageType::Module, "# Evil"),
+        ];
+        let html = render_html(&pages);
+        // Defensive: no live <script> tags in the output, period.
+        assert!(
+            !html.contains("<script>"),
+            "render_html must not emit raw <script> tags: {html}"
+        );
+        assert!(
+            !html.contains("alert(1)"),
+            "render_html must not emit unescaped slug payload: {html}"
+        );
+        // The legit page still made it.
+        assert!(html.contains("<section id=\"legit\""));
+        // Page count in the header reflects the filter.
+        assert!(
+            html.contains("1 pages"),
+            "count should be 1 (only safe page)"
+        );
+    }
+
+    /// v0.20.1 cycle-4 audit C3: the multi-page HTML export's
+    /// `index.html` (TOC) used to interpolate raw slugs into `href`
+    /// attributes BEFORE the per-page slug-safety filter ran. The
+    /// per-page write would skip the unsafe page, but the TOC
+    /// already contained the live `<script>`. Hoisted filter ensures
+    /// TOC and disk are consistent.
+    #[test]
+    fn render_html_multi_skips_unsafe_slug_in_toc() {
+        let evil_slug = "x\"><script>alert(1)</script><span x=\"";
+        let pages = vec![
+            page("legit", PageType::Module, "# Legit"),
+            page(evil_slug, PageType::Module, "# Evil"),
+        ];
+        let tmp = tempfile::TempDir::new().unwrap();
+        let out_dir = tmp.path().join("public");
+        let _ = render_html_multi(&pages, &out_dir).unwrap();
+        let idx = std::fs::read_to_string(out_dir.join("index.html")).unwrap();
+        assert!(
+            !idx.contains("<script>"),
+            "index.html TOC must not contain raw <script>: {idx}"
+        );
+        assert!(
+            !idx.contains("alert(1)"),
+            "index.html TOC must not contain raw alert(1): {idx}"
+        );
+        // The legit page still appears.
+        assert!(idx.contains("href=\"module/legit.html\""));
+        // Page count in the index reflects the filter (1, not 2).
+        assert!(
+            idx.contains("1 pages"),
+            "count should be 1 (only safe page)"
+        );
     }
 
     #[test]

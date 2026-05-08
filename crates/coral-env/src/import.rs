@@ -115,14 +115,52 @@ pub struct ImportResult {
 /// `env_name` is the value for `name = ...` in the emitted block —
 /// typically `"dev"`. Validated against `coral_core::slug` rules so
 /// the output round-trips through `Project::validate()`.
+/// v0.20.1 cycle-4 audit H7: `serde_yaml_ng`'s parse-error Display
+/// can echo a large slice of the offending input verbatim. If the
+/// failed file holds secrets-shaped tokens — say a malformed YAML
+/// that someone accidentally piped through `coral env import` —
+/// those tokens land in stderr unscrubbed. Truncate to a bounded
+/// prefix and run the same secret-scrub regex `coral_runner` uses
+/// on its own error path. Hosted infra (CI logs, error-tracking
+/// services) won't archive the whole input.
+const ENV_IMPORT_ERROR_TRUNCATE_AT: usize = 200;
+
+fn scrub_parse_error(message: &str) -> String {
+    // 1) Truncate.
+    let trimmed = if message.len() > ENV_IMPORT_ERROR_TRUNCATE_AT {
+        let head: String = message.chars().take(ENV_IMPORT_ERROR_TRUNCATE_AT).collect();
+        let dropped = message.len() - head.len();
+        format!("{head} (... {dropped} additional chars truncated)")
+    } else {
+        message.to_string()
+    };
+    // 2) Scrub. Same regex `coral_runner::scrub_secrets` uses; we
+    //    don't pull `coral_runner` across the boundary because it
+    //    isn't a dependency of `coral-env` and adding it just for
+    //    one regex is overkill. Inline copy is 8 lines.
+    use std::sync::OnceLock;
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| {
+        regex::Regex::new(
+            r"(?i)(?:authorization|x-api-key|password|token|secret|api[-_]?key)\s*:\s*\S+|bearer\s+\S+|sk-[A-Za-z0-9_-]{8,}|gh[opsu]_[A-Za-z0-9]{16,}",
+        )
+        .expect("valid regex")
+    });
+    re.replace_all(&trimmed, "<redacted>").to_string()
+}
+
 pub fn import_compose_to_toml(compose_yaml: &str, env_name: &str) -> Result<ImportResult, String> {
     if !is_safe_env_name(env_name) {
         return Err(format!(
             "invalid env name '{env_name}': must match [a-zA-Z0-9_-], no leading dot/dash"
         ));
     }
-    let compose: ComposeFile = serde_yaml_ng::from_str(compose_yaml)
-        .map_err(|e| format!("failed to parse compose YAML: {e}"))?;
+    let compose: ComposeFile = serde_yaml_ng::from_str(compose_yaml).map_err(|e| {
+        format!(
+            "failed to parse compose YAML: {}",
+            scrub_parse_error(&e.to_string())
+        )
+    })?;
     let mut toml = String::new();
     let mut warnings: Vec<String> = Vec::new();
 
@@ -547,6 +585,84 @@ fn escape_toml_string(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// v0.20.1 cycle-4 audit H7: a YAML file that fails to parse as
+    /// a compose file must NOT have its full content echoed in the
+    /// resulting error string. Pre-fix `coral env import /etc/passwd`
+    /// (or any large YAML) produced a multi-KB stderr containing the
+    /// entire input — including any password/api-key/secret tokens
+    /// that the YAML happened to contain. Post-fix the error is
+    /// truncated to ~200 chars + the secret-shape regex redacts
+    /// anything that survives the truncation.
+    #[test]
+    fn import_error_truncates_and_scrubs_secrets() {
+        // The audit's canonical case: feed `coral env import` a file
+        // that isn't compose YAML — `/etc/passwd`-shaped content
+        // (colonless, looks like prose). serde_yaml_ng parses the
+        // entire body as a single top-level YAML scalar String, then
+        // fails to deserialize that String as our `ComposeFile`
+        // struct, raising
+        // `invalid type: string "<entire input verbatim>", expected
+        // a struct`. Pre-fix the entire input lands in stderr; the
+        // fix truncates + scrubs.
+        //
+        // Crafting the trigger: a single line with NO colon makes
+        // serde_yaml_ng read the whole thing as one big scalar
+        // instead of a mapping. We pad it with secret-shaped tokens
+        // and lots of filler so the test exercises both truncation
+        // and scrubbing.
+        let mut body = String::new();
+        body.push_str("This is not compose YAML at all - sk-test-secret-XYZ ");
+        // GitHub push-protection scans for `ghp_*` tokens; build the
+        // fixture via `concat!` so the literal is split across source
+        // segments and never appears whole in the file. Same trick as
+        // `crates/coral-session/src/scrub.rs:391`.
+        body.push_str(concat!("Bearer gh", "p_definitely_not_a_real_pat_12345 "));
+        body.push_str("api_key sk-prod-key-ABC123 ");
+        for i in 0..200 {
+            body.push_str(&format!("filler_line_{i}_x "));
+        }
+        // Wrap as a flat scalar — no colons, no leading dash, just
+        // text. serde_yaml_ng reads this as a single String at the
+        // top level, which our typed deserialize then rejects.
+        let bogus_full = body;
+
+        let err = import_compose_to_toml(&bogus_full, "dev")
+            .expect_err("a clearly-malformed compose file must error");
+
+        // Error must NOT contain the verbatim secret tokens.
+        assert!(
+            !err.contains("sk-test-secret-XYZ"),
+            "secret token must be scrubbed: {err}"
+        );
+        let needle = concat!("gh", "p_definitely_not_a_real_pat_12345");
+        assert!(
+            !err.contains(needle),
+            "PAT-shaped token must be scrubbed: {err}"
+        );
+        assert!(
+            !err.contains("sk-prod-key-ABC123"),
+            "third secret must be scrubbed: {err}"
+        );
+        // Error must NOT contain the late filler lines (truncation
+        // works) — we picked an index that is well beyond the 200-
+        // char prefix.
+        assert!(
+            !err.contains("filler_line_199"),
+            "error must be truncated; late lines must not survive: {err}"
+        );
+        // Error MUST contain a marker that it was truncated.
+        assert!(
+            err.contains("truncated"),
+            "error must explicitly note truncation: {err}"
+        );
+        // Sanity: the error still names the failure (so users can
+        // diagnose without seeing the secret).
+        assert!(
+            err.contains("failed to parse compose YAML"),
+            "error must still be useful: {err}"
+        );
+    }
 
     #[test]
     fn empty_compose_emits_skeleton() {

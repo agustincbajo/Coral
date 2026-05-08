@@ -75,16 +75,65 @@ pub fn forget_session(opts: &ForgetOptions) -> SessionResult<()> {
                 }
             })?;
         }
-        // Delete distilled output if present.
-        let distilled_path = sessions_dir
-            .join("distilled")
-            .join(format!("{}.md", entry.session_id));
-        if distilled_path.exists() {
-            std::fs::remove_file(&distilled_path).map_err(|source| {
-                coral_core::error::CoralError::Io {
-                    path: distilled_path.clone(),
-                    source,
+        // v0.20.1 cycle-4 audit H1: delete every `.md` recorded in
+        // `entry.distilled_outputs` from `.coral/sessions/distilled/`
+        // and from `.wiki/synthesis/` (where `distill --apply`
+        // mirrors them). Pre-fix `forget` constructed the path from
+        // `<session_id>.md` but distill writes by `<finding.slug>.md`
+        // — so distilled outputs got orphaned on every forget.
+        //
+        // BC: if `distilled_outputs` is empty BUT `distilled` is true,
+        // the session predates v0.20.1's tracking. We can't safely
+        // sweep — slug-named files might belong to other sessions —
+        // so we warn and leave the cleanup to the user.
+        let distilled_dir = sessions_dir.join("distilled");
+        let wiki_synthesis_dir = opts.project_root.join(".wiki").join("synthesis");
+        if entry.distilled_outputs.is_empty() && entry.distilled {
+            tracing::warn!(
+                session_id = %entry.session_id,
+                "session predates v0.20.1 distill-tracking; sweep \
+                 .coral/sessions/distilled/ and .wiki/synthesis/ manually \
+                 if you want orphan cleanup"
+            );
+        }
+        for basename in &entry.distilled_outputs {
+            // Defense-in-depth: refuse anything that looks like a
+            // path-traversal segment. Distill only writes
+            // `<safe_slug>.md` so this should never trigger, but a
+            // tampered `index.json` could try to point us at
+            // `../../etc/passwd`. We just skip with a warn.
+            if basename.contains('/')
+                || basename.contains('\\')
+                || basename.contains("..")
+                || basename.starts_with('.')
+            {
+                tracing::warn!(
+                    basename = %basename,
+                    "skipping suspicious distilled output filename"
+                );
+                continue;
+            }
+            for parent in [&distilled_dir, &wiki_synthesis_dir] {
+                let p = parent.join(basename);
+                if p.exists() {
+                    std::fs::remove_file(&p).map_err(|source| {
+                        coral_core::error::CoralError::Io {
+                            path: p.clone(),
+                            source,
+                        }
+                    })?;
                 }
+            }
+        }
+        // Legacy path: also try `<session_id>.md` (matches what
+        // pre-v0.20.1 distill would have written had the path been
+        // wired correctly — this is a no-op in practice but keeps
+        // `forget` idempotent for any user who hand-rolled that name).
+        let legacy = distilled_dir.join(format!("{}.md", entry.session_id));
+        if legacy.exists() {
+            std::fs::remove_file(&legacy).map_err(|source| coral_core::error::CoralError::Io {
+                path: legacy.clone(),
+                source,
             })?;
         }
 
@@ -155,6 +204,7 @@ mod tests {
             message_count: 1,
             redaction_count: 0,
             distilled: false,
+            distilled_outputs: Vec::new(),
         }
     }
 
@@ -200,6 +250,106 @@ mod tests {
         };
         let err = forget_session(&opts).unwrap_err();
         assert!(matches!(err, SessionError::InvalidInput(_)));
+    }
+
+    /// v0.20.1 cycle-4 audit H1: the session forget path used to
+    /// look for `.coral/sessions/distilled/<session-id>.md` but
+    /// distill writes by `<finding.slug>.md`. Outputs got orphaned
+    /// on every forget. This test wires the full distill -> forget
+    /// cycle (with mock runner) and asserts every artifact is
+    /// removed.
+    #[test]
+    fn forget_removes_slug_named_distilled_outputs_after_real_distill() {
+        use crate::distill::{DistillOptions, distill_session};
+        use coral_runner::MockRunner;
+
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        // Seed an index with a single session entry plus a captured
+        // transcript on disk.
+        let session_id = "deadbeef000111";
+        let captured_path = root
+            .join(".coral/sessions")
+            .join(format!("{session_id}.jsonl"));
+        std::fs::create_dir_all(captured_path.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(root.join(".wiki/synthesis")).unwrap();
+        let transcript = "{\"type\":\"summary\",\"summary\":\"x\",\"leafUuid\":\"u\"}\n\
+{\"type\":\"user\",\"sessionId\":\"deadbeef000111\",\"timestamp\":\"2026-05-08T10:00:00Z\",\
+\"message\":{\"role\":\"user\",\"content\":\"hello\"}}\n\
+{\"type\":\"assistant\",\"sessionId\":\"deadbeef000111\",\"timestamp\":\"2026-05-08T10:00:01Z\",\
+\"message\":{\"role\":\"assistant\",\"content\":\"hi\"}}\n";
+        std::fs::write(&captured_path, transcript).unwrap();
+        let entry = IndexEntry {
+            session_id: session_id.into(),
+            source: CaptureSource::ClaudeCode,
+            captured_at: chrono::Utc.with_ymd_and_hms(2026, 5, 8, 10, 0, 0).unwrap(),
+            captured_path: captured_path.clone(),
+            message_count: 2,
+            redaction_count: 0,
+            distilled: false,
+            distilled_outputs: Vec::new(),
+        };
+        let idx = SessionIndex {
+            sessions: vec![entry],
+        };
+        write_index(&root.join(".coral/sessions/index.json"), &idx).unwrap();
+
+        // Distill with a mock runner that emits two findings whose
+        // slugs differ from the session_id. The runner output shape
+        // is the YAML envelope `findings: [...]` that
+        // `parse_findings` expects.
+        let runner = MockRunner::new();
+        runner.push_ok(
+            "findings:\n  - slug: finding-alpha\n    title: Alpha thing\n    body: |\n      A real-feeling body that satisfies the body trim check for finding alpha.\n    sources: []\n  - slug: finding-beta\n    title: Beta thing\n    body: |\n      A real-feeling body that satisfies the body trim check for finding beta.\n    sources: []\n",
+        );
+        let opts = DistillOptions {
+            project_root: root.to_path_buf(),
+            session_id: session_id.into(),
+            apply: true,
+            model: None,
+        };
+        let outcome = distill_session(&opts, &runner, "mock").expect("distill ok");
+        assert_eq!(outcome.findings.len(), 2);
+
+        // Both files exist under both locations.
+        assert!(
+            root.join(".coral/sessions/distilled/finding-alpha.md")
+                .exists()
+        );
+        assert!(
+            root.join(".coral/sessions/distilled/finding-beta.md")
+                .exists()
+        );
+        assert!(root.join(".wiki/synthesis/finding-alpha.md").exists());
+        assert!(root.join(".wiki/synthesis/finding-beta.md").exists());
+
+        // Now forget — every artifact must be gone.
+        let forget_opts = ForgetOptions {
+            project_root: root.to_path_buf(),
+            session_id: session_id.into(),
+        };
+        forget_session(&forget_opts).unwrap();
+        assert!(!captured_path.exists(), "raw transcript should be gone");
+        assert!(
+            !root
+                .join(".coral/sessions/distilled/finding-alpha.md")
+                .exists(),
+            "distilled finding-alpha.md should be gone"
+        );
+        assert!(
+            !root
+                .join(".coral/sessions/distilled/finding-beta.md")
+                .exists(),
+            "distilled finding-beta.md should be gone"
+        );
+        assert!(
+            !root.join(".wiki/synthesis/finding-alpha.md").exists(),
+            ".wiki/synthesis/finding-alpha.md should be gone"
+        );
+        assert!(
+            !root.join(".wiki/synthesis/finding-beta.md").exists(),
+            ".wiki/synthesis/finding-beta.md should be gone"
+        );
     }
 
     #[test]

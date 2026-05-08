@@ -71,4 +71,12 @@ EOF
     exit 1
 fi
 
+# v0.20.1 cycle-4 audit H4: also run the prompt-injection scan on
+# the current wiki. This is a Warning-level rule, so it doesn't
+# block the commit by itself, but emitting a visible warning gives
+# reviewers one more chance to catch a poisoned distill --apply
+# before it reaches `coral query` or `coral mcp serve`.
+"${CORAL[@]}" lint --rule injection-suspected --severity warning \
+    --format markdown 2>/dev/null || true
+
 exit 0

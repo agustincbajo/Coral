@@ -98,10 +98,12 @@ pub fn read_pages(root: impl AsRef<Path>) -> Result<Vec<Page>> {
 
     let cache_in = WalkCache::load(root).unwrap_or_default();
 
-    // Build (page, mtime, rel_path) tuples in parallel. The cache fast-path
-    // skips YAML deserialization when the mtime matches; otherwise we fall
-    // back to a full Page::from_content parse.
-    let parsed: Vec<Option<(Page, i64, String)>> = paths
+    // Build (page, mtime, rel_path, content_hash) tuples in parallel. The
+    // cache fast-path skips YAML deserialization when the mtime AND content
+    // hash both match; otherwise we fall back to a full Page::from_content
+    // parse. The content hash defends against cache poisoning — see
+    // C1 in the v0.20.1 cycle-4 audit fixes.
+    let parsed: Vec<Option<(Page, i64, String, String)>> = paths
         .par_iter()
         .map(|p| {
             let rel = match p.strip_prefix(root) {
@@ -131,9 +133,19 @@ pub fn read_pages(root: impl AsRef<Path>) -> Result<Vec<Page>> {
                     return None;
                 }
             };
-            // Cache fast-path: same mtime → reuse parsed frontmatter, only re-extract body.
+            // v0.20.1 cycle-4 audit C1: hash the on-disk content and
+            // pin the cache hit to (rel_path, mtime_secs, content_hash).
+            // Without this, a poisoned `.coral-cache.json` could
+            // short-circuit the `unreviewed-distilled` lint gate by
+            // returning a `reviewed: true` frontmatter for a file whose
+            // disk content actually says `reviewed: false`.
+            let hash = crate::cache::WalkCache::hash_content(&content);
+            // Cache fast-path: same mtime AND same hash → reuse parsed
+            // frontmatter, only re-extract body. The hash check makes
+            // the cache tamper-resistant; the mtime check still
+            // shaves ~one comparison on the trivial-no-change path.
             if let Some(mt) = mtime
-                && let Some(fm) = cache_in.get(&rel, mt)
+                && let Some(fm) = cache_in.get(&rel, mt, &hash)
             {
                 let body = body_after_frontmatter(&content);
                 let page = Page {
@@ -141,11 +153,11 @@ pub fn read_pages(root: impl AsRef<Path>) -> Result<Vec<Page>> {
                     frontmatter: fm.clone(),
                     body,
                 };
-                return Some((page, mt, rel));
+                return Some((page, mt, rel, hash));
             }
             // Slow path: full parse.
             match Page::from_content(&content, p.clone()) {
-                Ok(page) => Some((page, mtime.unwrap_or(0), rel)),
+                Ok(page) => Some((page, mtime.unwrap_or(0), rel, hash)),
                 Err(e) => {
                     tracing::warn!(path = %p.display(), error = %e, "skipping page");
                     None
@@ -154,20 +166,21 @@ pub fn read_pages(root: impl AsRef<Path>) -> Result<Vec<Page>> {
         })
         .collect();
 
-    // Drop the failed entries (None), keep (page, mtime, rel) for cache rebuild.
-    let mut live: Vec<(Page, i64, String)> = parsed.into_iter().flatten().collect();
+    // Drop the failed entries (None), keep (page, mtime, rel, hash) for
+    // cache rebuild.
+    let mut live: Vec<(Page, i64, String, String)> = parsed.into_iter().flatten().collect();
     live.sort_by(|a, b| a.0.path.cmp(&b.0.path));
 
     // Rebuild a fresh cache from live entries; this naturally prunes anything
-    // that disappeared since the last walk, and refreshes mtimes.
+    // that disappeared since the last walk, and refreshes mtimes + hashes.
     let mut cache_out = WalkCache {
         version: WalkCache::SCHEMA_VERSION,
         ..WalkCache::default()
     };
     let mut live_paths: HashSet<String> = HashSet::with_capacity(live.len());
-    for (page, mtime, rel) in &live {
+    for (page, mtime, rel, hash) in &live {
         if *mtime > 0 {
-            cache_out.insert(rel.clone(), *mtime, page.frontmatter.clone());
+            cache_out.insert(rel.clone(), *mtime, hash.clone(), page.frontmatter.clone());
             live_paths.insert(rel.clone());
         }
     }
@@ -177,7 +190,7 @@ pub fn read_pages(root: impl AsRef<Path>) -> Result<Vec<Page>> {
         tracing::warn!(error = %e, "failed to persist .coral-cache.json");
     }
 
-    let pages: Vec<Page> = live.into_iter().map(|(p, _, _)| p).collect();
+    let pages: Vec<Page> = live.into_iter().map(|(p, _, _, _)| p).collect();
     Ok(pages)
 }
 
@@ -320,6 +333,89 @@ mod tests {
         assert_eq!(pages.len(), 2);
         assert_eq!(pages[0].frontmatter.slug, "a");
         assert_eq!(pages[1].frontmatter.slug, "b");
+    }
+
+    /// v0.20.1 cycle-4 audit C1: a poisoned `.coral-cache.json` whose
+    /// frontmatter disagrees with the on-disk content (e.g. `reviewed:
+    /// true` cached for a file whose body actually says `reviewed:
+    /// false`) must NOT short-circuit `read_pages`. The disk wins, and
+    /// the lint gate (`unreviewed-distilled`) sees the truthful state.
+    ///
+    /// Pre-fix this test failed: the cache hit returned the poisoned
+    /// `reviewed: true` frontmatter and the slow-path full parse never
+    /// ran. Post-fix the content-hash check forces a re-parse and the
+    /// disk's `reviewed: false` lands in the returned Page.
+    #[test]
+    fn read_pages_rejects_poisoned_cache_via_hash_check() {
+        use crate::cache::WalkCache;
+        use crate::frontmatter::{Confidence, PageType, Status};
+        use std::collections::BTreeMap;
+        use std::time::SystemTime;
+        let dir = TempDir::new().expect("tempdir");
+        let root = dir.path();
+        // Disk content: an unreviewed distilled page.
+        let body = "---\n\
+slug: poisoned\n\
+type: module\n\
+last_updated_commit: abc\n\
+confidence: 0.5\n\
+status: draft\n\
+reviewed: false\n\
+source:\n  runner: claude-sonnet-4-5\n\
+---\n\nbody\n";
+        let page_path = root.join("modules/poisoned.md");
+        fs::create_dir_all(page_path.parent().unwrap()).unwrap();
+        fs::write(&page_path, body).unwrap();
+
+        // Build a poisoned cache that says `reviewed: true`. We honor
+        // the file's actual mtime so the mtime check would pass — only
+        // the content-hash check stops the poisoning.
+        let mtime = WalkCache::mtime_of(&page_path).expect("mtime");
+        let mut extra = BTreeMap::new();
+        extra.insert("reviewed".into(), serde_yaml_ng::Value::Bool(true));
+        let poisoned_fm = crate::frontmatter::Frontmatter {
+            slug: "poisoned".to_string(),
+            page_type: PageType::Module,
+            last_updated_commit: "abc".to_string(),
+            confidence: Confidence::try_new(0.5).unwrap(),
+            sources: vec![],
+            backlinks: vec![],
+            status: Status::Draft,
+            generated_at: None,
+            extra,
+        };
+        let mut poisoned = WalkCache {
+            version: WalkCache::SCHEMA_VERSION,
+            ..WalkCache::default()
+        };
+        // Use a hash that matches the cache's idea of the body but
+        // NOT the actual disk content — that's the poisoning vector.
+        // (An attacker who can write the cache controls this string.)
+        poisoned.insert("modules/poisoned.md", mtime, "deadbeef", poisoned_fm);
+        poisoned.save(root).expect("save poisoned cache");
+
+        // Sanity: the cache file must exist before the walk so the
+        // fast path is reachable.
+        let cache_file = root.join(WalkCache::FILENAME);
+        assert!(cache_file.exists());
+        // Touch to ensure mtime second is preserved across the test.
+        let _ = SystemTime::now();
+
+        let pages = read_pages(root).expect("read");
+        assert_eq!(pages.len(), 1);
+        let page = &pages[0];
+        // Disk wins: `reviewed: false` from the body, not the
+        // poisoned cache's `true`.
+        let reviewed_flag = page
+            .frontmatter
+            .extra
+            .get("reviewed")
+            .and_then(|v| v.as_bool());
+        assert_eq!(
+            reviewed_flag,
+            Some(false),
+            "poisoned cache must not override on-disk frontmatter; got page.extra.reviewed = {reviewed_flag:?}"
+        );
     }
 
     #[test]

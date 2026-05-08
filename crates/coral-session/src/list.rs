@@ -107,6 +107,7 @@ mod tests {
             message_count: 5,
             redaction_count: 1,
             distilled: false,
+            distilled_outputs: Vec::new(),
         }
     }
 

@@ -5,10 +5,17 @@
 //! Cursor, Continue, Cline, Goose, Codex…) can read Coral's structured
 //! context cross-session.
 //!
-//! v0.19 wave 1 ships the **type model and resource/tool/prompt
-//! catalogs** without the runtime — the actual stdio + Streamable
-//! HTTP/SSE transports come from the official `rmcp = "1.6"` SDK and
-//! land in v0.19 wave 2 once the dep is pinned.
+//! v0.20.0 ships **stdio** as the only supported transport, with
+//! `WikiResourceProvider` + `CoralToolDispatcher` end-to-end (catalogs
+//! advertised; tools `query` / `search` / `find_backlinks` /
+//! `affected_repos` / `verify` reachable in `--read-only` mode; write
+//! tools gated by `--allow-write-tools`). Streamable HTTP/SSE was
+//! deferred during the v0.20.1 cycle-4 audit (H6) — every shipped MCP
+//! client (Claude Desktop, Cursor, Continue, Cline, Goose, OpenCode,
+//! Crush, Codex CLI) speaks stdio, and an inflated docs surface for an
+//! unimplemented transport was deemed worse than the absence of the
+//! feature. HTTP/SSE returns to the roadmap when client demand
+//! materializes; track via the GitHub roadmap.
 //!
 //! Strategic positioning (PRD §3.10): Coral is "the project manifest
 //! for AI-era development", and this crate is what makes it
@@ -27,7 +34,8 @@ pub use tools::{Tool, ToolCatalog, ToolKind};
 use serde::{Deserialize, Serialize};
 
 /// Configuration the CLI wraps when invoking `coral mcp serve`.
-/// Shared between the future stdio and HTTP/SSE transports.
+/// Currently only `stdio` ships; if HTTP/SSE returns to the roadmap
+/// the new variant lands here without a breaking change.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerConfig {
     pub transport: Transport,
@@ -35,14 +43,21 @@ pub struct ServerConfig {
     /// The default-deny stance covers PRD risk #25 (MCP server as
     /// exfiltration vector).
     pub read_only: bool,
+    /// Reserved for a future HTTP/SSE transport (deferred during the
+    /// v0.20.1 cycle-4 audit; see crate docstring). `None` until that
+    /// transport ships; ignored by the stdio path.
     pub port: Option<u16>,
 }
 
+/// Transport variants. v0.20.x ships `Stdio` only; HTTP/SSE was
+/// deferred during the v0.20.1 cycle-4 audit (H6) — see crate
+/// docstring. The enum is intentionally not narrowed to a single
+/// variant so the wire format (`"transport": "stdio"`) stays stable
+/// across the eventual `HttpSse` re-introduction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Transport {
     Stdio,
-    HttpSse,
 }
 
 impl Default for ServerConfig {

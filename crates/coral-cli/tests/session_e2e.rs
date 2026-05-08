@@ -256,6 +256,10 @@ fn lint_rejects_unreviewed_distilled_page_as_critical() {
         .assert()
         .success();
     // Drop a synthesis page with reviewed: false into the wiki.
+    // v0.20.1 cycle-4 audit H2: the `unreviewed-distilled` lint is
+    // qualified — only fires when `reviewed: false` AND `source.runner`
+    // names an LLM provider. So this fixture mirrors what `coral
+    // session distill` actually emits, including the `source` block.
     let synth_dir = proj.path().join(".wiki/synthesis");
     std::fs::create_dir_all(&synth_dir).unwrap();
     std::fs::write(
@@ -269,6 +273,11 @@ status: draft
 sources: []
 backlinks: []
 reviewed: false
+source:
+  runner: "claude-sonnet-4-5"
+  prompt_version: 1
+  session_id: "abc123def456"
+  captured_at: "2026-05-08T10:00:00Z"
 ---
 
 # test

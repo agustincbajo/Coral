@@ -289,8 +289,13 @@ fn run_semantic_analysis(
     let prompt_template =
         super::prompt_loader::load_or_fallback("diff-semantic", DIFF_SEMANTIC_FALLBACK);
     let user = build_semantic_user_prompt(a, b);
+    // v0.20.1 cycle-4 audit H3: append the untrusted-content notice
+    // to the system prompt so the LLM treats fenced page bodies as
+    // data rather than instructions.
+    let mut system = prompt_template.content;
+    system.push_str(super::common::untrusted_fence::UNTRUSTED_CONTENT_NOTICE);
     let prompt = Prompt {
-        system: Some(prompt_template.content),
+        system: Some(system),
         user,
         model: model.map(str::to_string),
         ..Default::default()
@@ -303,19 +308,26 @@ fn run_semantic_analysis(
 
 /// Pure builder for the user-prompt string we send to the runner. Split
 /// out so it can be unit-tested without standing up a runner.
+///
+/// v0.20.1 cycle-4 audit H3: bodies are fenced via
+/// [`crate::commands::common::untrusted_fence::fence_body_annotated`]
+/// so a poisoned body cannot inject instructions into the prompt.
+/// `--semantic` uses the annotated form (vs `query`'s drop form)
+/// because dropping a page would render the diff meaningless.
 fn build_semantic_user_prompt(a: &Page, b: &Page) -> String {
+    use super::common::untrusted_fence::fence_body_annotated;
     format!(
         "Page A — slug: {slug_a}\n\
 type: {type_a}, status: {status_a}, confidence: {conf_a:.2}\n\
 \n\
-{body_a}\n\
+{fenced_a}\n\
 \n\
 ---\n\
 \n\
 Page B — slug: {slug_b}\n\
 type: {type_b}, status: {status_b}, confidence: {conf_b:.2}\n\
 \n\
-{body_b}\n\
+{fenced_b}\n\
 \n\
 ---\n\
 \n\
@@ -324,12 +336,12 @@ Analyze.",
         type_a = format!("{:?}", a.frontmatter.page_type).to_lowercase(),
         status_a = format!("{:?}", a.frontmatter.status).to_lowercase(),
         conf_a = a.frontmatter.confidence.as_f64(),
-        body_a = a.body,
+        fenced_a = fence_body_annotated(a),
         slug_b = b.frontmatter.slug,
         type_b = format!("{:?}", b.frontmatter.page_type).to_lowercase(),
         status_b = format!("{:?}", b.frontmatter.status).to_lowercase(),
         conf_b = b.frontmatter.confidence.as_f64(),
-        body_b = b.body,
+        fenced_b = fence_body_annotated(b),
     )
 }
 

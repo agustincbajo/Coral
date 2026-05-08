@@ -285,9 +285,16 @@ pub fn distill_session(
 
     let captured_at = entry.captured_at.to_rfc3339();
     let mut written: Vec<PathBuf> = Vec::new();
+    // v0.20.1 cycle-4 audit H1: track the basenames of every file we
+    // write under `.coral/sessions/distilled/` so `forget` can clean
+    // them up. Pre-fix the index didn't record per-finding filenames
+    // and `forget` hard-coded `<session_id>.md` (wrong shape) — every
+    // distilled output got orphaned on forget.
+    let mut distilled_basenames: Vec<String> = Vec::new();
     for finding in &findings {
         let page = render_page(finding, runner_name, &entry.session_id, &captured_at);
-        let dest = distilled_dir.join(format!("{}.md", finding.slug));
+        let basename = format!("{}.md", finding.slug);
+        let dest = distilled_dir.join(&basename);
         atomic_write_string(&dest, &page).map_err(|e| match e {
             coral_core::error::CoralError::Io { path, source } => SessionError::Io { path, source },
             other => SessionError::Io {
@@ -296,6 +303,7 @@ pub fn distill_session(
             },
         })?;
         written.push(dest);
+        distilled_basenames.push(basename.clone());
 
         if opts.apply {
             let wiki_synthesis_dir = opts.project_root.join(".wiki").join("synthesis");
@@ -303,7 +311,7 @@ pub fn distill_session(
                 path: wiki_synthesis_dir.clone(),
                 source,
             })?;
-            let wiki_dest = wiki_synthesis_dir.join(format!("{}.md", finding.slug));
+            let wiki_dest = wiki_synthesis_dir.join(&basename);
             atomic_write_string(&wiki_dest, &page).map_err(|e| match e {
                 coral_core::error::CoralError::Io { path, source } => {
                     SessionError::Io { path, source }
@@ -317,12 +325,20 @@ pub fn distill_session(
         }
     }
 
-    // Mark the index entry as distilled.
+    // Mark the index entry as distilled and record the output filenames
+    // so `forget` can clean them up later (audit H1).
     coral_core::atomic::with_exclusive_lock(&index_path, || {
         let mut idx = read_index(&index_path).unwrap_or_default();
         for e in idx.sessions.iter_mut() {
             if e.session_id == entry.session_id {
                 e.distilled = true;
+                // Merge — if `distill` was re-run with different findings,
+                // remembering both lists keeps cleanup conservative.
+                for name in &distilled_basenames {
+                    if !e.distilled_outputs.iter().any(|n| n == name) {
+                        e.distilled_outputs.push(name.clone());
+                    }
+                }
             }
         }
         write_index(&index_path, &idx)
@@ -363,6 +379,7 @@ mod tests {
             message_count: 1,
             redaction_count: 0,
             distilled: false,
+            distilled_outputs: Vec::new(),
         };
         let idx = SessionIndex {
             sessions: vec![entry.clone()],

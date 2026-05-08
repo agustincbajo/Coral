@@ -105,6 +105,14 @@ pub struct IndexEntry {
     /// re-parsing every JSONL.
     #[serde(default)]
     pub distilled: bool,
+    /// v0.20.1 cycle-4 audit H1: filenames (not full paths) of every
+    /// `.md` file that `distill` wrote on behalf of this session,
+    /// relative to `.coral/sessions/distilled/`. `forget` walks this
+    /// list to clean up. Sessions captured pre-v0.20.1 have an empty
+    /// vec — `forget` then warns and asks the user to sweep
+    /// `.coral/sessions/distilled/` manually.
+    #[serde(default)]
+    pub distilled_outputs: Vec<String>,
 }
 
 /// On-disk shape of `.coral/sessions/index.json`.
@@ -186,6 +194,7 @@ pub fn capture_from_path(opts: &CaptureOptions) -> SessionResult<CaptureOutcome>
             message_count: parsed.messages.len(),
             redaction_count: redactions.len(),
             distilled: false,
+            distilled_outputs: Vec::new(),
         };
         // Replace any prior entry for the same session_id.
         index.sessions.retain(|e| e.session_id != entry.session_id);

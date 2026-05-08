@@ -439,6 +439,20 @@ pub fn check_unknown_extra_field(pages: &[Page]) -> Vec<LintIssue> {
 /// (`reviewed: "false"`) defensively because the YAML serializer the
 /// distill module uses round-trips a literal `false` but a human
 /// editor might quote the value while reviewing.
+///
+/// **v0.20.1 cycle-4 audit H2 — qualification.** The check is
+/// **only** triggered for pages that BOTH:
+///   1. Carry `reviewed: false` (or string equivalent), AND
+///   2. Carry a populated `source.runner` field naming an LLM
+///      provider (`claude-sonnet-4-5`, `gemini-pro`, etc).
+///
+/// Hand-authored drafts (no `source` block, or a `source` block whose
+/// `runner` is missing/empty) can use `reviewed: false` freely as a
+/// workflow signal — the security boundary is "LLM-generated content
+/// must be human-curated before commit", not "human drafts must be
+/// final". Pre-fix the check fired on case 1/2 from the audit-prompt
+/// matrix, surprising users who used `reviewed: false` to mark their
+/// own drafts.
 pub fn check_unreviewed_distilled(pages: &[Page]) -> Vec<LintIssue> {
     let mut issues = Vec::new();
     for page in pages {
@@ -453,18 +467,47 @@ pub fn check_unreviewed_distilled(pages: &[Page]) -> Vec<LintIssue> {
             }
             _ => false,
         };
-        if needs_review {
-            issues.push(LintIssue {
-                code: LintCode::UnreviewedDistilled,
-                severity: LintSeverity::Critical,
-                page: Some(page.path.clone()),
-                message: format!(
-                    "Page '{}' has `reviewed: false` — flip to `true` after human review before committing.",
-                    page.frontmatter.slug
-                ),
-                context: Some("reviewed".into()),
-            });
+        if !needs_review {
+            continue;
         }
+        // H2: only fire when `source.runner` names a non-empty LLM
+        // provider. The runner is the marker that distinguishes
+        // distilled output from a hand-authored draft.
+        let runner_populated = page
+            .frontmatter
+            .extra
+            .get("source")
+            .and_then(|v| v.as_mapping())
+            .and_then(|m| m.get(serde_yaml_ng::Value::String("runner".into())))
+            .and_then(|v| match v {
+                serde_yaml_ng::Value::String(s) => Some(s.trim()),
+                _ => None,
+            })
+            .map(|s| !s.is_empty())
+            .unwrap_or(false);
+        if !runner_populated {
+            continue;
+        }
+        issues.push(LintIssue {
+            code: LintCode::UnreviewedDistilled,
+            severity: LintSeverity::Critical,
+            page: Some(page.path.clone()),
+            message: format!(
+                "Page '{}' has `reviewed: false` and `source.runner: {}` — flip `reviewed: true` after human review before committing.",
+                page.frontmatter.slug,
+                page.frontmatter
+                    .extra
+                    .get("source")
+                    .and_then(|v| v.as_mapping())
+                    .and_then(|m| m.get(serde_yaml_ng::Value::String("runner".into())))
+                    .and_then(|v| match v {
+                        serde_yaml_ng::Value::String(s) => Some(s.as_str()),
+                        _ => None,
+                    })
+                    .unwrap_or("?"),
+            ),
+            context: Some("reviewed".into()),
+        });
     }
     issues
 }
@@ -1441,18 +1484,31 @@ mod tests {
         );
     }
 
-    // --- check_unreviewed_distilled (v0.20.0) ---------------------------
+    // --- check_unreviewed_distilled (v0.20.0; v0.20.1 H2 qualifier) -----
 
-    /// `reviewed: false` (YAML boolean) lights up Critical so the
-    /// pre-commit hook blocks the commit.
-    #[test]
-    fn unreviewed_distilled_bool_false_is_critical() {
+    /// Helper: build a Synthesis page with the given `reviewed` value
+    /// and (optional) `source.runner` populated. The runner field
+    /// distinguishes distilled output from a hand-authored draft —
+    /// see the v0.20.1 H2 qualifier.
+    fn mk_distilled_page(slug: &str, reviewed: serde_yaml_ng::Value, runner: Option<&str>) -> Page {
         let mut extra = BTreeMap::new();
-        extra.insert("reviewed".into(), serde_yaml_ng::Value::Bool(false));
-        let page = Page {
-            path: PathBuf::from(".wiki/synthesis/foo.md"),
+        extra.insert("reviewed".into(), reviewed);
+        if let Some(r) = runner {
+            let mut src = serde_yaml_ng::Mapping::new();
+            src.insert(
+                serde_yaml_ng::Value::String("runner".into()),
+                serde_yaml_ng::Value::String(r.into()),
+            );
+            src.insert(
+                serde_yaml_ng::Value::String("prompt_version".into()),
+                serde_yaml_ng::Value::Number(1.into()),
+            );
+            extra.insert("source".into(), serde_yaml_ng::Value::Mapping(src));
+        }
+        Page {
+            path: PathBuf::from(format!(".wiki/synthesis/{slug}.md")),
             frontmatter: Frontmatter {
-                slug: "foo".into(),
+                slug: slug.into(),
                 page_type: PageType::Synthesis,
                 last_updated_commit: "abc".into(),
                 confidence: Confidence::try_new(0.4).unwrap(),
@@ -1463,62 +1519,48 @@ mod tests {
                 extra,
             },
             body: String::new(),
-        };
+        }
+    }
+
+    /// `reviewed: false` AND `source.runner` populated: classic
+    /// distill output that hasn't been human-curated yet → Critical.
+    #[test]
+    fn unreviewed_distilled_bool_false_with_runner_is_critical() {
+        let page = mk_distilled_page(
+            "foo",
+            serde_yaml_ng::Value::Bool(false),
+            Some("claude-sonnet-4-5"),
+        );
         let issues = check_unreviewed_distilled(&[page]);
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].code, LintCode::UnreviewedDistilled);
         assert_eq!(issues[0].severity, LintSeverity::Critical);
         assert_eq!(issues[0].context.as_deref(), Some("reviewed"));
+        assert!(
+            issues[0].message.contains("claude-sonnet-4-5"),
+            "message should mention the runner: {}",
+            issues[0].message
+        );
     }
 
-    /// `reviewed: true` (the success case) emits no issue.
+    /// `reviewed: true` (the success case) emits no issue, even with
+    /// runner populated.
     #[test]
     fn unreviewed_distilled_bool_true_no_issue() {
-        let mut extra = BTreeMap::new();
-        extra.insert("reviewed".into(), serde_yaml_ng::Value::Bool(true));
-        let page = Page {
-            path: PathBuf::from(".wiki/synthesis/foo.md"),
-            frontmatter: Frontmatter {
-                slug: "foo".into(),
-                page_type: PageType::Synthesis,
-                last_updated_commit: "abc".into(),
-                confidence: Confidence::try_new(0.8).unwrap(),
-                sources: vec![],
-                backlinks: vec![],
-                status: Status::Reviewed,
-                generated_at: None,
-                extra,
-            },
-            body: String::new(),
-        };
+        let page = mk_distilled_page("foo", serde_yaml_ng::Value::Bool(true), Some("claude"));
         let issues = check_unreviewed_distilled(&[page]);
         assert!(issues.is_empty());
     }
 
-    /// String form `reviewed: "false"` also fires (defensive against
-    /// hand-edits that quote the value).
+    /// String form `reviewed: "false"` with populated runner also
+    /// fires (defensive against hand-edits that quote the value).
     #[test]
-    fn unreviewed_distilled_string_false_also_critical() {
-        let mut extra = BTreeMap::new();
-        extra.insert(
-            "reviewed".into(),
+    fn unreviewed_distilled_string_false_with_runner_critical() {
+        let page = mk_distilled_page(
+            "foo",
             serde_yaml_ng::Value::String("false".into()),
+            Some("gemini-pro"),
         );
-        let page = Page {
-            path: PathBuf::from(".wiki/synthesis/foo.md"),
-            frontmatter: Frontmatter {
-                slug: "foo".into(),
-                page_type: PageType::Synthesis,
-                last_updated_commit: "abc".into(),
-                confidence: Confidence::try_new(0.4).unwrap(),
-                sources: vec![],
-                backlinks: vec![],
-                status: Status::Draft,
-                generated_at: None,
-                extra,
-            },
-            body: String::new(),
-        };
         let issues = check_unreviewed_distilled(&[page]);
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].severity, LintSeverity::Critical);
@@ -1538,6 +1580,64 @@ mod tests {
         )];
         let issues = check_unreviewed_distilled(&pages);
         assert!(issues.is_empty());
+    }
+
+    // --- v0.20.1 cycle-4 audit H2 qualifier matrix ---------------------
+    //
+    // The audit matrix:
+    //   1. reviewed: false, source: {runner: "claude-..."}  → fires Critical.
+    //   2. reviewed: false, source: {runner: ""}            → does NOT fire.
+    //   3. reviewed: false, no `source` field               → does NOT fire.
+    //   4. reviewed: true,  source: {runner: "..."}         → does NOT fire.
+
+    /// Matrix case 1: distilled-shaped page → fires Critical.
+    #[test]
+    fn h2_matrix_case_1_distilled_unreviewed_fires() {
+        let page = mk_distilled_page(
+            "case1",
+            serde_yaml_ng::Value::Bool(false),
+            Some("claude-sonnet-4-5"),
+        );
+        let issues = check_unreviewed_distilled(&[page]);
+        assert_eq!(issues.len(), 1, "case 1 must fire");
+    }
+
+    /// Matrix case 2: empty-string runner → does NOT fire.
+    /// A page that says `source.runner: ""` is malformed but it's
+    /// not LLM output — the lint stays out of the way.
+    #[test]
+    fn h2_matrix_case_2_empty_runner_does_not_fire() {
+        let page = mk_distilled_page("case2", serde_yaml_ng::Value::Bool(false), Some(""));
+        let issues = check_unreviewed_distilled(&[page]);
+        assert!(
+            issues.is_empty(),
+            "case 2 (empty runner) must NOT fire; got: {issues:?}"
+        );
+    }
+
+    /// Matrix case 3: no `source` field at all → does NOT fire. This
+    /// is the hand-authored-draft path: a user marks `reviewed: false`
+    /// in their own page as a workflow signal. We don't gate that.
+    #[test]
+    fn h2_matrix_case_3_no_source_does_not_fire() {
+        let page = mk_distilled_page("case3", serde_yaml_ng::Value::Bool(false), None);
+        let issues = check_unreviewed_distilled(&[page]);
+        assert!(
+            issues.is_empty(),
+            "case 3 (no source field) must NOT fire; got: {issues:?}"
+        );
+    }
+
+    /// Matrix case 4: `reviewed: true` with runner → does NOT fire.
+    #[test]
+    fn h2_matrix_case_4_reviewed_true_does_not_fire() {
+        let page = mk_distilled_page(
+            "case4",
+            serde_yaml_ng::Value::Bool(true),
+            Some("claude-sonnet-4-5"),
+        );
+        let issues = check_unreviewed_distilled(&[page]);
+        assert!(issues.is_empty(), "case 4 must NOT fire");
     }
 
     // --- run_structural_with_root aggregator --------------------------------
