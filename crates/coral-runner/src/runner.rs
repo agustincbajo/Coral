@@ -29,6 +29,16 @@ pub enum RunnerError {
     Timeout(Duration),
     #[error("io error invoking runner: {0}")]
     Io(#[from] std::io::Error),
+    /// v0.21.4: surfaced by `MultiStepRunner` implementations when the
+    /// cumulative token estimate of a tiered run would exceed the
+    /// configured budget. `actual` is the token count we'd reach if the
+    /// next sub-call ran; `budget` is `BudgetConfig::max_tokens_per_run`.
+    /// Tip in the message points the user at how to bump the cap.
+    #[error(
+        "tiered run aborted: cumulative token estimate {actual} would exceed budget {budget}. \
+         Raise `runner.tiered.budget.max_tokens_per_run` in coral.toml or shorten the prompt."
+    )]
+    BudgetExceeded { actual: u64, budget: u64 },
 }
 
 /// Combine stdout and stderr into a single error-message string.

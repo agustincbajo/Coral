@@ -73,6 +73,17 @@ pub fn make_runner(provider: ProviderName) -> Box<dyn Runner> {
     }
 }
 
+/// v0.21.4: build a `Box<dyn Runner>` from a `provider` name string.
+/// Used by `build_tiered_runner` to assemble per-tier runners from
+/// the manifest's `[runner.tiered.*]` blocks. Returns the parser
+/// error verbatim so the caller can wrap it with the offending tier
+/// name. Construction-time validation (no network call) — surfaces
+/// "unknown provider" at build, not at first run.
+pub fn make_runner_for_provider_str(s: &str) -> Result<Box<dyn Runner>, String> {
+    let p: ProviderName = s.parse()?;
+    Ok(make_runner(p))
+}
+
 /// Resolve the provider from CLI flag → env var → default(claude).
 pub fn resolve_provider(cli_flag: Option<&str>) -> Result<ProviderName, String> {
     if let Some(s) = cli_flag {

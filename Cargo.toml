@@ -3,7 +3,7 @@ members = ["crates/*"]
 resolver = "2"
 
 [workspace.package]
-version = "0.21.3"
+version = "0.21.4"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT"
@@ -40,14 +40,14 @@ schemars = { version = "0.8", features = ["chrono"] }
 # dragging the rest of the workspace into tokio. This is the only new
 # dep in v0.21.1 (justified in the orchestrator's spec §4).
 tiny_http = "0.12"
-coral-core = { path = "crates/coral-core", version = "0.21.3" }
-coral-env = { path = "crates/coral-env", version = "0.21.3" }
-coral-lint = { path = "crates/coral-lint", version = "0.21.3" }
-coral-runner = { path = "crates/coral-runner", version = "0.21.3" }
-coral-session = { path = "crates/coral-session", version = "0.21.3" }
-coral-stats = { path = "crates/coral-stats", version = "0.21.3" }
-coral-test = { path = "crates/coral-test", version = "0.21.3" }
-coral-mcp = { path = "crates/coral-mcp", version = "0.21.3" }
+coral-core = { path = "crates/coral-core", version = "0.21.4" }
+coral-env = { path = "crates/coral-env", version = "0.21.4" }
+coral-lint = { path = "crates/coral-lint", version = "0.21.4" }
+coral-runner = { path = "crates/coral-runner", version = "0.21.4" }
+coral-session = { path = "crates/coral-session", version = "0.21.4" }
+coral-stats = { path = "crates/coral-stats", version = "0.21.4" }
+coral-test = { path = "crates/coral-test", version = "0.21.4" }
+coral-mcp = { path = "crates/coral-mcp", version = "0.21.4" }
 
 [profile.release]
 lto = "thin"

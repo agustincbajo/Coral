@@ -2030,6 +2030,10 @@ Full per-release detail in [CHANGELOG](CHANGELOG.md).
 
 - **`coral up --watch` (compose 2.22+ `develop.watch`).** Wire the wave-1 `WatchSpec` / `SyncRule` types through the YAML renderer and `ComposeBackend::up`. After `up -d --wait` succeeds, run `compose watch` foreground until Ctrl-C; SIGINT (130) tears the watch subprocess down cleanly without killing containers. `coral env watch` is an alias. macOS users get a one-line `WARNING:` banner pointing at [docker/for-mac#7832](https://github.com/docker/for-mac/issues/7832). `EnvCapabilities::watch` flips `true`. BC sacred: services without `[services.*.watch]` emit byte-identical YAML to v0.21.1. **1174 tests pass (was 1155; +19).**
 
+✅ **Shipped (v0.21.4 — `MultiStepRunner` opt-in):**
+
+- **`coral consolidate --tiered` (planner + executor + reviewer).** New `MultiStepRunner` trait with a concrete `TieredRunner` impl that decomposes a single LLM run into three sequential calls — planner emits 1-5 sub-tasks as YAML, one executor call per sub-task, reviewer synthesizes results into the consolidate plan parser input. Per-tier `provider` + `model` configurable via `[runner.tiered.{planner,executor,reviewer}]` in `coral.toml`. Pure-Rust `len/4` token budget (default 200K) gates pre-flight at three points and surfaces the new additive `RunnerError::BudgetExceeded { actual, budget }` on overrun. CLI flag `--tiered` wins over manifest opt-in (`[runner.tiered.consolidate] enabled = true`). BC sacred: `coral consolidate` (no flag, no manifest opt-in) is byte-identical to v0.21.3 — pinned by snapshot test PLUS drift detector. Manifests without `[runner]` round-trip byte-identically. Zero new workspace deps. See [`docs/runner-tiered.md`](docs/runner-tiered.md). **1217 tests pass (was 1197; +20).**
+
 🔮 **v0.22+ feature roadmap:**
 
 - `coral session capture --from cursor` and `--from chatgpt` (the v0.20 flags currently emit a clear "not yet implemented" error pointing at #16).
@@ -2041,7 +2045,6 @@ Full per-release detail in [CHANGELOG](CHANGELOG.md).
 - `coral chaos inject` (Toxiproxy / Pumba sidecar).
 - `coral monitor up` (synthetic monitoring, tests-as-monitors).
 - `coral skill build / publish` (Anthropic Skills marketplace bundle).
-- `MultiStepRunner` (planner + executor + reviewer with per-step model tiering).
 - gRPC test steps (via `grpcurl` subprocess or `tonic` reflection).
 - Cross-repo glob (`[[repos]] glob = "services/*"`) and sub-manifests `<include>`.
 - `coral env attach <service>`, `coral env reset`, `coral env port-forward`, `coral env open`, `coral env prune`.

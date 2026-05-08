@@ -33,6 +33,13 @@ pub struct Project {
     /// reverse — keeps the manifest reusable from `coral-mcp` and
     /// future readers without dragging the env layer in).
     pub environments_raw: Vec<toml::Value>,
+    /// v0.21.4: optional `[runner]` block selecting per-command runner
+    /// shapes (single-tier vs. tiered planner→executor→reviewer). The
+    /// concrete `Runner` impls live in `coral-runner`; here we only
+    /// carry the configuration so `coral-cli` can construct them.
+    /// Default = `RunnerSection::default()` — round-trips a manifest
+    /// without `[runner]` byte-identically.
+    pub runner: RunnerSection,
 
     /// Absolute path of the directory containing `coral.toml`. Set at
     /// load time, **not** in the manifest itself. Empty for legacy
@@ -83,6 +90,76 @@ pub struct RemoteSpec {
     pub fetch: String,
 }
 
+/// v0.21.4: `[runner]` block — opt-in tiered routing per command.
+///
+/// `RunnerSection::default()` corresponds to "no `[runner]` table in
+/// `coral.toml`": every command runs single-tier exactly as in
+/// v0.21.3. Tiered routing is gated by an explicit
+/// `[runner.tiered.consolidate] enabled = true` (per-command opt-in)
+/// — broadening to other commands later just adds more `*_enabled`
+/// switches.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct RunnerSection {
+    /// `[runner.tiered]` block. `None` ⇒ no tiered routing.
+    pub tiered: Option<TieredManifest>,
+}
+
+impl RunnerSection {
+    /// Whether `coral consolidate` should default to tiered routing
+    /// when the user does NOT pass `--tiered`. The CLI flag always
+    /// wins; this is purely the manifest-side default.
+    pub fn tiered_enabled_for_consolidate(&self) -> bool {
+        self.tiered
+            .as_ref()
+            .map(|t| t.consolidate.enabled)
+            .unwrap_or(false)
+    }
+}
+
+/// Resolved `[runner.tiered]` block. All three tier specs are
+/// **required** when `[runner.tiered]` is present (validated at parse
+/// time so missing tiers surface a clear error rather than a confusing
+/// runner-construction crash later).
+#[derive(Debug, Clone, PartialEq)]
+pub struct TieredManifest {
+    pub planner: TierSpecManifest,
+    pub executor: TierSpecManifest,
+    pub reviewer: TierSpecManifest,
+    pub budget: BudgetManifest,
+    pub consolidate: TieredConsolidate,
+}
+
+/// One tier's provider + optional model override.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TierSpecManifest {
+    pub provider: String,
+    pub model: Option<String>,
+}
+
+/// Cumulative-token budget for a single tiered run. `max_tokens_per_run`
+/// applies to the SUM across planner + executor calls + reviewer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BudgetManifest {
+    pub max_tokens_per_run: u64,
+}
+
+impl Default for BudgetManifest {
+    fn default() -> Self {
+        // v0.21.4: matches `coral_runner::DEFAULT_MAX_TOKENS_PER_RUN`.
+        // Picked to mirror a 200K-context window.
+        Self {
+            max_tokens_per_run: 200_000,
+        }
+    }
+}
+
+/// Per-command opt-in for tiered routing. Today only `consolidate`
+/// honors this; future commands grow their own field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TieredConsolidate {
+    pub enabled: bool,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct RepoEntry {
     pub name: String,
@@ -130,6 +207,7 @@ impl Project {
             remotes: BTreeMap::new(),
             repos: vec![repo],
             environments_raw: Vec::new(),
+            runner: RunnerSection::default(),
             root,
             manifest_path: PathBuf::new(),
         }
@@ -285,6 +363,48 @@ struct RawRoot {
     repos: Vec<RawRepo>,
     #[serde(default, rename = "environments")]
     environments: Vec<toml::Value>,
+    /// v0.21.4: optional `[runner]` block (and nested `[runner.tiered]`).
+    #[serde(default)]
+    runner: Option<RawRunnerSection>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawRunnerSection {
+    #[serde(default)]
+    tiered: Option<RawTiered>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawTiered {
+    #[serde(default)]
+    planner: Option<RawTierSpec>,
+    #[serde(default)]
+    executor: Option<RawTierSpec>,
+    #[serde(default)]
+    reviewer: Option<RawTierSpec>,
+    #[serde(default)]
+    budget: Option<RawBudget>,
+    #[serde(default)]
+    consolidate: Option<RawTieredConsolidate>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawTierSpec {
+    provider: String,
+    #[serde(default)]
+    model: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawBudget {
+    #[serde(default)]
+    max_tokens_per_run: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawTieredConsolidate {
+    #[serde(default)]
+    enabled: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -362,6 +482,11 @@ pub fn parse_toml(raw: &str, manifest_path: &Path) -> Result<Project> {
 
     let repos = parsed.repos.into_iter().map(map_repo).collect();
 
+    let runner = match parsed.runner {
+        Some(r) => map_runner_section(r, manifest_path)?,
+        None => RunnerSection::default(),
+    };
+
     let project = Project {
         api_version,
         name: parsed.project.name,
@@ -371,10 +496,83 @@ pub fn parse_toml(raw: &str, manifest_path: &Path) -> Result<Project> {
         remotes: parsed.remotes,
         repos,
         environments_raw: parsed.environments,
+        runner,
         root: PathBuf::new(),
         manifest_path: manifest_path.to_path_buf(),
     };
     Ok(project)
+}
+
+fn map_runner_section(raw: RawRunnerSection, manifest_path: &Path) -> Result<RunnerSection> {
+    let tiered = match raw.tiered {
+        Some(t) => Some(map_tiered(t, manifest_path)?),
+        None => None,
+    };
+    Ok(RunnerSection { tiered })
+}
+
+fn map_tiered(raw: RawTiered, manifest_path: &Path) -> Result<TieredManifest> {
+    // All three tier specs are mandatory when `[runner.tiered]` is
+    // present. We surface a single message naming every missing tier
+    // so a user fixing a half-typed config doesn't have to re-edit
+    // and re-run three times.
+    let mut missing: Vec<&'static str> = Vec::new();
+    if raw.planner.is_none() {
+        missing.push("planner");
+    }
+    if raw.executor.is_none() {
+        missing.push("executor");
+    }
+    if raw.reviewer.is_none() {
+        missing.push("reviewer");
+    }
+    if !missing.is_empty() {
+        return Err(CoralError::Walk(format!(
+            "[runner.tiered] in {} is missing required tier(s): {}. \
+             All three of `planner`, `executor`, `reviewer` must be \
+             specified when `[runner.tiered]` is present.",
+            manifest_path.display(),
+            missing.join(", ")
+        )));
+    }
+    let planner = map_tier_spec(raw.planner.unwrap());
+    let executor = map_tier_spec(raw.executor.unwrap());
+    let reviewer = map_tier_spec(raw.reviewer.unwrap());
+
+    let budget = match raw.budget {
+        Some(b) => {
+            let v = b.max_tokens_per_run.unwrap_or(200_000);
+            if v == 0 {
+                return Err(CoralError::Walk(format!(
+                    "[runner.tiered.budget] in {}: `max_tokens_per_run` must be > 0",
+                    manifest_path.display()
+                )));
+            }
+            BudgetManifest {
+                max_tokens_per_run: v,
+            }
+        }
+        None => BudgetManifest::default(),
+    };
+
+    let consolidate = TieredConsolidate {
+        enabled: raw.consolidate.map(|c| c.enabled).unwrap_or(false),
+    };
+
+    Ok(TieredManifest {
+        planner,
+        executor,
+        reviewer,
+        budget,
+        consolidate,
+    })
+}
+
+fn map_tier_spec(raw: RawTierSpec) -> TierSpecManifest {
+    TierSpecManifest {
+        provider: raw.provider,
+        model: raw.model,
+    }
 }
 
 fn map_defaults(raw: RawDefaults) -> ProjectDefaults {
@@ -499,6 +697,39 @@ pub fn render_toml(project: &Project) -> String {
             out.push_str("enabled = false\n");
         }
     }
+    // v0.21.4: emit [runner.tiered] when present. Default
+    // RunnerSection (no tiered block) renders nothing — that
+    // preserves byte-identity for v0.21.3 manifests on round-trip.
+    if let Some(t) = &project.runner.tiered {
+        out.push_str("\n[runner.tiered]\n");
+        // Per-tier subtables.
+        out.push_str(&render_tier("planner", &t.planner));
+        out.push_str(&render_tier("executor", &t.executor));
+        out.push_str(&render_tier("reviewer", &t.reviewer));
+        // Budget — only emit when it diverges from the default.
+        // Always emitting would noisify minimal manifests.
+        if t.budget.max_tokens_per_run != BudgetManifest::default().max_tokens_per_run {
+            out.push_str("\n[runner.tiered.budget]\n");
+            out.push_str(&format!(
+                "max_tokens_per_run = {}\n",
+                t.budget.max_tokens_per_run
+            ));
+        }
+        if t.consolidate.enabled {
+            out.push_str("\n[runner.tiered.consolidate]\n");
+            out.push_str("enabled = true\n");
+        }
+    }
+    out
+}
+
+fn render_tier(label: &str, spec: &TierSpecManifest) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("\n[runner.tiered.{label}]\n"));
+    out.push_str(&format!("provider = \"{}\"\n", spec.provider));
+    if let Some(m) = &spec.model {
+        out.push_str(&format!("model = \"{}\"\n", m));
+    }
     out
 }
 
@@ -531,6 +762,7 @@ mod tests {
             remotes: BTreeMap::new(),
             repos,
             environments_raw: Vec::new(),
+            runner: RunnerSection::default(),
             root: PathBuf::new(),
             manifest_path: PathBuf::new(),
         }
@@ -809,5 +1041,178 @@ depends_on = ["api"]
         assert_eq!(p2.repos[1].depends_on, vec!["api".to_string()]);
         assert_eq!(p2.defaults.remote.as_deref(), Some("github"));
         assert_eq!(p2.remotes.get("github"), p.remotes.get("github"));
+    }
+
+    // v0.21.4 — `[runner]` / `[runner.tiered]` parsing tests.
+    //
+    // Spec acceptance criterion #1: a v0.21.3-shaped manifest (no
+    // `[runner]` section) must round-trip *exactly* — the rendered
+    // output is byte-identical to the canonical v0.21.3 emitter and
+    // re-parsing it produces an equal `Project`. Used as the BC pin.
+    #[test]
+    fn manifest_without_runner_section_round_trips_unchanged() {
+        let raw = r#"apiVersion = "coral.dev/v1"
+[project]
+name = "orchestra"
+
+[project.defaults]
+remote = "github"
+
+[remotes.github]
+fetch = "git@github.com:acme/{name}.git"
+
+[[repos]]
+name = "api"
+tags = ["service"]
+
+[[repos]]
+name = "worker"
+depends_on = ["api"]
+"#;
+        let p = parse_toml(raw, Path::new("/tmp/coral.toml")).unwrap();
+        // No `[runner]` section in the source ⇒ default `RunnerSection`.
+        assert_eq!(p.runner, RunnerSection::default());
+        assert!(p.runner.tiered.is_none());
+        // First render — pin the bytes against v0.21.3 emit.
+        let r1 = render_toml(&p);
+        // The emitter must NOT add a `[runner]` block when none was
+        // requested. A regression here would break BC for every v0.21.3
+        // manifest the user already has on disk.
+        assert!(
+            !r1.contains("[runner"),
+            "default RunnerSection must not emit [runner...] block; got:\n{r1}"
+        );
+        // Re-parse the rendered output and re-render — the second
+        // render must equal the first (idempotency / fixed-point).
+        let p2 = parse_toml(&r1, Path::new("/tmp/coral.toml")).unwrap();
+        let r2 = render_toml(&p2);
+        assert_eq!(r1, r2, "render must be byte-identical on re-emit");
+    }
+
+    /// Full `[runner.tiered]` block with all three tiers, a custom budget,
+    /// and `consolidate.enabled = true`. Verifies parsing populates every
+    /// field and renders back identical bytes.
+    #[test]
+    fn manifest_with_full_tiered_section_parses() {
+        let raw = r#"apiVersion = "coral.dev/v1"
+[project]
+name = "demo"
+
+[[repos]]
+name = "api"
+url = "git@github.com:acme/api.git"
+
+[runner.tiered.planner]
+provider = "claude"
+model = "haiku"
+
+[runner.tiered.executor]
+provider = "claude"
+model = "sonnet"
+
+[runner.tiered.reviewer]
+provider = "claude"
+model = "opus"
+
+[runner.tiered.budget]
+max_tokens_per_run = 50000
+
+[runner.tiered.consolidate]
+enabled = true
+"#;
+        let p = parse_toml(raw, Path::new("/tmp/coral.toml")).unwrap();
+        let t = p.runner.tiered.as_ref().expect("tiered must be present");
+        assert_eq!(t.planner.provider, "claude");
+        assert_eq!(t.planner.model.as_deref(), Some("haiku"));
+        assert_eq!(t.executor.model.as_deref(), Some("sonnet"));
+        assert_eq!(t.reviewer.model.as_deref(), Some("opus"));
+        assert_eq!(t.budget.max_tokens_per_run, 50000);
+        assert!(t.consolidate.enabled);
+        assert!(p.runner.tiered_enabled_for_consolidate());
+        assert!(
+            p.runner.tiered_enabled_for_consolidate(),
+            "tiered_enabled_for_consolidate helper must return true"
+        );
+    }
+
+    /// Acceptance #6: a `[runner.tiered]` block missing one of the three
+    /// required tier sub-tables must fail at parse time with a message
+    /// naming the missing tier(s).
+    #[test]
+    fn manifest_partial_tiered_section_rejected() {
+        let raw = r#"apiVersion = "coral.dev/v1"
+[project]
+name = "demo"
+
+[[repos]]
+name = "api"
+url = "git@github.com:acme/api.git"
+
+[runner.tiered.planner]
+provider = "claude"
+
+[runner.tiered.executor]
+provider = "claude"
+"#;
+        let err = parse_toml(raw, Path::new("/tmp/coral.toml")).expect_err("must reject");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("reviewer"),
+            "missing-tier error must name `reviewer`: {msg}"
+        );
+        assert!(
+            msg.contains("[runner.tiered]"),
+            "error must reference the section header: {msg}"
+        );
+    }
+
+    /// Acceptance #1 stronger pin: the BC fixture is parsed by both
+    /// v0.21.3 (where `RunnerSection` doesn't exist) and v0.21.4. We
+    /// can't actually run v0.21.3 code here, but we can verify a
+    /// minimal v0.21.3-shape manifest validates and matches the
+    /// expected legacy fields.
+    #[test]
+    fn legacy_v0213_single_repo_fixture_still_parses() {
+        let raw = r#"apiVersion = "coral.dev/v1"
+[project]
+name = "single"
+
+[[repos]]
+name = "self"
+url = "git@github.com:acme/self.git"
+"#;
+        let p = parse_toml(raw, Path::new("/tmp/coral.toml")).unwrap();
+        p.validate().expect("v0.21.3 fixture must validate");
+        assert_eq!(p.runner, RunnerSection::default());
+    }
+
+    /// `budget.max_tokens_per_run = 0` is rejected — a zero budget
+    /// would be an immediate, non-actionable abort on every run.
+    #[test]
+    fn manifest_zero_budget_rejected() {
+        let raw = r#"apiVersion = "coral.dev/v1"
+[project]
+name = "demo"
+
+[[repos]]
+name = "api"
+url = "git@github.com:acme/api.git"
+
+[runner.tiered.planner]
+provider = "claude"
+
+[runner.tiered.executor]
+provider = "claude"
+
+[runner.tiered.reviewer]
+provider = "claude"
+
+[runner.tiered.budget]
+max_tokens_per_run = 0
+"#;
+        let err = parse_toml(raw, Path::new("/tmp/coral.toml")).expect_err("must reject");
+        let msg = format!("{err}");
+        assert!(msg.contains("max_tokens_per_run"), "got: {msg}");
+        assert!(msg.contains("> 0"), "got: {msg}");
     }
 }

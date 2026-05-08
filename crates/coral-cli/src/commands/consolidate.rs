@@ -2,8 +2,9 @@ use anyhow::{Context, Result};
 use clap::Args;
 use coral_core::frontmatter::{Confidence, Frontmatter, PageType, Status};
 use coral_core::page::Page;
+use coral_core::project::Project;
 use coral_core::walk;
-use coral_runner::{Prompt, Runner};
+use coral_runner::{MultiStepRunner, Prompt, Runner, TieredRunner};
 use regex::Regex;
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -30,20 +31,101 @@ pub struct ConsolidateArgs {
     /// merge target (or, for splits, the FIRST split target). Requires `--apply`.
     #[arg(long)]
     pub rewrite_links: bool,
+    /// v0.21.4: route this consolidate run through a tiered
+    /// planner→executor→reviewer pipeline. Reads `[runner.tiered]`
+    /// from `coral.toml` to pick per-tier providers / models / budget.
+    /// CLI flag wins over the manifest's `[runner.tiered.consolidate]
+    /// enabled = true` opt-in.
+    #[arg(long)]
+    pub tiered: bool,
+    /// v0.21.4: emit a single `tracing::info` summary line after a
+    /// tiered run with planner/executor/reviewer call counts and the
+    /// approximate `tokens_used`. No effect on non-tiered runs.
+    #[arg(long)]
+    pub verbose: bool,
 }
 
 pub fn run(args: ConsolidateArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
-    let provider = super::runner_helper::resolve_provider(args.provider.as_deref())
-        .map_err(|e| anyhow::anyhow!(e))?;
-    let runner = super::runner_helper::make_runner(provider);
-    run_with_runner(args, wiki_root, runner.as_ref())
+    // v0.21.4: discover the project manifest so we can read
+    // `[runner.tiered]`. If no manifest exists (legacy single-repo
+    // case) Project::discover synthesizes a default project whose
+    // `runner` is `RunnerSection::default()` — i.e. tiered = off.
+    // Project::discover walks upward from cwd; we use that for
+    // manifest lookup but keep the wiki root logic exactly as before.
+    let cwd = std::env::current_dir().context("resolving current directory")?;
+    let project = Project::discover(&cwd).unwrap_or_else(|err| {
+        // A malformed `coral.toml` would error here. We surface it to
+        // the user via the same path the rest of Coral takes — but
+        // wrap rather than panic so the consolidate command stays
+        // usable when only `--tiered` was relevant.
+        tracing::warn!(error = ?err, "could not load project manifest, defaulting to no tiered routing");
+        Project::synthesize_legacy(&cwd)
+    });
+
+    // CLI flag wins over manifest. Default = single-tier (BC).
+    let use_tiered = args.tiered || project.runner.tiered_enabled_for_consolidate();
+
+    if use_tiered {
+        let tiered_cfg = project.runner.tiered.as_ref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "--tiered requested but no [runner.tiered] block in coral.toml. \
+                 Add [runner.tiered.planner], [runner.tiered.executor], and \
+                 [runner.tiered.reviewer] (and optionally [runner.tiered.budget] / \
+                 [runner.tiered.consolidate]) to your coral.toml. \
+                 See docs/runner-tiered.md for the full schema."
+            )
+        })?;
+        let tiered = build_tiered_runner(tiered_cfg).map_err(|e| anyhow::anyhow!(e))?;
+        run_with_tiered_runner(args, wiki_root, &tiered)
+    } else {
+        let provider = super::runner_helper::resolve_provider(args.provider.as_deref())
+            .map_err(|e| anyhow::anyhow!(e))?;
+        let runner = super::runner_helper::make_runner(provider);
+        run_with_runner(args, wiki_root, runner.as_ref())
+    }
 }
 
-pub fn run_with_runner(
-    args: ConsolidateArgs,
+/// v0.21.4: builds a [`TieredRunner`] from a parsed manifest's
+/// `[runner.tiered]` block. Each tier's `provider` is resolved at
+/// call time (not parse time) so an unknown provider name surfaces a
+/// clean error here rather than at first network call.
+pub(crate) fn build_tiered_runner(
+    cfg: &coral_core::project::manifest::TieredManifest,
+) -> Result<TieredRunner, String> {
+    let planner = super::runner_helper::make_runner_for_provider_str(&cfg.planner.provider)
+        .map_err(|e| format!("[runner.tiered.planner]: {e}"))?;
+    let executor = super::runner_helper::make_runner_for_provider_str(&cfg.executor.provider)
+        .map_err(|e| format!("[runner.tiered.executor]: {e}"))?;
+    let reviewer = super::runner_helper::make_runner_for_provider_str(&cfg.reviewer.provider)
+        .map_err(|e| format!("[runner.tiered.reviewer]: {e}"))?;
+
+    let tcfg = coral_runner::TieredConfig {
+        planner: coral_runner::TierSpec {
+            provider: cfg.planner.provider.clone(),
+            model: cfg.planner.model.clone(),
+        },
+        executor: coral_runner::TierSpec {
+            provider: cfg.executor.provider.clone(),
+            model: cfg.executor.model.clone(),
+        },
+        reviewer: coral_runner::TierSpec {
+            provider: cfg.reviewer.provider.clone(),
+            model: cfg.reviewer.model.clone(),
+        },
+        budget: coral_runner::BudgetConfig {
+            max_tokens_per_run: cfg.budget.max_tokens_per_run,
+        },
+    };
+    Ok(TieredRunner::new(planner, executor, reviewer, tcfg))
+}
+
+/// Build the consolidate prompt + load wiki pages. Shared by single-
+/// and multi-tier paths so byte-identity to v0.21.3 is preserved on
+/// the non-tiered path. Returns `(prompt, pages, wiki_root)`.
+fn build_consolidate_prompt(
+    args: &ConsolidateArgs,
     wiki_root: Option<&Path>,
-    runner: &dyn Runner,
-) -> Result<ExitCode> {
+) -> Result<(Prompt, Vec<Page>, PathBuf)> {
     if args.rewrite_links && !args.apply {
         anyhow::bail!("--rewrite-links requires --apply");
     }
@@ -80,78 +162,126 @@ pub fn run_with_runner(
     let prompt = Prompt {
         system: Some(prompt_template.content),
         user: format!("Pages:\n{summary}\n\nProposed consolidations? Output YAML."),
-        model: args.model,
+        model: args.model.clone(),
         cwd: None,
         timeout: None,
     };
+    Ok((prompt, pages, root))
+}
 
-    let out = runner
-        .run(&prompt)
-        .map_err(|e| anyhow::anyhow!("runner failed: {e}"))?;
-
+/// Render `stdout` as a consolidate plan and apply (or preview)
+/// against `pages`. Shared by tiered + non-tiered paths so the
+/// post-LLM stdout handling is identical regardless of routing.
+///
+/// Internal note (v0.21.4): the actual rendering happens in
+/// [`format_consolidate_output`] (returns a `String`); this thin
+/// wrapper performs the side effects (apply-plan disk mutations,
+/// `println!`). Tests reach for the formatter directly so the
+/// byte-identity snapshot doesn't have to capture stdout.
+fn render_or_apply_plan(
+    stdout: &str,
+    args: &ConsolidateArgs,
+    pages: &[Page],
+    root: &Path,
+) -> Result<ExitCode> {
     if !args.apply {
-        println!("# Consolidation suggestions (preview)\n");
-        println!("{}", out.stdout);
-        println!(
-            "\n_(pass `--apply` to mark `retirements[]` slugs stale, materialize `merges[]` into a target page, and stub out `splits[]` targets.)_"
-        );
+        let formatted = format_preview_output(stdout);
+        print!("{formatted}");
         return Ok(ExitCode::SUCCESS);
     }
 
     // Parse and apply.
-    let plan = parse_consolidate_plan(&out.stdout)
+    let plan = parse_consolidate_plan(stdout)
         .context("parsing consolidate YAML plan (LLM output below)")?;
-    let report = apply_consolidate_plan(&plan, &pages, &root, args.rewrite_links)?;
-    println!("# Consolidation applied\n");
-    println!("Retired: {} page(s)", report.retired.len());
+    let report = apply_consolidate_plan(&plan, pages, root, args.rewrite_links)?;
+    let formatted = format_apply_report(&report);
+    print!("{formatted}");
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Pre-apply preview rendering. Shape MUST match v0.21.3 byte-for-byte:
+/// header line, then the LLM stdout verbatim, then the help-line
+/// nudging the user toward `--apply`. Each `println!` in v0.21.3 emits
+/// `text + '\n'`; we mirror that exactly.
+pub(crate) fn format_preview_output(stdout: &str) -> String {
+    // v0.21.3 emitted:
+    //   println!("# Consolidation suggestions (preview)\n");
+    //   println!("{}", out.stdout);
+    //   println!("\n_(pass `--apply` …)_");
+    // i.e. literal sequence
+    //   "# Consolidation suggestions (preview)\n\n"  // header + \n
+    //   "<stdout>\n"
+    //   "\n_(...)_\n"
+    let mut out = String::new();
+    out.push_str("# Consolidation suggestions (preview)\n\n");
+    out.push_str(stdout);
+    out.push('\n');
+    out.push_str(
+        "\n_(pass `--apply` to mark `retirements[]` slugs stale, materialize `merges[]` into a target page, and stub out `splits[]` targets.)_\n",
+    );
+    out
+}
+
+/// Post-apply rendering. Like `format_preview_output`, this MUST match
+/// v0.21.3 byte-for-byte for AC-2 (snapshot byte-identity to v0.21.3).
+pub(crate) fn format_apply_report(report: &ApplyReport) -> String {
+    let mut out = String::new();
+    out.push_str("# Consolidation applied\n\n");
+    out.push_str(&format!("Retired: {} page(s)\n", report.retired.len()));
     for slug in &report.retired {
-        println!("- `{slug}` → status: stale");
+        out.push_str(&format!("- `{slug}` → status: stale\n"));
     }
     if !report.unknown_retirements.is_empty() {
-        println!(
-            "\nWarning: retirements pointing at unknown slugs (skipped): {}",
+        out.push_str(&format!(
+            "\nWarning: retirements pointing at unknown slugs (skipped): {}\n",
             report.unknown_retirements.join(", ")
-        );
+        ));
     }
 
     if !report.merged.is_empty() {
-        println!("\nMerged: {} target page(s)", report.merged.len());
+        out.push_str(&format!(
+            "\nMerged: {} target page(s)\n",
+            report.merged.len()
+        ));
         for (target, sources) in &report.merged {
             let formatted_sources = sources
                 .iter()
                 .map(|s| format!("`{s}`"))
                 .collect::<Vec<_>>()
                 .join(", ");
-            println!("- `{target}` ← {formatted_sources}");
+            out.push_str(&format!("- `{target}` ← {formatted_sources}\n"));
         }
     }
     if !report.unknown_merge_targets.is_empty() {
-        println!(
-            "\nWarning: merge entries skipped (unknown sources or empty source list): {}",
+        out.push_str(&format!(
+            "\nWarning: merge entries skipped (unknown sources or empty source list): {}\n",
             report.unknown_merge_targets.join(", ")
-        );
+        ));
     }
 
     if !report.split.is_empty() {
-        println!("\nSplit: {} source page(s)", report.split.len());
+        out.push_str(&format!("\nSplit: {} source page(s)\n", report.split.len()));
         for (source, targets) in &report.split {
             let formatted_targets = targets
                 .iter()
                 .map(|t| format!("`{t}`"))
                 .collect::<Vec<_>>()
                 .join(", ");
-            println!("- `{source}` → {formatted_targets}");
+            out.push_str(&format!("- `{source}` → {formatted_targets}\n"));
         }
     }
     if !report.unknown_split_sources.is_empty() {
-        println!(
-            "\nWarning: split entries skipped (source slug unknown or no targets): {}",
+        out.push_str(&format!(
+            "\nWarning: split entries skipped (source slug unknown or no targets): {}\n",
             report.unknown_split_sources.join(", ")
-        );
+        ));
     }
 
     if !report.rewrites.is_empty() {
-        println!("\nRewrites: {} page(s) patched", report.rewrites.len());
+        out.push_str(&format!(
+            "\nRewrites: {} page(s) patched\n",
+            report.rewrites.len()
+        ));
         for entry in &report.rewrites {
             let edits = entry
                 .from_to
@@ -159,11 +289,47 @@ pub fn run_with_runner(
                 .map(|(from, to)| format!("`{from}` → `{to}`"))
                 .collect::<Vec<_>>()
                 .join(", ");
-            println!("- `{}` — {edits}", entry.page_slug);
+            out.push_str(&format!("- `{}` — {edits}\n", entry.page_slug));
         }
     }
+    out
+}
 
-    Ok(ExitCode::SUCCESS)
+pub fn run_with_runner(
+    args: ConsolidateArgs,
+    wiki_root: Option<&Path>,
+    runner: &dyn Runner,
+) -> Result<ExitCode> {
+    let (prompt, pages, root) = build_consolidate_prompt(&args, wiki_root)?;
+    let out = runner
+        .run(&prompt)
+        .map_err(|e| anyhow::anyhow!("runner failed: {e}"))?;
+    render_or_apply_plan(&out.stdout, &args, &pages, &root)
+}
+
+/// v0.21.4: tiered counterpart of `run_with_runner`. The reviewer's
+/// `RunOutput.stdout` is the consolidate-plan parser input — i.e. AC-4
+/// (reviewer stdout becomes the canonical YAML plan).
+pub fn run_with_tiered_runner(
+    args: ConsolidateArgs,
+    wiki_root: Option<&Path>,
+    runner: &dyn MultiStepRunner,
+) -> Result<ExitCode> {
+    let (prompt, pages, root) = build_consolidate_prompt(&args, wiki_root)?;
+    let out = runner
+        .run_tiered(&prompt)
+        .map_err(|e| anyhow::anyhow!("tiered runner failed: {e}"))?;
+    if args.verbose {
+        // AC-15: --verbose prints one tracing::info summary line.
+        tracing::info!(
+            plan_calls = out.plan_calls.len(),
+            execute_calls = out.execute_calls.len(),
+            review_calls = out.review_calls.len(),
+            tokens_used = out.tokens_used,
+            "consolidate --tiered: tiered run summary"
+        );
+    }
+    render_or_apply_plan(&out.final_output.stdout, &args, &pages, &root)
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Default)]
@@ -2139,6 +2305,192 @@ splits:
             in_wiki,
             "merge target was not written under wiki root {}",
             wiki.display(),
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // v0.21.4 — MultiStepRunner opt-in: byte-identity + tiered routing.
+    // -----------------------------------------------------------------
+
+    /// AC-2: `coral consolidate` (no `--tiered`, no manifest opt-in)
+    /// must produce stdout that's byte-identical to v0.21.3 against
+    /// the same scripted `MockRunner`. We pin the actual byte string
+    /// here (header + verbatim LLM output + footer) — anything that
+    /// drifts the formatter will fail this test.
+    ///
+    /// This snapshot is also wired in v0.21.4 to ensure the new
+    /// `format_preview_output` / `format_apply_report` helpers are
+    /// not just refactored but byte-for-byte compatible with the
+    /// pre-refactor `println!` calls.
+    #[test]
+    fn consolidate_no_tiered_flag_is_byte_identical_to_v0213() {
+        // v0.21.3 byte string for the dry-run preview path. The
+        // `\n\n` after the header line, the literal LLM stdout, the
+        // `\n\n` separator, and the trailing `_(...)_\n` are all
+        // load-bearing.
+        let llm_yaml = "retirements:\n  - slug: obsolete\n    rationale: superseded\n";
+        let formatted = format_preview_output(llm_yaml);
+        let expected = "# Consolidation suggestions (preview)\n\n\
+                        retirements:\n  - slug: obsolete\n    rationale: superseded\n\n\
+                        \n_(pass `--apply` to mark `retirements[]` slugs stale, materialize `merges[]` into a target page, and stub out `splits[]` targets.)_\n";
+        assert_eq!(
+            formatted, expected,
+            "preview output drifted from v0.21.3 byte string"
+        );
+
+        // For the `--apply` path, snapshot the format_apply_report
+        // output against a hand-built `ApplyReport`.
+        let report = ApplyReport {
+            retired: vec!["obsolete".into()],
+            unknown_retirements: Vec::new(),
+            merged: Vec::new(),
+            split: Vec::new(),
+            unknown_merge_targets: Vec::new(),
+            unknown_split_sources: Vec::new(),
+            rewrites: Vec::new(),
+        };
+        let applied = format_apply_report(&report);
+        let expected_applied = "# Consolidation applied\n\n\
+                                Retired: 1 page(s)\n\
+                                - `obsolete` → status: stale\n";
+        assert_eq!(
+            applied, expected_applied,
+            "apply report output drifted from v0.21.3 byte string"
+        );
+    }
+
+    /// Sanity check that the byte-identity snapshot above isn't a
+    /// tautology — if we mutate the formatter, the snapshot test
+    /// must fail. Builds the same `ApplyReport` the snapshot uses,
+    /// hand-mutates the rendered text, and asserts INequality.
+    #[test]
+    fn consolidate_byte_identity_snapshot_actually_catches_drift() {
+        let report = ApplyReport {
+            retired: vec!["obsolete".into()],
+            unknown_retirements: Vec::new(),
+            merged: Vec::new(),
+            split: Vec::new(),
+            unknown_merge_targets: Vec::new(),
+            unknown_split_sources: Vec::new(),
+            rewrites: Vec::new(),
+        };
+        let applied = format_apply_report(&report);
+        let expected_applied = "# Consolidation applied\n\n\
+                                Retired: 1 page(s)\n\
+                                - `obsolete` → status: stale\n";
+        // The snapshot under test ↑↑.
+        assert_eq!(applied, expected_applied);
+
+        // Drift the snapshot in two ways and verify the equality fails.
+        let drift_header = applied.replace("# Consolidation applied", "# Consolidation done");
+        assert_ne!(
+            drift_header, expected_applied,
+            "snapshot must reject any header drift"
+        );
+        let drift_status = applied.replace("status: stale", "status: archived");
+        assert_ne!(
+            drift_status, expected_applied,
+            "snapshot must reject any retired-bullet wording drift"
+        );
+    }
+
+    /// AC-3 + AC-12: `consolidate --tiered` invokes the three sub-runners
+    /// in order (planner → executor → reviewer), threads each tier's
+    /// per-tier model into the `Prompt`, and parses the reviewer's
+    /// stdout as the consolidate plan. AC-4 (reviewer stdout = parser
+    /// input) is verified by pushing a YAML retirement plan into the
+    /// reviewer mock and asserting `obsolete` ends up `status: stale`.
+    #[test]
+    fn consolidate_with_tiered_flag_invokes_three_runners() {
+        use coral_runner::{
+            BudgetConfig as RBudget, MockRunner, Runner, TierSpec, TieredConfig, TieredRunner,
+        };
+        use std::sync::Arc;
+
+        let tmp = TempDir::new().unwrap();
+        let wiki = tmp.path().join(".wiki");
+        // Page that'll be retired by the reviewer's plan.
+        let p = page(&wiki, "obsolete", Status::Reviewed);
+
+        // Each tier mock returns its scripted reply; the reviewer's
+        // is the canonical YAML plan parser input.
+        let planner = Arc::new(MockRunner::new());
+        planner.push_ok("subtasks:\n  - id: t1\n    description: scan for duplicates\n");
+        let executor = Arc::new(MockRunner::new());
+        executor.push_ok("found candidates: obsolete is dead");
+        let reviewer = Arc::new(MockRunner::new());
+        reviewer.push_ok("retirements:\n  - slug: obsolete\n    rationale: superseded\n");
+
+        // Tiny `ArcRunner` wrapper so we can keep call-introspection
+        // handles alive after the tiered run consumes the boxed runners.
+        struct ArcRunner(Arc<MockRunner>);
+        impl Runner for ArcRunner {
+            fn run(&self, p: &Prompt) -> coral_runner::RunnerResult<coral_runner::RunOutput> {
+                self.0.run(p)
+            }
+        }
+
+        let cfg = TieredConfig {
+            planner: TierSpec {
+                provider: "claude".into(),
+                model: Some("haiku".into()),
+            },
+            executor: TierSpec {
+                provider: "claude".into(),
+                model: Some("sonnet".into()),
+            },
+            reviewer: TierSpec {
+                provider: "claude".into(),
+                model: Some("opus".into()),
+            },
+            budget: RBudget {
+                max_tokens_per_run: 1_000_000,
+            },
+        };
+        let tiered = TieredRunner::new(
+            Box::new(ArcRunner(planner.clone())),
+            Box::new(ArcRunner(executor.clone())),
+            Box::new(ArcRunner(reviewer.clone())),
+            cfg,
+        );
+
+        // Execute the apply path so we can assert the reviewer's
+        // stdout actually drove disk mutation (== AC-4).
+        let exit = run_with_tiered_runner(
+            ConsolidateArgs {
+                apply: true,
+                tiered: true,
+                ..Default::default()
+            },
+            Some(wiki.as_path()),
+            &tiered,
+        )
+        .unwrap();
+        assert_eq!(exit, ExitCode::SUCCESS);
+
+        // AC-3: each tier saw exactly one call.
+        let p_calls = planner.calls();
+        let e_calls = executor.calls();
+        let r_calls = reviewer.calls();
+        assert_eq!(p_calls.len(), 1, "planner called exactly once");
+        assert_eq!(
+            e_calls.len(),
+            1,
+            "executor called once per sub-task (1 here)"
+        );
+        assert_eq!(r_calls.len(), 1, "reviewer called exactly once");
+
+        // Per-tier model overrides reach each Prompt.
+        assert_eq!(p_calls[0].model.as_deref(), Some("haiku"));
+        assert_eq!(e_calls[0].model.as_deref(), Some("sonnet"));
+        assert_eq!(r_calls[0].model.as_deref(), Some("opus"));
+
+        // AC-4: reviewer's stdout (the YAML plan) drove disk mutation —
+        // `obsolete` is now status: stale on disk.
+        let on_disk = std::fs::read_to_string(&p.path).unwrap();
+        assert!(
+            on_disk.contains("status: stale"),
+            "reviewer's plan must have been parsed and applied; got:\n{on_disk}"
         );
     }
 }

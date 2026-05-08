@@ -11,6 +11,11 @@ description = "Coral runner: Claude CLI wrapper + mock for tests."
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
+# v0.21.4: `multi_step.rs` parses the planner tier's YAML plan output.
+# `serde_yaml_ng` is already a workspace dep used by every other YAML
+# parser in Coral; reusing it keeps the v0.21.4 introduction "zero new
+# dependencies" in the workspace sense.
+serde_yaml_ng = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 regex = { workspace = true }

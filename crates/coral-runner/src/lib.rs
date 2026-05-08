@@ -11,6 +11,7 @@ pub mod gemini;
 pub mod http;
 pub mod local;
 pub mod mock;
+pub mod multi_step;
 pub mod prompt;
 pub mod runner;
 
@@ -23,5 +24,9 @@ pub use gemini::GeminiRunner;
 pub use http::HttpRunner;
 pub use local::LocalRunner;
 pub use mock::MockRunner;
+pub use multi_step::{
+    BudgetConfig, DEFAULT_MAX_TOKENS_PER_RUN, MultiStepRunner, TierSpec, TieredConfig,
+    TieredOutput, TieredRunner, approx_tokens,
+};
 pub use prompt::PromptBuilder;
 pub use runner::{ClaudeRunner, Prompt, RunOutput, Runner, RunnerError, RunnerResult};
