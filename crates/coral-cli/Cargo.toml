@@ -44,6 +44,16 @@ coral-session = { workspace = true }
 coral-stats = { workspace = true }
 coral-test = { workspace = true }
 
+[features]
+default = []
+# v0.23.2: enables `coral test record` (Linux-only Keploy capture).
+# Forwards to `coral-test/recorded` so the parser+replay path stays
+# always-on while the capture-side privileged work is opt-in. Build
+# with `cargo install --features recorded` on a Linux host to get
+# the capture subcommand. The replay path (`coral test --kind
+# recorded`) is shipped on every platform without the feature.
+recorded = ["coral-test/recorded"]
+
 [dev-dependencies]
 tempfile = { workspace = true }
 assert_cmd = { workspace = true }

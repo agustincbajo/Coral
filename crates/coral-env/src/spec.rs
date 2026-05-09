@@ -50,6 +50,17 @@ pub struct EnvironmentSpec {
     /// `monitors_absent_round_trips_unchanged`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub monitors: Vec<MonitorSpec>,
+    /// v0.23.2: recorded-test replay configuration. When present,
+    /// `coral test --kind recorded` replays Keploy-captured exchanges
+    /// stored under `.coral/tests/recorded/<service>/*.yaml` against
+    /// the live env. The `ignore_response_fields` list is recursively
+    /// stripped from response bodies before deep-equal comparison so
+    /// dynamic fields (`id`, `timestamp`) don't false-positive.
+    /// `skip_serializing_if` keeps v0.23.1 manifests byte-identical
+    /// when no `[environments.<env>.recorded]` block is present —
+    /// pinned by `recorded_config_absent_round_trips_unchanged`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recorded: Option<RecordedConfig>,
 }
 
 /// v0.23.1: a single monitor entry under `[[environments.<env>.monitors]]`.
@@ -108,6 +119,32 @@ pub enum OnFailure {
     FailFast,
     /// Reserved. Currently errors at runtime (see `monitor up`).
     Alert,
+}
+
+/// v0.23.2: recorded-test replay configuration. Lives under
+/// `[environments.<env>.recorded]`:
+///
+/// ```toml
+/// [environments.dev.recorded]
+/// ignore_response_fields = ["id", "timestamp", "created_at", "request_id"]
+/// ```
+///
+/// The list is applied recursively when comparing the captured response
+/// body against the live one — a key named `id` at any depth in the
+/// response JSON is stripped from BOTH sides before deep-equal compare.
+/// This keeps replay tests stable across timestamps, UUIDs, and
+/// auto-incrementing IDs.
+///
+/// **Frozen for v0.23.2:** any new field MUST land with
+/// `#[serde(default, skip_serializing_if = ...)]` so existing manifests
+/// round-trip unchanged on a future binary.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct RecordedConfig {
+    /// Response-body field names to strip recursively before comparing
+    /// captured vs. live responses. Empty = no fields ignored (every
+    /// JSON field is structurally compared).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ignore_response_fields: Vec<String>,
 }
 
 /// Chaos-engineering sidecar configuration. v0.23.0 only knows
@@ -611,6 +648,7 @@ mod tests {
             chaos: None,
             chaos_scenarios: Vec::new(),
             monitors: Vec::new(),
+            recorded: None,
         };
         let serialized = toml::to_string(&spec).expect("serialize");
         // The serialized form must mention NEITHER `chaos` nor
@@ -722,6 +760,7 @@ backend = "pumba"
                 attributes: BTreeMap::from([("latency".into(), toml::Value::Integer(100))]),
             }],
             monitors: Vec::new(),
+            recorded: None,
         };
         let err = spec.validate().expect_err("must reject");
         assert!(err.contains("chaos_scenarios"), "wrong msg: {err}");
@@ -768,6 +807,7 @@ backend = "pumba"
                 attributes: BTreeMap::from([("latency".into(), toml::Value::Integer(100))]),
             }],
             monitors: Vec::new(),
+            recorded: None,
         };
         let err = spec.validate().expect_err("must reject");
         assert!(err.contains("ghost"), "wrong msg: {err}");
@@ -810,6 +850,7 @@ backend = "pumba"
                 ]),
             }],
             monitors: Vec::new(),
+            recorded: None,
         };
         let err = spec.validate().expect_err("must reject");
         assert!(err.contains("unknown_key"), "wrong msg: {err}");
@@ -846,6 +887,7 @@ backend = "pumba"
             chaos: None,
             chaos_scenarios: Vec::new(),
             monitors: Vec::new(),
+            recorded: None,
         };
         let serialized = toml::to_string(&spec).expect("serialize");
         // The serialized form must NOT mention `monitors` because it's
@@ -1003,6 +1045,7 @@ on_failure = "alert"
             chaos: None,
             chaos_scenarios: Vec::new(),
             monitors: Vec::new(),
+            recorded: None,
         }
     }
 
@@ -1037,8 +1080,83 @@ on_failure = "alert"
             }),
             chaos_scenarios: vec![],
             monitors: Vec::new(),
+            recorded: None,
         };
         let err = spec.validate().expect_err("must reject");
         assert!(err.contains("reserved"), "wrong msg: {err}");
+    }
+
+    // ---- v0.23.2: recorded ----
+
+    /// **BC golden — T1 for v0.23.2.** A v0.23.1-shaped manifest without
+    /// `[environments.<env>.recorded]` MUST round-trip byte-identically
+    /// on the v0.23.2 binary. The `recorded` field is `Option<_>` and
+    /// `skip_serializing_if = "Option::is_none"` so manifests
+    /// pre-recorded never carry a `recorded` line.
+    #[test]
+    fn recorded_config_absent_round_trips_unchanged() {
+        let spec = EnvironmentSpec {
+            name: "dev".into(),
+            backend: "compose".into(),
+            mode: EnvMode::Managed,
+            compose_command: "auto".into(),
+            production: false,
+            env_file: None,
+            services: BTreeMap::from([(
+                "api".into(),
+                ServiceKind::Real(Box::new(RealService {
+                    repo: None,
+                    image: Some("api:dev".into()),
+                    build: None,
+                    ports: vec![3000],
+                    env: BTreeMap::new(),
+                    depends_on: vec![],
+                    healthcheck: None,
+                    watch: None,
+                })),
+            )]),
+            chaos: None,
+            chaos_scenarios: Vec::new(),
+            monitors: Vec::new(),
+            recorded: None,
+        };
+        let serialized = toml::to_string(&spec).expect("serialize");
+        // The serialized form must NOT mention `recorded` because it's
+        // skip-on-None.
+        assert!(
+            !serialized.contains("recorded"),
+            "v0.23.1 manifest serialized with recorded noise: {serialized}"
+        );
+        let reparsed: EnvironmentSpec = toml::from_str(&serialized).expect("reparse");
+        assert_eq!(reparsed, spec, "recorded-absent spec did not round-trip");
+        spec.validate().expect("validate clean spec");
+    }
+
+    /// Parse a full `[environments.<env>.recorded]` block with
+    /// `ignore_response_fields` populated. Acceptance criterion #7.
+    #[test]
+    fn recorded_config_with_ignore_fields_parses() {
+        let toml_src = r#"
+name = "dev"
+backend = "compose"
+[services.api]
+kind = "real"
+image = "api:dev"
+
+[recorded]
+ignore_response_fields = ["id", "timestamp", "created_at", "request_id"]
+"#;
+        let spec: EnvironmentSpec = toml::from_str(toml_src).expect("parse");
+        let recorded = spec.recorded.as_ref().expect("recorded block parsed");
+        assert_eq!(
+            recorded.ignore_response_fields,
+            vec![
+                "id".to_string(),
+                "timestamp".to_string(),
+                "created_at".to_string(),
+                "request_id".to_string()
+            ]
+        );
+        spec.validate().expect("recorded config validates");
     }
 }

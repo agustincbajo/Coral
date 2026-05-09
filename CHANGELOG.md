@@ -7,6 +7,89 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.23.2] - 2026-05-09
+
+**Feature release — third of v0.23 sprint (testing platform): `coral test record` (Keploy capture) + `RecordedRunner` replay.** Closes the synthetic-monitoring loop with a third primitive: capture real HTTP traffic via [Keploy](https://github.com/keploy/keploy) and replay it as deterministic TestCases. Where `coral test --kind user_defined` runs hand-authored YAML and `coral test --kind healthcheck` runs auto-discovered `[services.<name>.healthcheck]` probes, `coral test --kind recorded` replays Keploy-captured exchanges from `.coral/tests/recorded/<service>/*.yaml`. **Capture is Linux-only behind the `recorded` Cargo feature** — eBPF + cgroup-v2 + the `keploy` binary on PATH. **Parser + replay are always-on on every platform** (D4 in the orchestrator's spec) so a Mac contributor can replay a YAML captured on Linux CI without rebuilding. Three `dev`/`staging`-style decisions baked in: status code is required-equal, only `Content-Type` is asserted on response headers (other headers are noise), JSON body deep-equal AFTER recursively stripping every key in `[environments.<env>.recorded].ignore_response_fields`. **Zero new deps** — `serde_yaml_ng` already in workspace; capture path subprocesses curl + keploy. **BC sacred: all v0.23.1 surfaces byte-identical** — `bc_regression` green (8 tests), manifests without `[environments.<env>.recorded]` round-trip unchanged (`recorded_config_absent_round_trips_unchanged`). **1356 tests pass (was 1333; +23).** Pinned tested Keploy version: v2.x (the `api.keploy.io/v1beta1` schema; bump tracked separately).
+
+### Added
+
+- **`[environments.<env>.recorded]` config block.** New `Option<RecordedConfig>` field on `EnvironmentSpec` with `#[serde(default, skip_serializing_if = "Option::is_none")]`:
+  ```toml
+  [environments.dev.recorded]
+  ignore_response_fields = ["id", "timestamp", "created_at", "request_id"]
+  ```
+  Field shape: `{ ignore_response_fields: Vec<String> }`, also `skip_serializing_if = "Vec::is_empty"` so an empty list serializes to nothing.
+- **`coral_test::recorded_runner` module.** `KeployTestCase` parser (Keploy v1beta1 schema), `RecordedRunner` (TestRunner trait impl), `discover_recorded(project_root)` walker. `RecordedRunner::assert_exchange(captured, ignore_fields, status, headers, body)` is pure over its inputs — the unit tests pass canned values without spawning curl.
+- **`coral_test::recorded_runner::json_bodies_match` + `strip_keys_recursive`.** Recursive ignore-list strip — a key named `id` at any depth (top-level, inside arrays, inside nested objects) drops out of BOTH sides before deep-equal compare.
+- **`TestKind::Recorded` is now a value-enum entry on `coral test --kind`.** Pre-v0.23.2 invocations are byte-compatible: empty `--kind` does NOT include recorded (orchestrator-side gate so `coral test --service api` doesn't suddenly find new cases).
+- **`coral test record --service NAME --duration SECS [--output DIR]` CLI subcommand.** Capture-side, Linux-only, gated by the `recorded` Cargo feature. On non-Linux OR without the feature, exits 2 with a friendly hint pointing at the build flag. Linux+feature path:
+  - Resolves the target service's PID via `docker compose ps --format json` + `docker inspect <id> --format '{{.State.Pid}}'` (two-step fallback for Docker version drift per D6).
+  - Subprocesses `keploy record --pid <PID> --path <output_dir>`; SIGTERM after `--duration` seconds.
+  - Default output dir: `<project_root>/.coral/tests/recorded/<service>/`. Created if missing.
+
+### Changed
+
+- **`EnvironmentSpec` gained one additive field** (`recorded: Option<RecordedConfig>`). Test fixtures across `coral-test` / `coral-env` / `coral-cli` updated to include `recorded: None`. Serde-side BC preserved via `#[serde(default, skip_serializing_if = "Option::is_none")]`.
+- **`coral test`'s arg shape now nests an optional subcommand.** `TestArgs { command: Option<TestSubcommand>, run: TestRunArgs }` so pre-v0.23.2 `coral test --service foo --kind smoke` continues to parse via the flat `TestRunArgs` while `coral test record ...` dispatches to the new handler. The `run_inner` function (formerly `run`'s body) is unchanged.
+- **`UserDefinedRunner::discover_tests_dir` and `contract_check::parse_consumer_for_repo`** now skip `.coral/tests/recorded/**` paths so the recorded-runner's Keploy YAMLs don't get parsed as `YamlSuite` (which would `InvalidSpec`-fail at runtime).
+
+### Internal
+
+- **No new workspace deps.** `serde_yaml_ng` already present; capture path subprocesses curl + keploy in line with `coral_runner::http`, `commands::notion_push`, `commands::chaos`. The single-async-runtime-free workspace shape is preserved.
+- **Cargo feature wiring**: `coral-test` declares `recorded = []` (gates the capture path); `coral-cli` declares `recorded = ["coral-test/recorded"]` so `cargo install --features recorded` flows through. The replay path (`RecordedRunner` parser + replay) is intentionally NOT gated — pure I/O against any HTTP endpoint, runs on macOS without the feature.
+- **Curl-based replay** mirrors the rest of the workspace (`-i` for status + headers + body, `--data-binary @-` for stdin body). `parse_curl_response` walks past any `100 Continue` precursor blocks before pulling the final status line.
+- **Pinned tested Keploy version**: the `api.keploy.io/v1beta1` schema. Pre-1.0 Keploy may drift; the parser `#[serde(default)]`s every optional field so a minor-version bump that adds new keys (or drops ones we don't use) doesn't hard-fail the parser.
+
+### Tests (+23)
+
+- **Spec / BC (2)** in `crates/coral-env/src/spec.rs`: `recorded_config_absent_round_trips_unchanged` (T1 — BC pin), `recorded_config_with_ignore_fields_parses` (T7 — TOML round trip).
+- **`recorded_runner` module (12)** in `crates/coral-test/src/recorded_runner.rs::tests`:
+  - `recorded_runner_parses_keploy_yaml` (T2 — parser)
+  - `recorded_runner_status_mismatch_fails` (T3)
+  - `recorded_runner_body_diff_with_ignore_fields_passes` (T4)
+  - `recorded_runner_body_diff_without_ignore_fields_fails` (T5)
+  - `strip_keys_recursive_walks_arrays_and_nested_objects`
+  - `parse_curl_response_separates_headers_and_body`
+  - `parse_curl_response_handles_100_continue_precursor`
+  - `recorded_runner_supports_only_recorded_kind`
+  - `discover_recorded_walks_service_directories`
+  - `discover_recorded_returns_empty_when_dir_missing`
+  - `build_invoke_curl_command_uses_method_and_url`
+  - `content_type_charset_parameters_are_stripped_before_compare`
+- **Integration (5)** in `crates/coral-test/tests/recorded.rs`:
+  - `recorded_replay_with_ignore_fields_passes_against_mock_server` (T4 — end-to-end via TCP listener)
+  - `recorded_replay_status_mismatch_fails_against_mock_server` (T3)
+  - `recorded_replay_body_diff_without_ignore_fields_fails_against_mock_server` (T5)
+  - `run_test_suite_filtered_picks_up_recorded_when_kind_recorded` (orchestrator gate)
+  - `run_test_suite_filtered_skips_recorded_when_kind_unspecified` (BC: pre-v0.23.2 callers don't pick up recorded by default)
+- **CLI / value-enum (4)** in `crates/coral-cli/src/commands/test.rs::tests`:
+  - `coral_test_kind_recorded_in_value_enum` (T8 — AC #4)
+  - `coral_test_kind_smoke_user_defined_still_parse` (sanity)
+  - `coral_test_record_help_mentions_linux` (T7 — AC #10, snapshot via `render_long_help`)
+  - `coral_test_record_on_macos_exits_with_friendly_error` (T6 — `#[cfg(target_os = "macos")]`, AC #2)
+
+### Acceptance criteria — 10/10 met
+
+1. On Linux with `--features recorded`, `coral test record --service api --duration 5s` invokes Keploy + persists YAMLs to `.coral/tests/recorded/api/` (Linux-only smoke, gated `#[cfg(all(target_os = "linux", feature = "recorded"))]`; not exercised on macOS CI).
+2. On non-Linux OR without the feature, exits 2 with `"requires Linux + 'recorded' cargo feature"` message (T6).
+3. `RecordedRunner` parses Keploy YAML schema (T2 — runs on macOS).
+4. `coral test --kind recorded --service api` replays each captured exchange and emits a `TestReport` per case (T8 + integration variant `run_test_suite_filtered_picks_up_recorded_when_kind_recorded`).
+5. Status code mismatch → Fail (T3).
+6. Body diff with `ignore_response_fields` filtering → Pass (T4).
+7. `[environments.<env>.recorded] ignore_response_fields = [...]` parses as `Vec<String>` (T7 — `recorded_config_with_ignore_fields_parses`).
+8. Manifest without `[environments.<env>.recorded]` parses identically (T1 — `recorded_config_absent_round_trips_unchanged`).
+9. `bc-regression` green.
+10. `coral test record --help` documents Linux-only constraint (T7 — `coral_test_record_help_mentions_linux`).
+
+### Pipeline note
+
+Third feature of v0.23 sprint. Tooling validated by 5 prior end-to-end uses in v0.22 / v0.23.0 / v0.23.1. Out of scope, deferred to v0.23.x / v0.24+:
+- Keploy proxy-mode capture (TCP-level dependency rewriting; current path is direct subprocess only).
+- Auto-PID-discovery for non-Docker backends (Tilt, Kind, Compose-on-Podman). v0.23.2 wires Compose only.
+- `ignore_request_fields` (request-side strip — not yet a real-world need).
+- Replay against a different host than the one captured against (URL rewriting via `${SVC_<NAME>_BASE}` substitution).
+- Linux smoke test in CI matrix (covered by Linux developers via `cargo test --features recorded` locally; GH Actions matrix expansion deferred).
+
 ## [0.23.1] - 2026-05-09
 
 **Feature release — second of v0.23 sprint (testing platform): `coral monitor up` with JSONL persistence.** Cron-like scheduled TestCase loops against a long-lived environment, the synthetic-monitoring counterpart to `coral test`'s one-shot run. Where `coral test` answers "did the suite pass right now?", `coral monitor up` answers "has staging been healthy for the last hour?" — each iteration appends one `MonitorRun` line to `.coral/monitors/<env>-<monitor>.jsonl` so an operator can `coral monitor history --tail 60` to see the last 60 ticks. Foreground only in v0.23.1; `--detach` errors with a deferred-message pointing at v0.24+. SIGINT/SIGTERM exit cleanly with a final summary via `signal-hook`. The `MonitorRun` JSONL schema is **frozen** at 7 fields (`timestamp`, `env`, `monitor_name`, `total`, `passed`, `failed`, `duration_ms`) — pinned by `monitor_run_jsonl_shape_pinned`. **One new workspace dep: `signal-hook = "0.3"`** (~30 KB single-purpose with `libc` transitive — `libc` was already in the tree via `tracing`/`clap`). Phase 2's pure refactor extracts `coral_test::run_test_suite_filtered` from `coral_cli::commands::test::run` so both surfaces share the runner-build / discover / filter / execute pipeline and can never drift on which cases they pick. **BC sacred: all v0.23.0 surfaces are byte-identical** — `bc_regression` green (8 tests), manifests without `[[environments.<env>.monitors]]` round-trip unchanged (`monitors_absent_round_trips_unchanged`). **1333 tests pass (was 1300; +33).**

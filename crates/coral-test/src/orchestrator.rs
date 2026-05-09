@@ -16,6 +16,7 @@
 use crate::error::TestResult;
 use crate::healthcheck_runner::HealthcheckRunner;
 use crate::hurl_runner::HurlRunner;
+use crate::recorded_runner::RecordedRunner;
 use crate::report::TestReport;
 use crate::spec::{TestCase, TestKind};
 use crate::user_defined_runner::UserDefinedRunner;
@@ -71,10 +72,20 @@ pub fn run_test_suite_filtered(
             .kinds
             .iter()
             .any(|k| matches!(k, TestKind::UserDefined));
+    // v0.23.2: recorded replay. Empty kinds list does NOT include
+    // recorded by default — replay is opt-in (the user has to commit
+    // captured YAMLs first). Including it on `--kind recorded`
+    // explicitly keeps `coral test` behavior backward-compatible:
+    // pre-v0.23.2 invocations don't suddenly find new cases.
+    let want_recorded = filters
+        .kinds
+        .iter()
+        .any(|k| matches!(k, TestKind::Recorded));
 
     let hc_runner = HealthcheckRunner::new(backend.clone(), plan.clone(), spec.clone());
     let ud_runner = UserDefinedRunner::new(backend.clone(), plan.clone())
         .with_update_snapshots(update_snapshots);
+    let rec_runner = RecordedRunner::new(backend.clone(), plan.clone(), spec.clone());
 
     let mut all_cases: Vec<(TestCase, &dyn TestRunner)> = Vec::new();
     if want_healthcheck {
@@ -96,6 +107,11 @@ pub fn run_test_suite_filtered(
             for d in openapi_cases {
                 all_cases.push((d.case, &ud_runner));
             }
+        }
+    }
+    if want_recorded {
+        for case in RecordedRunner::cases_from_project(project_root)? {
+            all_cases.push((case, &rec_runner));
         }
     }
 

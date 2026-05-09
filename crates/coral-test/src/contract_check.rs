@@ -373,6 +373,7 @@ pub fn parse_consumer_for_repo(
     repo_path: &Path,
 ) -> TestResult<Option<ConsumerExpectations>> {
     let tests_dir = repo_path.join(".coral/tests");
+    let recorded_dir = tests_dir.join("recorded");
     let paths = crate::walk_tests::walk_tests_recursive(repo_path, &["yaml", "yml", "hurl"])
         .map_err(|source| TestError::Io {
             path: tests_dir.clone(),
@@ -383,6 +384,13 @@ pub fn parse_consumer_for_repo(
         references: Vec::new(),
     };
     for path in paths {
+        // v0.23.2: Keploy YAMLs under `.coral/tests/recorded/` are
+        // managed by `RecordedRunner` and have a different schema
+        // from `YamlSuite`. Skip them so the consumer-side contract
+        // walk doesn't try to parse them as user-defined.
+        if path.starts_with(&recorded_dir) {
+            continue;
+        }
         let ext = path
             .extension()
             .and_then(|s| s.to_str())

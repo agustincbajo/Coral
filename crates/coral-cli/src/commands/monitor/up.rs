@@ -481,6 +481,7 @@ mod tests {
             chaos: None,
             chaos_scenarios: Vec::new(),
             monitors: Vec::new(),
+            recorded: None,
         }
     }
 

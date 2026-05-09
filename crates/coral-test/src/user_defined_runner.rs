@@ -171,6 +171,7 @@ impl UserDefinedRunner {
     /// `walk_tests::walk_tests_recursive` for the contract.
     pub fn discover_tests_dir(project_root: &Path) -> TestResult<Vec<(TestCase, YamlSuite)>> {
         let dir = project_root.join(".coral/tests");
+        let recorded_dir = dir.join("recorded");
         let paths = crate::walk_tests::walk_tests_recursive(project_root, &["yaml", "yml"])
             .map_err(|source| TestError::Io {
                 path: dir.clone(),
@@ -178,6 +179,14 @@ impl UserDefinedRunner {
             })?;
         let mut out = Vec::with_capacity(paths.len());
         for path in paths {
+            // v0.23.2: Keploy YAMLs live under
+            // `.coral/tests/recorded/<service>/*.yaml` and are owned
+            // by `RecordedRunner` — they're a different schema and
+            // would fail to parse as `YamlSuite`. Skip them here so
+            // both runners can co-exist under `.coral/tests/`.
+            if path.starts_with(&recorded_dir) {
+                continue;
+            }
             let raw = std::fs::read_to_string(&path).map_err(|source| TestError::Io {
                 path: path.clone(),
                 source,

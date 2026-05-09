@@ -22,6 +22,18 @@ coral-env = { workspace = true }
 default = ["healthcheck", "user_defined"]
 healthcheck = []
 user_defined = []
+# v0.23.2: gates the *capture* path (subprocesses `keploy record`,
+# resolves the target service's PID via `docker compose ps` +
+# `docker inspect`, persists captured exchanges as Keploy YAML
+# under `.coral/tests/recorded/<service>/`). The capture path
+# requires Linux (eBPF + cgroup-v2 + the `keploy` binary on PATH);
+# the `coral test record` CLI errors with a friendly hint on
+# non-Linux even when the feature is enabled. **Parser + replay
+# (`RecordedRunner`) are intentionally NOT gated** — they're pure
+# I/O against any HTTP endpoint, so a macOS contributor can replay
+# a YAML captured on Linux CI without rebuilding with the feature
+# (D4 in the orchestrator's spec).
+recorded = []
 # v0.18+ feature gates:
 # hurl = []        # second input format
 # discover = []    # OpenAPI/proto auto-gen

@@ -42,6 +42,7 @@ fn spec_with_service(name: &str, port: u16, hc: Option<Healthcheck>) -> Environm
         chaos: None,
         chaos_scenarios: Vec::new(),
         monitors: Vec::new(),
+        recorded: None,
     }
 }
 
