@@ -1345,7 +1345,8 @@ Test count: 385 (v0.8.0) → 427 (+42).
 - 5 ADRs: Rust CLI architecture, Claude CLI vs API, template via include_dir, multi-agent flow, versioning + sync.
 - Self-hosted `.wiki/` with 14 seed pages (cli/core/lint/runner/stats modules + concepts + entities + flow + decisions + synthesis + operations + sources).
 
-[Unreleased]: https://github.com/agustincbajo/Coral/compare/v0.21.4...HEAD
+[Unreleased]: https://github.com/agustincbajo/Coral/compare/v0.22.0...HEAD
+[0.22.0]: https://github.com/agustincbajo/Coral/releases/tag/v0.22.0
 [0.21.4]: https://github.com/agustincbajo/Coral/releases/tag/v0.21.4
 [0.21.3]: https://github.com/agustincbajo/Coral/releases/tag/v0.21.3
 [0.21.2]: https://github.com/agustincbajo/Coral/releases/tag/v0.21.2
