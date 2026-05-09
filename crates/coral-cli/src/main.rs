@@ -123,6 +123,13 @@ enum Cmd {
     /// `[[chaos_scenarios]]`. Requires `[environments.<env>.chaos]`
     /// in `coral.toml` and `coral up --env <name>` first.
     Chaos(commands::chaos::ChaosArgs),
+    /// **v0.23.1**: scheduled TestCase loops against a long-lived
+    /// environment. `up` runs a foreground monitor (Ctrl-C exits
+    /// cleanly), `list` enumerates declared monitors with best-effort
+    /// running/stopped status, `history` tails the JSONL ledger, and
+    /// `stop` is a v0.23.1 stub that points at Ctrl-C. Requires
+    /// `[[environments.<env>.monitors]]` in `coral.toml`.
+    Monitor(commands::monitor::MonitorArgs),
     /// **Hidden** test-only helper: acquires `with_exclusive_lock(path)`,
     /// reads the file as a u64 counter, increments by 1, writes back.
     /// Used by `tests/cross_process_lock.rs` to verify the v0.15
@@ -204,6 +211,7 @@ fn main() -> ExitCode {
             SkillCmd::Publish => commands::skill::publish(),
         },
         Cmd::Chaos(args) => commands::chaos::run(args, cli.wiki_root.as_deref()),
+        Cmd::Monitor(args) => commands::monitor::run(args, cli.wiki_root.as_deref()),
         Cmd::TestLockIncr { path } => run_test_lock_incr(&path),
     };
 

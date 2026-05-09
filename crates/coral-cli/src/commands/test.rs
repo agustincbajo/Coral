@@ -13,7 +13,8 @@ use clap::Args;
 use coral_env::compose::{ComposeBackend, ComposeRuntime};
 use coral_env::{EnvBackend, EnvHandle, EnvPlan};
 use coral_test::{
-    HealthcheckRunner, HurlRunner, JunitOutput, TestCase, TestRunner, TestStatus, UserDefinedRunner,
+    HealthcheckRunner, HurlRunner, JunitOutput, TestCase, TestFilters, TestKind, TestStatus,
+    UserDefinedRunner, run_test_suite_filtered,
 };
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -175,93 +176,65 @@ pub fn run(args: TestArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
         state: BTreeMap::new(),
     };
 
-    let want_healthcheck = args.kinds.is_empty()
-        || args
-            .kinds
-            .iter()
-            .any(|k| matches!(k, KindArg::Healthcheck | KindArg::Smoke));
-    let want_user_defined = args.kinds.is_empty()
-        || args
-            .kinds
-            .iter()
-            .any(|k| matches!(k, KindArg::UserDefined | KindArg::Smoke));
-
-    let hc_runner = HealthcheckRunner::new(backend.clone(), plan.clone(), spec.clone());
-    let ud_runner = UserDefinedRunner::new(backend.clone(), plan.clone())
-        .with_update_snapshots(args.update_snapshots);
-
-    let mut all_cases: Vec<(TestCase, &dyn TestRunner)> = Vec::new();
-    if want_healthcheck {
-        for case in HealthcheckRunner::cases_from_spec(&spec) {
-            all_cases.push((case, &hc_runner));
-        }
-    }
-    if want_user_defined {
-        let yaml_pairs = UserDefinedRunner::discover_tests_dir(&project.root)
-            .context("discovering YAML user-defined tests")?;
-        for (case, _suite) in yaml_pairs {
-            all_cases.push((case, &ud_runner));
-        }
-        let hurl_pairs =
-            HurlRunner::discover(&project.root).context("discovering Hurl user-defined tests")?;
-        for (case, _suite) in hurl_pairs {
-            all_cases.push((case, &ud_runner));
-        }
-        if args.include_discovered {
-            let openapi_cases = coral_test::discover_openapi_in_project(&project.root)
-                .context("discovering OpenAPI tests")?;
-            for d in openapi_cases {
-                all_cases.push((d.case, &ud_runner));
-            }
-        }
-    }
-
-    // Apply --service / --tag filters.
-    let services_filter: std::collections::BTreeSet<&str> =
-        args.services.iter().map(String::as_str).collect();
-    let tags_filter: std::collections::BTreeSet<&str> =
-        args.tags.iter().map(String::as_str).collect();
-    let filtered: Vec<(TestCase, &dyn TestRunner)> = all_cases
-        .into_iter()
-        .filter(|(case, _)| {
-            if !services_filter.is_empty() {
-                let svc = case.service.as_deref().unwrap_or("");
-                if !services_filter.contains(svc) {
-                    return false;
+    // v0.23.1: runner build + discover + filter + execute now lives in
+    // `coral_test::run_test_suite_filtered` so the monitor loop and
+    // `coral test` can never drift on which cases they pick. Translate
+    // the CLI's `KindArg` (which has a `Smoke` umbrella variant) into
+    // the underlying `TestKind`s the orchestrator wants. Empty list ==
+    // include all kinds.
+    let kinds: Vec<TestKind> = {
+        let mut out: Vec<TestKind> = Vec::new();
+        for k in &args.kinds {
+            match k {
+                KindArg::Healthcheck => {
+                    if !out.contains(&TestKind::Healthcheck) {
+                        out.push(TestKind::Healthcheck);
+                    }
+                }
+                KindArg::UserDefined => {
+                    if !out.contains(&TestKind::UserDefined) {
+                        out.push(TestKind::UserDefined);
+                    }
+                }
+                KindArg::Smoke => {
+                    // Smoke = healthcheck + user_defined; orchestrator
+                    // takes a flat list, so push both (unique).
+                    if !out.contains(&TestKind::Healthcheck) {
+                        out.push(TestKind::Healthcheck);
+                    }
+                    if !out.contains(&TestKind::UserDefined) {
+                        out.push(TestKind::UserDefined);
+                    }
                 }
             }
-            if !tags_filter.is_empty()
-                && !case.tags.iter().any(|t| tags_filter.contains(t.as_str()))
-            {
-                return false;
-            }
-            true
-        })
-        .collect();
+        }
+        out
+    };
+    let filters = TestFilters {
+        services: args.services.clone(),
+        tags: args.tags.clone(),
+        kinds,
+        include_discovered: args.include_discovered,
+    };
+    let reports = run_test_suite_filtered(
+        &project.root,
+        &spec,
+        backend.clone(),
+        &plan,
+        &env_handle,
+        &filters,
+        args.update_snapshots,
+    )
+    .context("running filtered test suite")?;
 
-    if filtered.is_empty() {
+    if reports.is_empty() {
         println!("no test cases match the given filters");
         return Ok(ExitCode::SUCCESS);
     }
 
-    let mut reports = Vec::with_capacity(filtered.len());
-    let mut all_pass = true;
-    for (case, runner) in filtered {
-        let report = runner.run(&case, &env_handle).with_context(|| {
-            format!(
-                "running case '{}' via runner '{}'",
-                case.name,
-                runner.name()
-            )
-        })?;
-        if matches!(
-            report.status,
-            TestStatus::Fail { .. } | TestStatus::Error { .. }
-        ) {
-            all_pass = false;
-        }
-        reports.push(report);
-    }
+    let all_pass = !reports
+        .iter()
+        .any(|r| matches!(r.status, TestStatus::Fail { .. } | TestStatus::Error { .. }));
 
     match args.format {
         Format::Markdown => print_markdown(&reports),

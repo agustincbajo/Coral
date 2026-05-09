@@ -331,7 +331,7 @@ dependencies = [
 
 [[package]]
 name = "coral-cli"
-version = "0.23.0"
+version = "0.23.1"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -354,6 +354,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml_ng",
+ "signal-hook",
  "tempfile",
  "toml",
  "tracing",
@@ -364,7 +365,7 @@ dependencies = [
 
 [[package]]
 name = "coral-core"
-version = "0.23.0"
+version = "0.23.1"
 dependencies = [
  "ahash",
  "chrono",
@@ -386,7 +387,7 @@ dependencies = [
 
 [[package]]
 name = "coral-env"
-version = "0.23.0"
+version = "0.23.1"
 dependencies = [
  "chrono",
  "coral-core",
@@ -402,7 +403,7 @@ dependencies = [
 
 [[package]]
 name = "coral-lint"
-version = "0.23.0"
+version = "0.23.1"
 dependencies = [
  "coral-core",
  "coral-runner",
@@ -420,7 +421,7 @@ dependencies = [
 
 [[package]]
 name = "coral-mcp"
-version = "0.23.0"
+version = "0.23.1"
 dependencies = [
  "chrono",
  "coral-core",
@@ -437,7 +438,7 @@ dependencies = [
 
 [[package]]
 name = "coral-runner"
-version = "0.23.0"
+version = "0.23.1"
 dependencies = [
  "rayon",
  "regex",
@@ -453,7 +454,7 @@ dependencies = [
 
 [[package]]
 name = "coral-session"
-version = "0.23.0"
+version = "0.23.1"
 dependencies = [
  "chrono",
  "coral-core",
@@ -470,7 +471,7 @@ dependencies = [
 
 [[package]]
 name = "coral-stats"
-version = "0.23.0"
+version = "0.23.1"
 dependencies = [
  "ahash",
  "chrono",
@@ -482,7 +483,7 @@ dependencies = [
 
 [[package]]
 name = "coral-test"
-version = "0.23.0"
+version = "0.23.1"
 dependencies = [
  "chrono",
  "coral-core",
@@ -1802,6 +1803,26 @@ name = "shlex"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
+
+[[package]]
+name = "signal-hook"
+version = "0.3.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d881a16cf4426aa584979d30bd82cb33429027e42122b169753d6ef1085ed6e2"
+dependencies = [
+ "libc",
+ "signal-hook-registry",
+]
+
+[[package]]
+name = "signal-hook-registry"
+version = "1.4.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c4db69cba1110affc0e9f7bcd48bbf87b3f4fc7c61fc9155afd4c469eb3d6c1b"
+dependencies = [
+ "errno",
+ "libc",
+]
 
 [[package]]
 name = "simd-adler32"

@@ -7,6 +7,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.23.1] - 2026-05-09
+
+**Feature release — second of v0.23 sprint (testing platform): `coral monitor up` with JSONL persistence.** Cron-like scheduled TestCase loops against a long-lived environment, the synthetic-monitoring counterpart to `coral test`'s one-shot run. Where `coral test` answers "did the suite pass right now?", `coral monitor up` answers "has staging been healthy for the last hour?" — each iteration appends one `MonitorRun` line to `.coral/monitors/<env>-<monitor>.jsonl` so an operator can `coral monitor history --tail 60` to see the last 60 ticks. Foreground only in v0.23.1; `--detach` errors with a deferred-message pointing at v0.24+. SIGINT/SIGTERM exit cleanly with a final summary via `signal-hook`. The `MonitorRun` JSONL schema is **frozen** at 7 fields (`timestamp`, `env`, `monitor_name`, `total`, `passed`, `failed`, `duration_ms`) — pinned by `monitor_run_jsonl_shape_pinned`. **One new workspace dep: `signal-hook = "0.3"`** (~30 KB single-purpose with `libc` transitive — `libc` was already in the tree via `tracing`/`clap`). Phase 2's pure refactor extracts `coral_test::run_test_suite_filtered` from `coral_cli::commands::test::run` so both surfaces share the runner-build / discover / filter / execute pipeline and can never drift on which cases they pick. **BC sacred: all v0.23.0 surfaces are byte-identical** — `bc_regression` green (8 tests), manifests without `[[environments.<env>.monitors]]` round-trip unchanged (`monitors_absent_round_trips_unchanged`). **1333 tests pass (was 1300; +33).**
+
+### Added
+
+- **`[[environments.<env>.monitors]]` config blocks.** New `Vec<MonitorSpec>` field on `EnvironmentSpec` with `#[serde(default, skip_serializing_if = "Vec::is_empty")]`:
+  ```toml
+  [[environments.staging.monitors]]
+  name = "smoke-loop"
+  tag = "smoke"
+  kind = "user_defined"
+  services = ["api"]
+  interval_seconds = 60
+  on_failure = "log"             # default; "fail-fast" exits non-zero on first failure
+  ```
+- **`coral monitor {up,list,history,stop}` CLI subcommand.**
+  - `up --env NAME [--monitor NAME]` — foreground loop. First iteration runs immediately (no leading sleep); subsequent iterations sleep `interval_seconds` between ticks. Iteration overrun logs a `WARN` and starts the next tick immediately.
+  - `list [--env NAME]` — print declared monitors with best-effort `running`/`stopped` status (last JSONL timestamp within `interval × 2` → `running`).
+  - `history --env NAME --monitor NAME [--tail N]` — print the last N JSONL lines (default 20).
+  - `stop` — v0.23.1 deferred-stub; prints "use Ctrl-C in foreground" and exits 0.
+- **`MonitorRun` JSONL row** persisted to `.coral/monitors/<env>-<monitor_name>.jsonl` via `OpenOptions::new().create(true).append(true)` + `writeln!` + `f.sync_all()` — explicitly NOT `atomic_write_string`, because an append-only ledger of unbounded length wants O(1) appends, not O(N) full-file rewrites.
+- **`OnFailure` enum** (`log` | `fail-fast` | `alert`). `Alert` parses (forward-compat) but errors at runtime with `"on_failure = \"alert\" is reserved for v0.24+"`.
+- **`coral_test::run_test_suite_filtered(project_root, spec, backend, plan, env_handle, filters, update_snapshots)`** — new public API that wraps the runner-build / discover / filter / execute pipeline previously inline in `coral test`'s handler. Both `coral test` and the monitor loop call this; future surfaces (`coral profile`, `coral schedule`) plug in the same way. `TestFilters` carries the filter shape (services, tags, kinds, include_discovered).
+- **`coral monitor up` SIGINT/SIGTERM clean shutdown** via `signal-hook::flag::register`. The handler flips an `AtomicBool`; the loop checks at the top AND inside `sleep_interruptible` (250ms chunks instead of one big `thread::sleep`) so Ctrl-C latency is < 250ms, not 60s.
+
+### Changed
+
+- **`EnvironmentSpec` gained one additive field** (`monitors: Vec<MonitorSpec>`). `EnvironmentSpec::validate` now also checks: monitor names are unique within an env, `interval_seconds > 0`, and `kind` (when set) is one of `healthcheck` / `user_defined` / `smoke` / `contract` / `property_based`. Test fixtures across `coral-test`/`coral-env` updated to include `monitors: Vec::new()`.
+- **`coral test`'s `run` handler** is now a thin wrapper over `coral_test::run_test_suite_filtered`. The CLI translates its `KindArg` (which has a `Smoke` umbrella variant) into a flat `Vec<TestKind>`, hands the rest off. Behavior is byte-identical to v0.23.0.
+
+### Internal
+
+- **One new workspace dep: `signal-hook = "0.3"`.** Justified inline in the manifest comment (~30 KB single-purpose; `libc` transitive was already in the tree). The `unsafe libc::signal` fallback was rejected because the `Arc<AtomicBool>` registration is the well-trodden, easier-to-audit path.
+- **Phase 2 pure refactor (no behavior change).** Pulling the runner-build code out of `coral test` into `coral_test::run_test_suite_filtered` was its own commit-discipline phase: `cargo test --workspace` was run between Phase 2 and Phase 3 to verify nothing in the `coral test` path drifted.
+- **Loop tests serialize via a process-global `Mutex`** because the SIGINT-flag is process-global. `loop_test_lock()` returns a poison-tolerant guard so a panicking test doesn't break the next one.
+
+### Tests (+33)
+
+- **Spec / BC (4)** in `crates/coral-env/src/spec.rs`: `monitors_absent_round_trips_unchanged` (T1 — BC pin), `monitors_full_section_parses`, `monitors_alert_on_failure_parses_validate_passes`, `monitor_with_zero_interval_rejected`, `monitor_with_unknown_kind_rejected`, `monitor_duplicate_names_rejected`.
+- **JSONL / MonitorRun (4)** in `crates/coral-cli/src/commands/monitor/run.rs::tests`: `monitor_run_jsonl_shape_pinned` (T2 — schema pin), `from_reports_counts_pass_fail_error`, `append_run_creates_file_and_appends`, `jsonl_path_combines_env_and_monitor_name`.
+- **Loop / scheduling (5)** in `crates/coral-cli/src/commands/monitor/up.rs::tests`: `monitor_loop_first_iteration_immediate` (T3 — AC #2), `monitor_loop_appends_each_iteration_to_jsonl` (T4 — AC #3), `on_failure_log_continues_after_failure` (T6 — AC #5), `on_failure_fail_fast_exits_on_first_failure` (T7 — AC #6), `kind_for_monitor_translates_known_strings`, `kind_for_monitor_rejects_unknown_strings`, `dummy_spec_round_trips`, `exit_for_returns_success_when_no_failures`.
+- **History / list (8)** in `crates/coral-cli/src/commands/monitor/{history,list,stop}.rs::tests`: `tail_lines_returns_last_n` (T5 — AC #7), `tail_lines_handles_fewer_lines_than_n`, `tail_lines_skips_blank_trailing_newlines`, `tail_lines_handles_empty`, `status_for_reports_stopped_when_no_file`, `status_for_reports_running_when_recent_tick`, `status_for_reports_stopped_when_tick_outside_window`, `status_for_handles_unparseable_last_line`, `stop_returns_success`.
+- **CLI E2E (6)** in `crates/coral-cli/tests/monitor_e2e.rs`: `monitor_list_shows_declared_monitors` (T8 — AC #10), `monitor_list_unknown_env_prints_friendly_message`, `monitor_history_missing_file_exits_2`, `monitor_history_tail_returns_last_n_lines`, `monitor_stop_is_deferred_stub`, `monitor_up_detach_is_rejected`.
+
+### Acceptance criteria — 10/10 met
+
+1. Manifest without `[[monitors]]` round-trips byte-identically (T1 / `monitors_absent_round_trips_unchanged`).
+2. `monitor up --env staging` first iteration runs immediately (T3, asserts wall-clock < 500ms before first tick).
+3. Each iteration appends ONE `MonitorRun` line to `.coral/monitors/<env>-<name>.jsonl` (T4, 3 iterations → 3 lines).
+4. `MonitorRun` schema frozen: `timestamp`, `env`, `monitor_name`, `total`, `passed`, `failed`, `duration_ms` (T2 pins exact field list + serialization order).
+5. `on_failure = "log"` records and continues (T6).
+6. `on_failure = "fail-fast"` exits non-zero on first failed iteration (T7).
+7. `monitor history --tail 5` returns last 5 JSONL lines (T5; e2e variant in `monitor_history_tail_returns_last_n_lines`).
+8. SIGINT exits cleanly with summary (loop checks `shutdown_flag()` at top + inside `sleep_interruptible`; final summary always prints).
+9. Iteration > interval logs warning + starts next immediately (`tracing::warn!` + `continue` skips the sleep).
+10. `monitor list` shows declared monitors + best-effort status (T8; status heuristic = `interval × 2` window).
+
+### Pipeline note
+
+Second feature of v0.23 sprint. Tooling validated by 4 prior end-to-end uses in v0.22 / v0.23.0. Out of scope, deferred to v0.23.x / v0.24+:
+- `--detach` (daemonization, PID files, `monitor stop` via PID-kill).
+- JSONL rotation / size cap (current limitation: file grows unbounded).
+- `on_failure = "alert"` wiring (PagerDuty / OpsGenie webhooks).
+- Cron expression parsing (current resolution: `interval_seconds: u64`).
+- `coral session capture --from cursor` and `--from chatgpt` (still tracking #16, unchanged).
+
 ## [0.23.0] - 2026-05-09
 
 **Feature release — first of v0.23 sprint (testing platform): `coral chaos inject` with Toxiproxy backend.** Network/process fault injection for running Coral environments. Closes the loop between `coral up` (spin up) and `coral test` (validate happy-path) with a third primitive: validate-under-pressure. Per PRD §3.3 (test honeycomb) + §13.6, this is the first of four v0.23 testing-platform features (chaos, monitor, record, property-based). v0.23.0 wires Toxiproxy (Shopify) as the first backend — TCP-level proxy that injects latency, bandwidth caps, slow-close, timeout, slicer faults at the connection level. Pumba (Linux-only, container-level kill/pause) deferred to v0.23.x or v0.24+ pending demand. **1300 tests pass (was 1274; +26).** `bc-regression` green; chaos-OFF compose YAML byte-identical to v0.22.6.
@@ -1554,7 +1621,10 @@ Test count: 385 (v0.8.0) → 427 (+42).
 - 5 ADRs: Rust CLI architecture, Claude CLI vs API, template via include_dir, multi-agent flow, versioning + sync.
 - Self-hosted `.wiki/` with 14 seed pages (cli/core/lint/runner/stats modules + concepts + entities + flow + decisions + synthesis + operations + sources).
 
-[Unreleased]: https://github.com/agustincbajo/Coral/compare/v0.22.5...HEAD
+[Unreleased]: https://github.com/agustincbajo/Coral/compare/v0.23.1...HEAD
+[0.23.1]: https://github.com/agustincbajo/Coral/releases/tag/v0.23.1
+[0.23.0]: https://github.com/agustincbajo/Coral/releases/tag/v0.23.0
+[0.22.6]: https://github.com/agustincbajo/Coral/releases/tag/v0.22.6
 [0.22.5]: https://github.com/agustincbajo/Coral/releases/tag/v0.22.5
 [0.22.0]: https://github.com/agustincbajo/Coral/releases/tag/v0.22.0
 [0.21.4]: https://github.com/agustincbajo/Coral/releases/tag/v0.21.4

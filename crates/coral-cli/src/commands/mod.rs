@@ -12,6 +12,7 @@ pub mod history;
 pub mod init;
 pub mod lint;
 pub mod mcp;
+pub mod monitor;
 pub mod notion_push;
 pub mod pins;
 pub mod project;

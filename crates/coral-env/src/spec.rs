@@ -42,6 +42,72 @@ pub struct EnvironmentSpec {
     /// Empty when the environment doesn't declare any.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub chaos_scenarios: Vec<ChaosScenario>,
+    /// v0.23.1: pre-canned monitors runnable via `coral monitor up`.
+    /// Each monitor pairs a TestCase filter (tag / kind / services) with a
+    /// cron-like interval. Empty when the environment doesn't declare any.
+    /// `skip_serializing_if` keeps v0.23.0 manifests byte-identical when
+    /// no `[[environments.<env>.monitors]]` blocks are present — see
+    /// `monitors_absent_round_trips_unchanged`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub monitors: Vec<MonitorSpec>,
+}
+
+/// v0.23.1: a single monitor entry under `[[environments.<env>.monitors]]`.
+///
+/// A monitor is a *named, scheduled invocation of `coral test` against
+/// a long-lived environment*. Filters mirror the `coral test --tag` /
+/// `--kind` / `--service` shape exactly so the same `coral.toml` lines
+/// can be lifted into a monitor without re-authoring the filter spec.
+///
+/// `kind` is stored as `Option<String>` rather than `Option<TestKind>`
+/// because `coral-env` is upstream of `coral-test` (`TestKind` lives
+/// there). The CLI's `monitor up` resolves this to a `TestKind` at
+/// dispatch time and bails with an actionable error on mismatch — the
+/// validation surfaces in `parse_all` via `EnvironmentSpec::validate`.
+///
+/// `MonitorSpec` is **frozen** for v0.23.1: any new field MUST land
+/// with `#[serde(default, skip_serializing_if = ...)]` so existing
+/// manifests round-trip unchanged.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MonitorSpec {
+    pub name: String,
+    /// Optional tag filter (e.g. `"smoke"`). When absent, the monitor
+    /// runs every TestCase the env exposes (subject to other filters).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
+    /// Optional kind filter (`"healthcheck"`, `"user_defined"`,
+    /// `"smoke"`). Stored as a string here — the CLI parses it into
+    /// `coral_test::TestKind` at dispatch time. See
+    /// `EnvironmentSpec::validate` for the parse-time check.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// Optional service-name filter (repeatable in TOML via
+    /// `services = ["api", "db"]`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub services: Vec<String>,
+    /// How often the monitor fires. v0.23.1 ships seconds resolution;
+    /// minute / hour cron is deferred to v0.23.x+ pending demand.
+    pub interval_seconds: u64,
+    /// What to do when an iteration fails. Default: `Log` — record the
+    /// pass/fail tally to JSONL and continue on the next tick.
+    #[serde(default)]
+    pub on_failure: OnFailure,
+}
+
+/// v0.23.1: how to react to a failed monitor iteration. `Alert` parses
+/// (so the manifest is forward-compatible) but errors at runtime in
+/// v0.23.1 — the alert wiring (PagerDuty / OpsGenie webhooks) lands in
+/// v0.24+.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum OnFailure {
+    /// Append the run to JSONL and continue. The default.
+    #[default]
+    Log,
+    /// Append the run to JSONL and exit non-zero immediately.
+    FailFast,
+    /// Reserved. Currently errors at runtime (see `monitor up`).
+    Alert,
 }
 
 /// Chaos-engineering sidecar configuration. v0.23.0 only knows
@@ -334,6 +400,53 @@ impl EnvironmentSpec {
     ///    required keys present, no unknown keys.
     /// 4. `services["toxiproxy"]` is reserved when `chaos.is_some()`.
     pub fn validate(&self) -> Result<(), String> {
+        // ---- v0.23.1 monitors ----
+        // Cheap pre-flight checks against the manifest shape. The CLI
+        // re-validates `kind` against `coral_test::TestKind` at
+        // dispatch time (the string parse lives in the consumer crate).
+        for m in &self.monitors {
+            if m.name.is_empty() {
+                return Err(format!(
+                    "environment '{}' declares a monitor with an empty name; every \
+                     `[[environments.{}.monitors]]` block needs a `name = \"...\"`",
+                    self.name, self.name
+                ));
+            }
+            if m.interval_seconds == 0 {
+                return Err(format!(
+                    "monitor '{}' in environment '{}' has interval_seconds = 0; pick a positive value",
+                    m.name, self.name
+                ));
+            }
+            if let Some(k) = &m.kind {
+                let known = matches!(
+                    k.as_str(),
+                    "healthcheck" | "user_defined" | "smoke" | "contract" | "property_based"
+                );
+                if !known {
+                    return Err(format!(
+                        "monitor '{}' in environment '{}' has unknown kind '{}'; \
+                         valid: healthcheck, user_defined, smoke",
+                        m.name, self.name, k
+                    ));
+                }
+            }
+        }
+        // Names must be unique within an env so JSONL paths
+        // (`<env>-<monitor>.jsonl`) don't collide.
+        {
+            let mut seen = std::collections::BTreeSet::new();
+            for m in &self.monitors {
+                if !seen.insert(m.name.as_str()) {
+                    return Err(format!(
+                        "environment '{}' declares two monitors named '{}'; \
+                         names must be unique within an env",
+                        self.name, m.name
+                    ));
+                }
+            }
+        }
+
         if !self.chaos_scenarios.is_empty() && self.chaos.is_none() {
             return Err(format!(
                 "environment '{}' declares chaos_scenarios but no [environments.{}.chaos] block; \
@@ -497,6 +610,7 @@ mod tests {
             )]),
             chaos: None,
             chaos_scenarios: Vec::new(),
+            monitors: Vec::new(),
         };
         let serialized = toml::to_string(&spec).expect("serialize");
         // The serialized form must mention NEITHER `chaos` nor
@@ -607,6 +721,7 @@ backend = "pumba"
                 service: "api".into(),
                 attributes: BTreeMap::from([("latency".into(), toml::Value::Integer(100))]),
             }],
+            monitors: Vec::new(),
         };
         let err = spec.validate().expect_err("must reject");
         assert!(err.contains("chaos_scenarios"), "wrong msg: {err}");
@@ -652,6 +767,7 @@ backend = "pumba"
                 service: "ghost".into(),
                 attributes: BTreeMap::from([("latency".into(), toml::Value::Integer(100))]),
             }],
+            monitors: Vec::new(),
         };
         let err = spec.validate().expect_err("must reject");
         assert!(err.contains("ghost"), "wrong msg: {err}");
@@ -693,9 +809,201 @@ backend = "pumba"
                     ("unknown_key".into(), toml::Value::Integer(0)),
                 ]),
             }],
+            monitors: Vec::new(),
         };
         let err = spec.validate().expect_err("must reject");
         assert!(err.contains("unknown_key"), "wrong msg: {err}");
+    }
+
+    // ---- v0.23.1: monitors ----
+
+    /// **BC golden — T1.** A v0.23.0 manifest without
+    /// `[[environments.<env>.monitors]]` MUST round-trip byte-identically
+    /// on a v0.23.1 binary. Pre-v0.23.1 manifests still work because
+    /// `monitors` is `skip_serializing_if = "Vec::is_empty"`.
+    #[test]
+    fn monitors_absent_round_trips_unchanged() {
+        let spec = EnvironmentSpec {
+            name: "dev".into(),
+            backend: "compose".into(),
+            mode: EnvMode::Managed,
+            compose_command: "auto".into(),
+            production: false,
+            env_file: None,
+            services: BTreeMap::from([(
+                "api".into(),
+                ServiceKind::Real(Box::new(RealService {
+                    repo: None,
+                    image: Some("api:dev".into()),
+                    build: None,
+                    ports: vec![3000],
+                    env: BTreeMap::new(),
+                    depends_on: vec![],
+                    healthcheck: None,
+                    watch: None,
+                })),
+            )]),
+            chaos: None,
+            chaos_scenarios: Vec::new(),
+            monitors: Vec::new(),
+        };
+        let serialized = toml::to_string(&spec).expect("serialize");
+        // The serialized form must NOT mention `monitors` because it's
+        // skip-on-default.
+        assert!(
+            !serialized.contains("monitors"),
+            "v0.23.0 manifest serialized with monitors noise: {serialized}"
+        );
+        let reparsed: EnvironmentSpec = toml::from_str(&serialized).expect("reparse");
+        assert_eq!(reparsed, spec, "monitors-absent spec did not round-trip");
+        spec.validate().expect("validate clean spec");
+    }
+
+    /// Parse a full `[[environments.<env>.monitors]]` block: tag, kind,
+    /// services, interval, on_failure all populated.
+    #[test]
+    fn monitors_full_section_parses() {
+        let toml_src = r#"
+name = "staging"
+backend = "compose"
+[services.api]
+kind = "real"
+image = "api:dev"
+
+[[monitors]]
+name = "smoke-loop"
+tag = "smoke"
+kind = "user_defined"
+services = ["api"]
+interval_seconds = 60
+on_failure = "log"
+
+[[monitors]]
+name = "fail-fast-canary"
+interval_seconds = 30
+on_failure = "fail-fast"
+"#;
+        let spec: EnvironmentSpec = toml::from_str(toml_src).expect("parse");
+        assert_eq!(spec.monitors.len(), 2);
+        let smoke = &spec.monitors[0];
+        assert_eq!(smoke.name, "smoke-loop");
+        assert_eq!(smoke.tag.as_deref(), Some("smoke"));
+        assert_eq!(smoke.kind.as_deref(), Some("user_defined"));
+        assert_eq!(smoke.services, vec!["api".to_string()]);
+        assert_eq!(smoke.interval_seconds, 60);
+        assert_eq!(smoke.on_failure, OnFailure::Log);
+
+        let canary = &spec.monitors[1];
+        assert_eq!(canary.name, "fail-fast-canary");
+        assert_eq!(canary.tag, None);
+        assert_eq!(canary.kind, None);
+        assert!(canary.services.is_empty());
+        assert_eq!(canary.interval_seconds, 30);
+        assert_eq!(canary.on_failure, OnFailure::FailFast);
+
+        spec.validate().expect("validate full spec");
+    }
+
+    /// `on_failure = "alert"` parses (forward-compat) but does NOT error
+    /// at validate — the runtime "reserved for v0.24+" check lives in
+    /// the monitor up handler, not here.
+    #[test]
+    fn monitors_alert_on_failure_parses_validate_passes() {
+        let toml_src = r#"
+name = "dev"
+backend = "compose"
+[services.api]
+kind = "real"
+image = "api:dev"
+
+[[monitors]]
+name = "alert-canary"
+interval_seconds = 60
+on_failure = "alert"
+"#;
+        let spec: EnvironmentSpec = toml::from_str(toml_src).expect("parse");
+        assert_eq!(spec.monitors[0].on_failure, OnFailure::Alert);
+        spec.validate().expect("validate accepts alert");
+    }
+
+    #[test]
+    fn monitor_with_zero_interval_rejected() {
+        let mut spec = base_spec_for_monitors();
+        spec.monitors.push(MonitorSpec {
+            name: "bad".into(),
+            tag: None,
+            kind: None,
+            services: vec![],
+            interval_seconds: 0,
+            on_failure: OnFailure::Log,
+        });
+        let err = spec.validate().expect_err("must reject");
+        assert!(err.contains("interval_seconds = 0"), "wrong msg: {err}");
+    }
+
+    #[test]
+    fn monitor_with_unknown_kind_rejected() {
+        let mut spec = base_spec_for_monitors();
+        spec.monitors.push(MonitorSpec {
+            name: "weird".into(),
+            tag: None,
+            kind: Some("flux-capacitor".into()),
+            services: vec![],
+            interval_seconds: 30,
+            on_failure: OnFailure::Log,
+        });
+        let err = spec.validate().expect_err("must reject");
+        assert!(err.contains("unknown kind"), "wrong msg: {err}");
+    }
+
+    #[test]
+    fn monitor_duplicate_names_rejected() {
+        let mut spec = base_spec_for_monitors();
+        spec.monitors.push(MonitorSpec {
+            name: "dup".into(),
+            tag: None,
+            kind: None,
+            services: vec![],
+            interval_seconds: 30,
+            on_failure: OnFailure::Log,
+        });
+        spec.monitors.push(MonitorSpec {
+            name: "dup".into(),
+            tag: None,
+            kind: None,
+            services: vec![],
+            interval_seconds: 60,
+            on_failure: OnFailure::Log,
+        });
+        let err = spec.validate().expect_err("must reject");
+        assert!(err.contains("two monitors"), "wrong msg: {err}");
+    }
+
+    fn base_spec_for_monitors() -> EnvironmentSpec {
+        EnvironmentSpec {
+            name: "dev".into(),
+            backend: "compose".into(),
+            mode: EnvMode::Managed,
+            compose_command: "auto".into(),
+            production: false,
+            env_file: None,
+            services: BTreeMap::from([(
+                "api".into(),
+                ServiceKind::Real(Box::new(RealService {
+                    repo: None,
+                    image: Some("api:dev".into()),
+                    build: None,
+                    ports: vec![],
+                    env: BTreeMap::new(),
+                    depends_on: vec![],
+                    healthcheck: None,
+                    watch: None,
+                })),
+            )]),
+            chaos: None,
+            chaos_scenarios: Vec::new(),
+            monitors: Vec::new(),
+        }
     }
 
     #[test]
@@ -728,6 +1036,7 @@ backend = "pumba"
                 listen_port: 8474,
             }),
             chaos_scenarios: vec![],
+            monitors: Vec::new(),
         };
         let err = spec.validate().expect_err("must reject");
         assert!(err.contains("reserved"), "wrong msg: {err}");

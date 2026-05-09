@@ -3,7 +3,7 @@ members = ["crates/*"]
 resolver = "2"
 
 [workspace.package]
-version = "0.23.0"
+version = "0.23.1"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT"
@@ -49,14 +49,22 @@ tiny_http = "0.12"
 # bzip2/xz/zstd system-lib transitives — we don't use those
 # methods). Justified per orchestrator's spec §D3.
 zip = { version = "2", default-features = false, features = ["deflate"] }
-coral-core = { path = "crates/coral-core", version = "0.23.0" }
-coral-env = { path = "crates/coral-env", version = "0.23.0" }
-coral-lint = { path = "crates/coral-lint", version = "0.23.0" }
-coral-runner = { path = "crates/coral-runner", version = "0.23.0" }
-coral-session = { path = "crates/coral-session", version = "0.23.0" }
-coral-stats = { path = "crates/coral-stats", version = "0.23.0" }
-coral-test = { path = "crates/coral-test", version = "0.23.0" }
-coral-mcp = { path = "crates/coral-mcp", version = "0.23.0" }
+# v0.23.1: `coral monitor up` is a long-lived foreground loop that
+# must exit cleanly on SIGINT/SIGTERM with a final summary printed
+# and the JSONL file's last line synced to disk. Hand-rolling
+# `unsafe { libc::signal(...) }` works but signal-hook-registry's
+# AtomicBool sentinel pattern is the well-trodden, easier-to-reason-
+# about path. ~30 KB single-purpose dep with `libc` as the only
+# transitive — both already in the tree via tracing/clap.
+signal-hook = "0.3"
+coral-core = { path = "crates/coral-core", version = "0.23.1" }
+coral-env = { path = "crates/coral-env", version = "0.23.1" }
+coral-lint = { path = "crates/coral-lint", version = "0.23.1" }
+coral-runner = { path = "crates/coral-runner", version = "0.23.1" }
+coral-session = { path = "crates/coral-session", version = "0.23.1" }
+coral-stats = { path = "crates/coral-stats", version = "0.23.1" }
+coral-test = { path = "crates/coral-test", version = "0.23.1" }
+coral-mcp = { path = "crates/coral-mcp", version = "0.23.1" }
 
 [profile.release]
 lto = "thin"

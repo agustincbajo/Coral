@@ -212,6 +212,7 @@ mod tests {
             services,
             chaos: None,
             chaos_scenarios: Vec::new(),
+            monitors: Vec::new(),
         }
     }
 
