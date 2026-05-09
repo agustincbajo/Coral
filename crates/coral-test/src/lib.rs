@@ -13,6 +13,7 @@
 
 pub mod contract_check;
 pub mod discover;
+pub mod emit_k6;
 pub mod error;
 pub mod healthcheck_runner;
 pub mod hurl_runner;
@@ -29,6 +30,7 @@ pub use contract_check::{
     render_report_json as render_contract_json, render_report_markdown as render_contract_markdown,
 };
 pub use discover::{DiscoveredCase, discover_openapi_in_project};
+pub use emit_k6::{EmitOutput, SkipNote, SkipReason, emit_k6};
 pub use error::{TestError, TestResult};
 pub use healthcheck_runner::HealthcheckRunner;
 pub use hurl_runner::HurlRunner;

@@ -151,6 +151,42 @@ fn legacy_init_force_recreates_wiki() {
         .success();
 }
 
+/// v0.22.2 BC: `coral test` (no `--emit` flag) produces byte-identical
+/// "no matches" stdout to v0.22.1. The v0.22.2 release adds the `--emit
+/// k6` short-circuit IN ADDITION to the existing test-execution path —
+/// it must not perturb the no-matches branch.
+#[test]
+fn coral_test_no_emit_no_match_stdout_pinned_to_v0_22_1() {
+    let dir = TempDir::new().unwrap();
+    let toml = r#"apiVersion = "coral.dev/v1"
+[project]
+name = "demo"
+
+[[environments]]
+name = "dev"
+backend = "compose"
+
+[environments.services.api]
+kind = "real"
+image = "nginx:latest"
+ports = [3000]
+"#;
+    std::fs::write(dir.path().join("coral.toml"), toml).unwrap();
+
+    let assert = Command::cargo_bin("coral")
+        .unwrap()
+        .args(["test"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    // v0.22.1 stdout shape: exactly this line (followed by `\n`).
+    assert_eq!(
+        stdout, "no test cases match the given filters\n",
+        "BC: coral test (no --emit) must produce v0.22.1-byte-identical stdout"
+    );
+}
+
 /// v0.21 BC: `coral env devcontainer emit` against a v0.15-shape repo
 /// (no `coral.toml`) fails with the same actionable error the rest of
 /// the env layer uses ("no [[environments]] declared in coral.toml"),

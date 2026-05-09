@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.2] - 2026-05-08
+
+**Feature release: `coral test --emit k6` smoke→load handoff.** Adds an emitter that walks the same TestCase discovery + filter pipeline `coral test` already uses and serializes the resulting HTTP step set to a single k6 JavaScript load-test script. The user runs `k6 run <emitted file>`; Coral itself never executes k6 — that's the handoff point. Coverage targets the ~95% case: UserDefined HTTP steps + HTTP Healthcheck probes translate 1:1; TCP/Exec/Grpc healthchecks and `YamlStep::Exec` steps emit `// SKIPPED` comments AND are returned via `EmitOutput.skipped` so the CLI surfaces a stderr summary. Output is byte-deterministic across runs (cases iterate in `(service, id)` lexicographic order). `--emit k6` does NOT require `coral up` — it reads only `EnvironmentSpec`, so it works on a clean checkout. **Zero new workspace dependencies** — pure `format!` + `String::push_str` string formatting; no JS AST library, no template engine. **BC sacred: `coral test` (no `--emit`) is byte-identical to v0.22.1** — pinned by `bc_regression::coral_test_no_emit_no_match_stdout_pinned_to_v0_22_1`. **1249 tests pass (was 1228; +21), all green.** `bc-regression` green.
+
+### Added
+
+- **`coral test --emit k6 [--emit-output PATH]`.** New flags on `coral test`. `--emit k6` short-circuits before runner construction: discover + filter the TestCase set, hand to `coral_test::emit_k6`, write to stdout (default) or atomically to PATH via `coral_core::atomic::atomic_write_string`. Stderr surfaces a `k6 emit summary: included=N skipped=M` line plus one `skip: <id> — <reason>` line per skipped case. Acceptance criteria 12/12.
+- **`crates/coral-test/src/emit_k6.rs`.** New pure-emitter module. Public surface: `emit_k6(cases: &[TestCase], spec: &EnvironmentSpec) -> EmitOutput`. `EmitOutput { script: String, included: usize, skipped: Vec<SkipNote> }`. `SkipReason` variants: `HealthcheckNotHttp`, `UserDefinedExecStep`, `UnsupportedKind`, `InvalidUserDefinedSpec`. Output structure: imports + `export const options` + per-service `SVC_<NAME>_BASE` consts + one body block per case (fenced with `// === <id>: <name> (service=<svc>, tags=[...]) ===`) + skip comments + `// === Coral emit summary: ... ===` footer. Header emits exactly one `import http from 'k6/http';` and one `import { check, sleep } from 'k6';` (k6 ships `check`/`sleep` from root, not `k6/check`).
+- **`Emit` enum on `TestArgs`** — clap `ValueEnum` with `K6` variant. v0.22.2 ships `k6` only; future emitters (`gatling`, `locust`, …) extend the enum.
+- **Per-service `__ENV.CORAL_<NAME>_BASE` override.** Each service in `EnvironmentSpec.services` with a published port emits `const SVC_<UPPER>_BASE = __ENV.CORAL_<UPPER>_BASE || 'http://localhost:<PORT>';` so the user can point a single emitted script at dev/staging/prod via `CORAL_API_BASE=https://api.staging.example.com k6 run load.js`. The first service's URL becomes the default `BASE`; cases without a service or targeting an undeclared service fall back to `${BASE}` with a `// TODO` comment.
+- **Mapping table.** `expect.status: 200` → `(r) => r.status === 200`. `expect.body_contains: "ok"` → `(r) => r.body.includes("ok")`. `expect.snapshot` → `/* snapshot expects skipped — k6 doesn't do snapshots */`. `expect.json_path` (reserved) → `/* json_path expects: TODO wire r.json('x') === 1 */`. Empty `expect: {}` → no `check()` block. `YamlStep::Exec` → `// SKIPPED <id>:<n> — exec step not k6-compatible`.
+- **`crates/coral-test/tests/emit_k6_smoke.rs`** — 6 integration tests: header pin, two-step UserDefined determinism golden, exec-step skip comment, TCP healthcheck skip, declared-port flow into `SVC_<NAME>_BASE`, unknown-service `${BASE}` + TODO fallback.
+- **`crates/coral-cli/tests/test_emit_k6.rs`** — 4 end-to-end CLI tests: stdout default, `--emit-output` atomic write, zero-matches → exit 2 + stderr filter listing, `--format junit` rejection.
+
+### Changed
+
+- **`crates/coral-cli/src/commands/test.rs::run`** wraps the existing test-execution path with a `--emit` short-circuit. Flag-interaction validation runs BEFORE any I/O: `--emit k6 --format junit` exits 2 with a one-line stderr message naming both flags; `--emit k6 --update-snapshots` exits 2 with `--update-snapshots not meaningful with --emit`. The execution path (no `--emit`) is unchanged.
+- **`crates/coral-test/src/lib.rs`** declares `pub mod emit_k6;` and re-exports `emit_k6, EmitOutput, SkipNote, SkipReason` at the crate root for symmetry with `JunitOutput`.
+
+### Tests (+21)
+
+- **`emit_k6` unit tests (10)** in `crates/coral-test/src/emit_k6.rs::tests` — covers `js_string` escape, `split_http_line` method recognition, empty-cases skeleton shape, port → `SVC_<NAME>_BASE` const, multi-step UserDefined translation, exec-step inline skip, HTTP healthcheck `http.get` + 2xx check, healthcheck-probe-label/path lookups.
+- **`emit_k6_smoke` integration tests (6)** as listed above.
+- **`test_emit_k6` CLI tests (4)** as listed above.
+- **`bc_regression::coral_test_no_emit_no_match_stdout_pinned_to_v0_22_1`** — pins `coral test` (no `--emit`) byte-identical "no test cases match the given filters\n" stdout against drift.
+
+### Acceptance criteria — 12/12 met
+
+1. `coral test --emit k6` exits 0 on a project with at least one HTTP UserDefined or HTTP Healthcheck case ✓ — `cli_emit_k6_writes_to_stdout_by_default` covers the HTTP healthcheck path.
+2. Emitted JS passes `node --check` ✓ — verified in dev rehearsal; structure-test pinned by `emit_k6_header_has_options_and_imports`.
+3. Output contains exactly one `import http from 'k6/http';` and one `export const options` ✓ — `emit_k6_header_has_options_and_imports` uses `.matches(...).count() == 1`.
+4. Each service in `EnvironmentSpec.services` with a published host port emits `SVC_<UPPER>_BASE` using its declared port ✓ — `emit_k6_service_base_uses_declared_port`.
+5. UserDefined HTTP steps translate per the mapping table; YAML order preserved ✓ — `emit_k6_user_defined_two_step_suite_round_trips`.
+6. Healthcheck cases with TCP/Exec/Grpc probes emit a `// SKIPPED` comment AND are added to `EmitOutput.skipped` ✓ — `emit_k6_healthcheck_tcp_skipped`. Stderr summary surfaces in `cli_emit_k6_writes_to_stdout_by_default`.
+7. `--service api --emit k6` includes only `api` cases ✓ — covered by `apply_filters` reuse + the existing `--service` filter test surface.
+8. `--emit-output dist/load.js` writes atomically; stdout empty ✓ — `cli_emit_k6_with_emit_output_writes_atomically` asserts both.
+9. `--emit k6 --format junit` exits 2 with a one-line message naming both flags ✓ — `cli_emit_k6_rejects_format_junit_combo`.
+10. Zero matching cases → empty stdout, exit 2, stderr lists active filters ✓ — `cli_emit_k6_zero_matches_exits_2_with_diagnostic`.
+11. Output is byte-deterministic across two runs on identical inputs ✓ — `emit_k6_user_defined_two_step_suite_round_trips` runs `emit_k6` twice and asserts script equality.
+12. `coral up` is NOT a precondition; emit works on a clean checkout ✓ — every CLI test in `test_emit_k6.rs` runs without invoking any backend; the `--emit` branch reads only `EnvironmentSpec`.
+
+### Pipeline note
+
+Continuation of v0.22 sprint per the v0.22.1 pipeline note. Next: `coral env import` → MCP registry publish → `coral skill build/publish` for v0.22.{3,4,5}. **Q1-Q4 in §7 of the orchestrator's spec are deferred to v0.23**: capture-threading (`capture: { token: "$.token" }`), `sleep(1)` cadence override (current default is 1s between cases, post-edit by user), retry policy translation, `--include-discovered` count breakout. The `sleep(1);` line is emitted once per included case so an end-user can `sed` to a different cadence without touching the surrounding scaffolding.
+
 ## [0.22.1] - 2026-05-08
 
 **Patch release: fix `release.sh preflight` per-package iteration cost.** The first dogfood run of the v0.22.0 tooling — `scripts/release.sh bump 0.22.0` against Coral's actual 9-crate workspace — exposed a real performance bug the v0.22.0 tester didn't catch: cargo-release fires the `pre-release-hook` ONCE PER WORKSPACE PACKAGE, so `release.sh preflight` was running `scripts/ci-locally.sh` 9 times back-to-back (~9 × ~50s = ~7-9 min wall-time per bump). Tests had only exercised the hook in standalone tempdirs, never in the real workspace. v0.22.1 caches the ci-locally result via a marker file under `$TMPDIR` keyed on `(version, HEAD sha)`. Subsequent invocations within the same cargo-release run short-circuit with `ok "ci-locally.sh already passed in this cargo-release run"`. Honors `$CORAL_PREFLIGHT_FORCE=1` for debugging. Without this fix, v0.22.0 bumps in production would have been unusably slow; v0.22.1 brings the bump back down to ~50s. **1228 tests pass (+1: `release_sh_preflight_caches_ci_locally_across_per_package_calls`), all green.** v0.22.0 was shipped via the manual flow as a result of this bug — v0.22.1 onwards uses the new tooling end-to-end.
