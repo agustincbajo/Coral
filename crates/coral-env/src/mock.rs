@@ -180,6 +180,7 @@ mod tests {
             services: Default::default(),
             env_file: None,
             project_root: std::path::PathBuf::from("/tmp"),
+            chaos: None,
         }
     }
 

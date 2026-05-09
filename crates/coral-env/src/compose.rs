@@ -100,6 +100,12 @@ impl ComposeBackend {
     /// Render the plan to YAML, write it to `.coral/env/compose/<hash>.yml`,
     /// and return the path + hash. Idempotent: re-rendering an
     /// unchanged plan yields the same path so `down()` can find it.
+    ///
+    /// v0.23.0: when `plan.chaos.is_some()`, also write a sibling
+    /// `toxiproxy-init.json` in the same directory. The compose YAML
+    /// bind-mounts `./toxiproxy-init.json` (relative paths resolve
+    /// against the YAML's directory) so the file MUST live alongside
+    /// the YAML. Same atomic-write helper, same crash semantics.
     fn render_plan_artifact(&self, plan: &EnvPlan) -> EnvResult<(PathBuf, String)> {
         let yaml = compose_yaml::render(plan);
         let hash = compose_yaml::content_hash(&yaml);
@@ -123,6 +129,20 @@ impl ComposeBackend {
                 source: std::io::Error::other(other.to_string()),
             },
         })?;
+        if plan.chaos.is_some() {
+            let proxies = compose_yaml::chaos_proxies(plan);
+            let json = compose_yaml::chaos_init_json(&proxies);
+            let json_path = dir.join("toxiproxy-init.json");
+            coral_core::atomic::atomic_write_string(&json_path, &json).map_err(|e| match e {
+                coral_core::error::CoralError::Io { path: p, source } => {
+                    EnvError::Io { path: p, source }
+                }
+                other => EnvError::Io {
+                    path: json_path.clone(),
+                    source: std::io::Error::other(other.to_string()),
+                },
+            })?;
+        }
         Ok((path, hash))
     }
 
@@ -583,6 +603,7 @@ mod tests {
             services: Default::default(),
             env_file: None,
             project_root: std::path::PathBuf::from("/tmp"),
+            chaos: None,
         };
         let backend = ComposeBackend::new(ComposeRuntime::Auto);
         let err = backend
@@ -614,6 +635,7 @@ mod tests {
             services: Default::default(),
             env_file: None,
             project_root: std::path::PathBuf::from("/tmp"),
+            chaos: None,
         };
         let backend = ComposeBackend::new(ComposeRuntime::Auto);
         let err = backend
@@ -642,6 +664,7 @@ mod tests {
             services: Default::default(),
             env_file: None,
             project_root: std::path::PathBuf::from("/tmp"),
+            chaos: None,
         };
         let err = super::validate_watch_services(&plan)
             .expect_err("plan with no watch services must be rejected");
@@ -696,6 +719,7 @@ mod tests {
             services,
             env_file: None,
             project_root: std::path::PathBuf::from("/tmp"),
+            chaos: None,
         };
         let err = super::validate_watch_services(&plan).expect_err("must reject");
         assert!(matches!(err, EnvError::InvalidSpec(_)));
@@ -737,6 +761,7 @@ mod tests {
             services,
             env_file: None,
             project_root: std::path::PathBuf::from("/tmp"),
+            chaos: None,
         };
         super::validate_watch_services(&plan).expect("validation should succeed");
     }
@@ -779,6 +804,7 @@ mod tests {
             services,
             env_file: None,
             project_root: std::path::PathBuf::from("/tmp"),
+            chaos: None,
         };
         let err = super::validate_watch_services(&plan).expect_err("must reject");
         assert!(matches!(err, EnvError::InvalidSpec(_)));

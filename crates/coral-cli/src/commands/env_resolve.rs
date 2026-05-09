@@ -24,6 +24,12 @@ pub fn resolve_env(project: &Project, wanted: &str) -> Result<EnvironmentSpec> {
 
 /// Parse every `[[environments]]` block. Used by `coral env list` and
 /// by `coral status` to enumerate which environments exist.
+///
+/// v0.23.0: each spec is validated against
+/// `EnvironmentSpec::validate` so chaos invariants (scenario without
+/// `[chaos]` block, unknown service, unknown toxic attribute,
+/// `toxiproxy` name collision) surface here rather than at chaos-CLI
+/// invocation time.
 pub fn parse_all(project: &Project) -> Result<Vec<EnvironmentSpec>> {
     let mut out = Vec::with_capacity(project.environments_raw.len());
     for (idx, raw) in project.environments_raw.iter().enumerate() {
@@ -31,6 +37,8 @@ pub fn parse_all(project: &Project) -> Result<Vec<EnvironmentSpec>> {
             .clone()
             .try_into()
             .with_context(|| format!("parsing [[environments]][{idx}]"))?;
+        spec.validate()
+            .map_err(|msg| anyhow::anyhow!("[[environments]][{idx}]: {msg}"))?;
         out.push(spec);
     }
     Ok(out)

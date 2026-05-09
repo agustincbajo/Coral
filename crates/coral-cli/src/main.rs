@@ -115,6 +115,14 @@ enum Cmd {
     /// pointing users at the Anthropic-Skills repo; the real
     /// fork+PR flow is deferred to v0.23+.
     Skill(SkillArgs),
+    /// **v0.23.0**: Chaos-engineering against the running dev env
+    /// via a Toxiproxy sidecar. `inject` adds latency / bandwidth /
+    /// timeout / slicer / slow_close toxics to a `depends_on` edge,
+    /// `clear` removes them, `list` reports active toxics, and
+    /// `run <scenario>` dispatches a pre-canned scenario from
+    /// `[[chaos_scenarios]]`. Requires `[environments.<env>.chaos]`
+    /// in `coral.toml` and `coral up --env <name>` first.
+    Chaos(commands::chaos::ChaosArgs),
     /// **Hidden** test-only helper: acquires `with_exclusive_lock(path)`,
     /// reads the file as a u64 counter, increments by 1, writes back.
     /// Used by `tests/cross_process_lock.rs` to verify the v0.15
@@ -195,6 +203,7 @@ fn main() -> ExitCode {
             SkillCmd::Build { output } => commands::skill::build(output),
             SkillCmd::Publish => commands::skill::publish(),
         },
+        Cmd::Chaos(args) => commands::chaos::run(args, cli.wiki_root.as_deref()),
         Cmd::TestLockIncr { path } => run_test_lock_incr(&path),
     };
 

@@ -228,6 +228,7 @@ mod tests {
             services: BTreeMap::new(),
             env_file: None,
             project_root: std::path::PathBuf::from("/tmp/proj"),
+            chaos: None,
         }
     }
 

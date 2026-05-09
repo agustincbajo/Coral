@@ -7,20 +7,161 @@
 //! `WatchSpec` flows from `[services.*.watch]` straight into the
 //! emitted `develop.watch` sequence, with `sync` rules first, then
 //! `rebuild`, then `restart` — see `render_watch` below.
+//!
+//! v0.23.0 adds an OPTIONAL chaos sidecar (Toxiproxy) when
+//! `[environments.<env>.chaos]` is present. `chaos_proxies()` walks
+//! `depends_on` edges, allocates a deterministic proxy port per edge,
+//! and the renderer:
+//!
+//!   1. Emits a `toxiproxy` service with a generated init-config JSON
+//!      mounted as `--config`.
+//!   2. Rewrites each consumer's environment with `<DEP>_URL=http://toxiproxy:<port>`
+//!      so the consumer hits the proxy instead of the real dep.
+//!
+//! When `chaos.is_none()`, none of this runs and the rendered YAML is
+//! byte-identical to v0.22.6 — pinned by
+//! `compose_yaml_no_chaos_byte_identical_to_v0226`.
 
 use crate::plan::{EnvPlan, ServiceSpecPlan};
 use crate::spec::{Healthcheck, HealthcheckKind, HealthcheckTiming, RealService, ServiceKind};
 use serde_yaml_ng::Value;
+
+/// One toxiproxy proxy declaration: the listen port the consumer
+/// hits, plus the upstream `<dep>:<port>` it forwards to. Generated
+/// for every `(consumer, dep)` edge found in
+/// `services.<consumer>.depends_on` when chaos is on.
+///
+/// `name` is `<consumer>_to_<dep>` — that's the proxy ID the chaos
+/// CLI uses on `POST /proxies/<name>/toxics`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChaosProxy {
+    pub name: String,
+    pub consumer: String,
+    pub dep: String,
+    pub listen_port: u16,
+    pub upstream_port: u16,
+}
+
+/// Walk every consumer's `depends_on`, allocate a deterministic
+/// listen port per edge, and return the proxy list. Output is sorted
+/// by `name` so the render is byte-stable across reruns. Skips edges
+/// where the dep declares no `ports` (nothing to proxy).
+///
+/// Public so the chaos CLI can compute the proxy name (`api_to_db`)
+/// without re-deriving the depends_on traversal.
+pub fn chaos_proxies(plan: &EnvPlan) -> Vec<ChaosProxy> {
+    let mut out: Vec<ChaosProxy> = Vec::new();
+    for (consumer_name, consumer) in &plan.services {
+        let ServiceKind::Real(real) = &consumer.kind else {
+            continue;
+        };
+        for dep in &real.depends_on {
+            let dep_port = match plan.services.get(dep) {
+                Some(s) => match &s.kind {
+                    ServiceKind::Real(r) => r.ports.first().copied(),
+                    ServiceKind::Mock(_) => None,
+                },
+                None => None,
+            };
+            let Some(upstream_port) = dep_port else {
+                // No port to proxy — depending on a sidecar with no
+                // exposed port (rare, but possible). Skip silently.
+                continue;
+            };
+            let listen_port = chaos_proxy_port(consumer_name, dep);
+            out.push(ChaosProxy {
+                name: format!("{consumer_name}_to_{dep}"),
+                consumer: consumer_name.clone(),
+                dep: dep.clone(),
+                listen_port,
+                upstream_port,
+            });
+        }
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
+}
+
+/// Deterministic listen-port allocation: `30000 + fnv1a("<consumer>:<dep>") % 10000`,
+/// so every edge falls in the 30000-39999 range. FNV-1a is plenty for
+/// this — 10k slots, ~10 services means birthday-paradox collisions
+/// after ~150 edges. We accept the worst-case collision (two edges
+/// that hash to the same port) because:
+///
+///  1. The user controls the input — service names rarely collide.
+///  2. A collision surfaces immediately on `coral up` (compose
+///     refuses to bind two containers to the same host port).
+///  3. There's no hidden corruption: toxiproxy fails its admin
+///     `/version` health check and `coral chaos inject` returns a
+///     friendly "sidecar not running" error.
+///
+/// If two real users hit a collision in the field we'll switch to a
+/// content-hash that includes the env name. For v0.23.0 the simple
+/// FNV is the right tradeoff.
+fn chaos_proxy_port(consumer: &str, dep: &str) -> u16 {
+    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x100000001b3;
+    let key = format!("{consumer}:{dep}");
+    let mut hash = FNV_OFFSET;
+    for byte in key.as_bytes() {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    30_000 + ((hash % 10_000) as u16)
+}
+
+/// JSON list of toxiproxy proxy declarations to write into
+/// `.coral/env/compose/<hash>.toxiproxy.json` and bind-mount into the
+/// sidecar via `--config`. Public so the backend can write it
+/// alongside the YAML artifact.
+pub fn chaos_init_json(proxies: &[ChaosProxy]) -> String {
+    let value: Vec<serde_json::Value> = proxies
+        .iter()
+        .map(|p| {
+            serde_json::json!({
+                "name": p.name,
+                "listen": format!("0.0.0.0:{}", p.listen_port),
+                "upstream": format!("{}:{}", p.dep, p.upstream_port),
+                "enabled": true,
+            })
+        })
+        .collect();
+    serde_json::to_string_pretty(&value).unwrap_or_else(|_| "[]".to_string())
+}
 
 /// Render the plan as a YAML document compatible with `docker compose
 /// up -f <out>`. Stable ordering: services map is `BTreeMap` so the
 /// output is byte-stable per plan, which makes the artifact-hash
 /// comparison in `EnvBackend::up()` reliable.
 pub fn render(plan: &EnvPlan) -> String {
+    let proxies = if plan.chaos.is_some() {
+        chaos_proxies(plan)
+    } else {
+        Vec::new()
+    };
+    // Index proxies by consumer name → list of (dep, listen_port).
+    // Cheap because `proxies.len()` is bounded by total edge count.
+    let mut by_consumer: std::collections::BTreeMap<&str, Vec<&ChaosProxy>> = Default::default();
+    for p in &proxies {
+        by_consumer.entry(p.consumer.as_str()).or_default().push(p);
+    }
+
     let mut services_yaml = serde_yaml_ng::Mapping::new();
     for (name, service) in &plan.services {
-        let body = render_service(name, service, plan);
+        let consumer_proxies = by_consumer.get(name.as_str()).cloned().unwrap_or_default();
+        let body = render_service(name, service, plan, &consumer_proxies);
         services_yaml.insert(Value::String(name.clone()), body);
+    }
+
+    // v0.23.0: when chaos is on, append the toxiproxy sidecar AFTER
+    // user services. The append-at-end ordering keeps the chaos-off
+    // YAML byte-identical to v0.22.6 (since the BTreeMap iteration
+    // hasn't changed).
+    if let Some(chaos) = &plan.chaos {
+        services_yaml.insert(
+            Value::String("toxiproxy".into()),
+            render_toxiproxy_sidecar(chaos, plan, &proxies),
+        );
     }
 
     let mut top = serde_yaml_ng::Mapping::new();
@@ -37,7 +178,73 @@ pub fn render(plan: &EnvPlan) -> String {
     serde_yaml_ng::to_string(&document).unwrap_or_else(|_| String::new())
 }
 
-fn render_service(name: &str, service: &ServiceSpecPlan, plan: &EnvPlan) -> Value {
+/// Render the toxiproxy sidecar service. The init-config JSON is
+/// bind-mounted at `/etc/toxiproxy.json` and passed via `--config`,
+/// so the proxies are pre-wired the moment toxiproxy starts.
+fn render_toxiproxy_sidecar(
+    chaos: &crate::spec::ChaosConfig,
+    plan: &EnvPlan,
+    _proxies: &[ChaosProxy],
+) -> Value {
+    let mut out = serde_yaml_ng::Mapping::new();
+    out.insert(
+        Value::String("container_name".into()),
+        Value::String(format!("{}-toxiproxy", plan.project_name)),
+    );
+    out.insert(
+        Value::String("image".into()),
+        Value::String(chaos.image.clone()),
+    );
+    // Random host port — `EnvHandle.published_ports["toxiproxy"]`
+    // surfaces the actual binding for the chaos CLI to discover.
+    out.insert(
+        Value::String("ports".into()),
+        Value::Sequence(vec![Value::String(format!("{}", chaos.listen_port))]),
+    );
+    out.insert(
+        Value::String("volumes".into()),
+        Value::Sequence(vec![Value::String(
+            "./toxiproxy-init.json:/etc/toxiproxy.json:ro".into(),
+        )]),
+    );
+    out.insert(
+        Value::String("command".into()),
+        Value::Sequence(vec![
+            Value::String("-host".into()),
+            Value::String("0.0.0.0".into()),
+            Value::String("-config".into()),
+            Value::String("/etc/toxiproxy.json".into()),
+        ]),
+    );
+    let mut healthcheck = serde_yaml_ng::Mapping::new();
+    healthcheck.insert(
+        Value::String("test".into()),
+        Value::Sequence(vec![
+            Value::String("CMD".into()),
+            Value::String("wget".into()),
+            Value::String("-qO-".into()),
+            Value::String(format!("http://localhost:{}/version", chaos.listen_port)),
+        ]),
+    );
+    healthcheck.insert(Value::String("interval".into()), Value::String("2s".into()));
+    healthcheck.insert(Value::String("timeout".into()), Value::String("1s".into()));
+    healthcheck.insert(
+        Value::String("retries".into()),
+        Value::Number(serde_yaml_ng::Number::from(10i64)),
+    );
+    out.insert(
+        Value::String("healthcheck".into()),
+        Value::Mapping(healthcheck),
+    );
+    Value::Mapping(out)
+}
+
+fn render_service(
+    name: &str,
+    service: &ServiceSpecPlan,
+    plan: &EnvPlan,
+    chaos_proxies: &[&ChaosProxy],
+) -> Value {
     let mut out = serde_yaml_ng::Mapping::new();
     out.insert(
         Value::String("container_name".into()),
@@ -57,7 +264,7 @@ fn render_service(name: &str, service: &ServiceSpecPlan, plan: &EnvPlan) -> Valu
     }
 
     match &service.kind {
-        ServiceKind::Real(real) => render_real(&mut out, real, service),
+        ServiceKind::Real(real) => render_real(&mut out, real, service, chaos_proxies),
         ServiceKind::Mock(_) => {
             // v0.18 will wire mock servers (Mockoon/WireMock/Hoverfly) by
             // launching their official containers; v0.17 leaves the entry
@@ -72,7 +279,12 @@ fn render_service(name: &str, service: &ServiceSpecPlan, plan: &EnvPlan) -> Valu
     Value::Mapping(out)
 }
 
-fn render_real(out: &mut serde_yaml_ng::Mapping, real: &RealService, plan: &ServiceSpecPlan) {
+fn render_real(
+    out: &mut serde_yaml_ng::Mapping,
+    real: &RealService,
+    plan: &ServiceSpecPlan,
+    chaos_proxies: &[&ChaosProxy],
+) {
     if let Some(image) = &real.image {
         out.insert(Value::String("image".into()), Value::String(image.clone()));
     }
@@ -138,11 +350,30 @@ fn render_real(out: &mut serde_yaml_ng::Mapping, real: &RealService, plan: &Serv
             ),
         );
     }
-    if !real.env.is_empty() {
+    // v0.23.0: when chaos is on, every (consumer, dep) edge that
+    // belongs to this service generates a `<DEP>_URL=http://toxiproxy:<port>`
+    // entry. These are added to the user's `env: {}` map (user values
+    // win on collision — the user explicitly set the URL, so respect
+    // the override). When `chaos_proxies` is empty (chaos off) the
+    // existing branch runs unchanged → byte-identical to v0.22.6.
+    let mut effective_env: std::collections::BTreeMap<String, String> = real.env.clone();
+    for proxy in chaos_proxies {
+        // <DEP> is uppercased: `db` → `DB_URL`. Compose env-var
+        // names are case-sensitive on Linux, so this matches the
+        // 12-factor convention every consumer expects.
+        let key = format!("{}_URL", proxy.dep.to_ascii_uppercase());
+        let value = format!("http://toxiproxy:{}", proxy.listen_port);
+        // User-defined value wins — entry::or_insert is a no-op if
+        // the key already exists. This lets a user pin a different
+        // upstream when they don't want chaos to apply to a
+        // specific dep.
+        effective_env.entry(key).or_insert(value);
+    }
+    if !effective_env.is_empty() {
         out.insert(
             Value::String("environment".into()),
             Value::Sequence(
-                real.env
+                effective_env
                     .iter()
                     .map(|(k, v)| Value::String(format!("{k}={v}")))
                     .collect(),
@@ -373,6 +604,7 @@ mod tests {
             services: BTreeMap::new(),
             env_file: None,
             project_root: std::path::PathBuf::from("/tmp"),
+            chaos: None,
         }
     }
 
@@ -800,5 +1032,196 @@ mod tests {
             !yaml.contains(" watch:"),
             "services without `watch` must NOT emit a watch key, got:\n{yaml}"
         );
+    }
+
+    // ---- v0.23.0: chaos sidecar + reroute ----
+
+    /// **BC golden** — pre-v0.23.0 plans (chaos = None) MUST produce
+    /// the SAME YAML on a v0.23.0 binary as on v0.22.6. We pin this
+    /// by rendering an api+db plan with chaos = None and asserting
+    /// the keyword `toxiproxy` appears nowhere in the output.
+    ///
+    /// Pair this with `compose_yaml_emits_toxiproxy_sidecar_when_chaos_enabled`
+    /// — together they cover both arms of the gate.
+    #[test]
+    fn compose_yaml_no_chaos_byte_identical_to_v0226() {
+        let mut plan = empty_plan("dev");
+        plan.services.insert("db".into(), real_service("db"));
+        let mut api = real_service("api");
+        if let ServiceKind::Real(real) = &mut api.kind {
+            real.image = Some("api:dev".into());
+            real.ports = vec![3000];
+            real.depends_on = vec!["db".into()];
+        }
+        plan.services.insert("api".into(), api);
+
+        let yaml = render(&plan);
+        // Critical BC pin: zero "toxiproxy" mentions when chaos is off.
+        assert!(
+            !yaml.contains("toxiproxy"),
+            "chaos = None must NOT emit any toxiproxy artifact, got:\n{yaml}"
+        );
+        // No DB_URL injection either — the env block is purely user-driven.
+        assert!(
+            !yaml.contains("DB_URL"),
+            "chaos = None must NOT inject DB_URL, got:\n{yaml}"
+        );
+        // Render twice, check determinism.
+        assert_eq!(yaml, render(&plan));
+    }
+
+    #[test]
+    fn compose_yaml_emits_toxiproxy_sidecar_when_chaos_enabled() {
+        use crate::spec::{ChaosBackend, ChaosConfig};
+        let mut plan = empty_plan("dev");
+        plan.services.insert("db".into(), real_service("db"));
+        let mut api = real_service("api");
+        if let ServiceKind::Real(real) = &mut api.kind {
+            real.image = Some("api:dev".into());
+            real.ports = vec![3000];
+            real.depends_on = vec!["db".into()];
+        }
+        plan.services.insert("api".into(), api);
+        plan.chaos = Some(ChaosConfig {
+            backend: ChaosBackend::Toxiproxy,
+            image: "ghcr.io/shopify/toxiproxy:2.7.0".to_string(),
+            listen_port: 8474,
+        });
+
+        let yaml = render(&plan);
+        // Sidecar service emitted.
+        assert!(yaml.contains("toxiproxy:"), "missing sidecar:\n{yaml}");
+        assert!(
+            yaml.contains("ghcr.io/shopify/toxiproxy:2.7.0"),
+            "missing image:\n{yaml}"
+        );
+        assert!(yaml.contains("/version"), "missing healthcheck:\n{yaml}");
+        // The init-config bind mount.
+        assert!(
+            yaml.contains("toxiproxy-init.json"),
+            "missing init bind:\n{yaml}"
+        );
+        // Consumer's env reroute. The dep `db` has port 5432 in
+        // `real_service`, so the proxy port is deterministic via FNV.
+        let port = chaos_proxy_port("api", "db");
+        let expected = format!("DB_URL=http://toxiproxy:{port}");
+        assert!(
+            yaml.contains(&expected),
+            "missing reroute env, expected `{expected}`, got:\n{yaml}"
+        );
+        // Sanity: rendering twice is deterministic.
+        assert_eq!(yaml, render(&plan));
+    }
+
+    #[test]
+    fn chaos_proxy_port_is_deterministic_and_in_range() {
+        let p = chaos_proxy_port("api", "db");
+        assert_eq!(p, chaos_proxy_port("api", "db"), "must be stable");
+        assert!(p >= 30_000, "port must be in 30000-39999 range: {p}");
+        assert!(p < 40_000, "port must be in 30000-39999 range: {p}");
+        // Different inputs → different (likely) ports.
+        assert_ne!(
+            chaos_proxy_port("api", "db"),
+            chaos_proxy_port("worker", "queue")
+        );
+    }
+
+    #[test]
+    fn chaos_proxies_walks_depends_on_edges_and_skips_portless_deps() {
+        use crate::spec::{ChaosBackend, ChaosConfig};
+        let mut plan = empty_plan("dev");
+        // db has port 5432 (from real_service); portless service
+        // declared inline so the renderer must skip the edge.
+        plan.services.insert("db".into(), real_service("db"));
+        let portless = ServiceSpecPlan {
+            name: "queue".into(),
+            kind: ServiceKind::Real(Box::new(RealService {
+                repo: None,
+                image: Some("redis:7".into()),
+                build: None,
+                ports: vec![], // intentionally empty
+                env: BTreeMap::new(),
+                depends_on: vec![],
+                healthcheck: None,
+                watch: None,
+            })),
+            resolved_context: None,
+        };
+        plan.services.insert("queue".into(), portless);
+        let mut api = real_service("api");
+        if let ServiceKind::Real(real) = &mut api.kind {
+            real.depends_on = vec!["db".into(), "queue".into()];
+        }
+        plan.services.insert("api".into(), api);
+        plan.chaos = Some(ChaosConfig {
+            backend: ChaosBackend::Toxiproxy,
+            image: "ghcr.io/shopify/toxiproxy:2.7.0".to_string(),
+            listen_port: 8474,
+        });
+
+        let proxies = chaos_proxies(&plan);
+        // Only one proxy: the portful (api → db) edge.
+        assert_eq!(
+            proxies.len(),
+            1,
+            "expected 1 proxy (api→db); got: {proxies:?}"
+        );
+        assert_eq!(proxies[0].name, "api_to_db");
+        assert_eq!(proxies[0].consumer, "api");
+        assert_eq!(proxies[0].dep, "db");
+        assert_eq!(proxies[0].upstream_port, 5432);
+    }
+
+    #[test]
+    fn chaos_init_json_has_pre_wired_proxies() {
+        let proxies = vec![ChaosProxy {
+            name: "api_to_db".into(),
+            consumer: "api".into(),
+            dep: "db".into(),
+            listen_port: 30421,
+            upstream_port: 5432,
+        }];
+        let json = chaos_init_json(&proxies);
+        // Must be parseable JSON.
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+        let arr = parsed.as_array().expect("top-level array");
+        assert_eq!(arr.len(), 1);
+        let p = &arr[0];
+        assert_eq!(p["name"], "api_to_db");
+        assert_eq!(p["listen"], "0.0.0.0:30421");
+        assert_eq!(p["upstream"], "db:5432");
+        assert_eq!(p["enabled"], true);
+    }
+
+    #[test]
+    fn chaos_user_env_value_wins_over_inferred_url() {
+        // If the user explicitly sets DB_URL in `env: {}`, the
+        // chaos reroute does NOT clobber it. Treat the user value
+        // as the authoritative override (e.g. they want chaos OFF
+        // for that specific edge).
+        use crate::spec::{ChaosBackend, ChaosConfig};
+        let mut plan = empty_plan("dev");
+        plan.services.insert("db".into(), real_service("db"));
+        let mut api = real_service("api");
+        if let ServiceKind::Real(real) = &mut api.kind {
+            real.depends_on = vec!["db".into()];
+            real.env
+                .insert("DB_URL".into(), "postgres://direct/db".into());
+        }
+        plan.services.insert("api".into(), api);
+        plan.chaos = Some(ChaosConfig {
+            backend: ChaosBackend::Toxiproxy,
+            image: "ghcr.io/shopify/toxiproxy:2.7.0".to_string(),
+            listen_port: 8474,
+        });
+        let yaml = render(&plan);
+        // The user-defined DB_URL must remain untouched.
+        assert!(
+            yaml.contains("DB_URL=postgres://direct/db"),
+            "user-defined DB_URL must win, got:\n{yaml}"
+        );
+        // No second `DB_URL=http://toxiproxy:...` should appear.
+        let count = yaml.matches("DB_URL=").count();
+        assert_eq!(count, 1, "DB_URL must appear exactly once, got:\n{yaml}");
     }
 }

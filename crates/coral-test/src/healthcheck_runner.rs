@@ -210,6 +210,8 @@ mod tests {
             production: false,
             env_file: None,
             services,
+            chaos: None,
+            chaos_scenarios: Vec::new(),
         }
     }
 

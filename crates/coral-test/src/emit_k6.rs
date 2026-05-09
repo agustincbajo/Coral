@@ -622,6 +622,8 @@ mod tests {
             production: false,
             env_file: None,
             services: BTreeMap::new(),
+            chaos: None,
+            chaos_scenarios: Vec::new(),
         }
     }
 
@@ -709,6 +711,8 @@ mod tests {
             production: false,
             env_file: None,
             services,
+            chaos: None,
+            chaos_scenarios: Vec::new(),
         };
         let out = emit_k6(&[], &spec);
         assert!(
@@ -787,6 +791,8 @@ mod tests {
             production: false,
             env_file: None,
             services,
+            chaos: None,
+            chaos_scenarios: Vec::new(),
         }
     }
 

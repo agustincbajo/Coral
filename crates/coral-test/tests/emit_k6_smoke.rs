@@ -39,6 +39,8 @@ fn spec_with_service(name: &str, port: u16, hc: Option<Healthcheck>) -> Environm
         production: false,
         env_file: None,
         services,
+        chaos: None,
+        chaos_scenarios: Vec::new(),
     }
 }
 

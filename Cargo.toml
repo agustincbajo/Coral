@@ -3,7 +3,7 @@ members = ["crates/*"]
 resolver = "2"
 
 [workspace.package]
-version = "0.22.6"
+version = "0.23.0"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT"
@@ -49,14 +49,14 @@ tiny_http = "0.12"
 # bzip2/xz/zstd system-lib transitives — we don't use those
 # methods). Justified per orchestrator's spec §D3.
 zip = { version = "2", default-features = false, features = ["deflate"] }
-coral-core = { path = "crates/coral-core", version = "0.22.6" }
-coral-env = { path = "crates/coral-env", version = "0.22.6" }
-coral-lint = { path = "crates/coral-lint", version = "0.22.6" }
-coral-runner = { path = "crates/coral-runner", version = "0.22.6" }
-coral-session = { path = "crates/coral-session", version = "0.22.6" }
-coral-stats = { path = "crates/coral-stats", version = "0.22.6" }
-coral-test = { path = "crates/coral-test", version = "0.22.6" }
-coral-mcp = { path = "crates/coral-mcp", version = "0.22.6" }
+coral-core = { path = "crates/coral-core", version = "0.23.0" }
+coral-env = { path = "crates/coral-env", version = "0.23.0" }
+coral-lint = { path = "crates/coral-lint", version = "0.23.0" }
+coral-runner = { path = "crates/coral-runner", version = "0.23.0" }
+coral-session = { path = "crates/coral-session", version = "0.23.0" }
+coral-stats = { path = "crates/coral-stats", version = "0.23.0" }
+coral-test = { path = "crates/coral-test", version = "0.23.0" }
+coral-mcp = { path = "crates/coral-mcp", version = "0.23.0" }
 
 [profile.release]
 lto = "thin"

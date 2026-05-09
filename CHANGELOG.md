@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-05-09
+
+**Feature release — first of v0.23 sprint (testing platform): `coral chaos inject` with Toxiproxy backend.** Network/process fault injection for running Coral environments. Closes the loop between `coral up` (spin up) and `coral test` (validate happy-path) with a third primitive: validate-under-pressure. Per PRD §3.3 (test honeycomb) + §13.6, this is the first of four v0.23 testing-platform features (chaos, monitor, record, property-based). v0.23.0 wires Toxiproxy (Shopify) as the first backend — TCP-level proxy that injects latency, bandwidth caps, slow-close, timeout, slicer faults at the connection level. Pumba (Linux-only, container-level kill/pause) deferred to v0.23.x or v0.24+ pending demand. **1300 tests pass (was 1274; +26).** `bc-regression` green; chaos-OFF compose YAML byte-identical to v0.22.6.
+
+### Added
+
+- **`[environments.<env>.chaos]` config block.** New `Option<ChaosConfig>` field on `EnvironmentSpec` with `#[serde(default)]`:
+  ```toml
+  [environments.dev.chaos]
+  backend = "toxiproxy"
+  image = "ghcr.io/shopify/toxiproxy:2.7.0"
+  listen_port = 8474
+  ```
+- **`[[environments.<env>.chaos_scenarios]]` named scenarios** runnable via `coral chaos run <name>`.
+- **Toxiproxy sidecar auto-injection in compose render.** When `chaos.is_some()`, `compose_yaml::render` appends a `toxiproxy` service to the rendered YAML with admin port (8474) published.
+- **Service rerouting via `depends_on`.** When chaos is on, every `(consumer, dep)` edge becomes a toxiproxy proxy declaration; consumer env vars rewrite `<DEP>_URL=http://dep:<port>` → `<DEP>_URL=http://toxiproxy:<proxy_port>`. Proxy port allocation deterministic: `hash(consumer:dep) % 10000 + 30000`.
+- **`coral chaos {inject,clear,list,run}` CLI subcommand.** `inject --service N --toxic T[:V] [--duration S]`, `clear [--service N]`, `list [--json]`, `run <scenario-name>`.
+- **`ToxicKind` parser** accepts `latency:Nms`, `bandwidth:Nkb`, `slow_close:Nms`, `timeout`, `slicer`. Others rejected with friendly error listing valid forms.
+
+### Changed
+
+- **`EnvironmentSpec` gained two additive fields** (`chaos`, `chaos_scenarios`). Test fixtures across `coral-test`/`coral-env` updated to include `chaos: None, chaos_scenarios: Vec::new()`. Serde-side BC preserved via `#[serde(default)]`.
+
+### Internal
+
+- **Zero new workspace deps.** HTTP via subprocess `curl` (matches existing `coral-runner` pattern). Toxiproxy admin API is small + bounded — full HTTP client overkill.
+- **Mock TCP server in inject test** uses `Content-Length` parsing + 250ms read timeout to avoid the "second-read-blocks-forever" deadlock that initially hung CI. Parses headers, extracts Content-Length, reads exactly that many body bytes, responds.
+
+### Pipeline note
+
+First feature of v0.23 sprint. Tooling validated by 3 consecutive end-to-end uses in v0.22.
+
 ## [0.22.6] - 2026-05-09
 
 **Feature release: `coral skill build` ships Coral as an Anthropic-Skills-compatible bundle.** The new subcommand walks `template/{agents,prompts,hooks}`, prepends an auto-generated `SKILL.md` manifest at the zip root, and writes a deterministic deflate zip to `dist/coral-skill-<version>.zip` (or `--output PATH`). Two consecutive runs produce byte-identical archives — every entry's mtime is pinned to the zip-format minimum (`1980-01-01T00:00:00Z`), entries are sorted by zip path, and unix permissions are pinned to `0o644` so umask drift can't leak in. The bundle excludes Coral-specific surfaces that aren't portable: `template/schema/` (lint-rule schema), `template/workflows/` (GitHub Actions yaml), and `template/commands/` (Claude-Code slash-command wrappers — the agent personas themselves are the portable surface). `SKILL.md` reads each agent/prompt's YAML frontmatter `description` field for the per-file Contents listing; missing/malformed frontmatter falls back to an empty description rather than failing the build. Frontmatter `version` always equals `env!("CARGO_PKG_VERSION")` so the manifest can never drift from the running binary. The companion `coral skill publish` is a thin stub that prints the deferred-message `publish is deferred to v0.23+; for now, run \`coral skill build\` and submit the zip manually to https://github.com/anthropics/skills` and exits 0 — the real Anthropic-Skills fork+PR flow lands in v0.23+. **One new workspace dep: `zip = "2"`** (~50 KB) with `default-features = false, features = ["deflate"]` — this drops the `bzip2`/`xz2`/`zstd` system-library transitives we'd otherwise pull in (we use deflate exclusively). Hand-rolling the zip header (LFH + central directory + EOCD) was rejected as error-prone for a release-shipping artifact. **BC sacred: all v0.22.5 surfaces are byte-identical** — pinned by `bc_regression` (8 tests still green), `template/` is unchanged. **1274 tests pass (was 1264; +10 = 4 unit + 6 e2e), all green.** Closes the v0.22 sprint feature backlog.

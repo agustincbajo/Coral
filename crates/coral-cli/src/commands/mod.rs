@@ -1,3 +1,4 @@
+pub mod chaos;
 pub mod common;
 pub mod context_build;
 pub mod contract;

@@ -5,7 +5,7 @@
 //! `EnvPlan`, hashes it, and writes its translated artifact (compose
 //! YAML, k8s manifests, Tilt config) into `.coral/env/<backend>/<hash>.*`.
 
-use crate::spec::{EnvironmentSpec, ServiceKind};
+use crate::spec::{ChaosConfig, EnvironmentSpec, ServiceKind};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -29,6 +29,12 @@ pub struct EnvPlan {
     pub services: BTreeMap<String, ServiceSpecPlan>,
     pub env_file: Option<PathBuf>,
     pub project_root: PathBuf,
+    /// v0.23.0: optional chaos sidecar config. `None` for environments
+    /// without `[environments.<env>.chaos]`. The renderer emits the
+    /// `toxiproxy` service plus per-edge proxy declarations only when
+    /// this is `Some` (so chaos-off compose YAML is byte-identical to
+    /// v0.22.6).
+    pub chaos: Option<ChaosConfig>,
 }
 
 /// Per-service compiled plan. Mirrors `ServiceKind` but resolves repo
@@ -149,6 +155,7 @@ impl EnvPlan {
             services,
             env_file: spec.env_file.clone(),
             project_root: project_root.to_path_buf(),
+            chaos: spec.chaos.clone(),
         })
     }
 }

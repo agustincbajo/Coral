@@ -29,7 +29,8 @@ pub use plan::{
     ServiceState, ServiceStatus,
 };
 pub use spec::{
-    EnvironmentSpec, Healthcheck, HealthcheckKind, HealthcheckTiming, RealService, ServiceKind,
+    ChaosBackend, ChaosConfig, ChaosScenario, EnvironmentSpec, Healthcheck, HealthcheckKind,
+    HealthcheckTiming, RealService, ServiceKind, ToxicKind,
 };
 
 use std::path::PathBuf;
