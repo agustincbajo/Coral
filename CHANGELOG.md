@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.6] - 2026-05-09
+
+**Feature release: `coral skill build` ships Coral as an Anthropic-Skills-compatible bundle.** The new subcommand walks `template/{agents,prompts,hooks}`, prepends an auto-generated `SKILL.md` manifest at the zip root, and writes a deterministic deflate zip to `dist/coral-skill-<version>.zip` (or `--output PATH`). Two consecutive runs produce byte-identical archives — every entry's mtime is pinned to the zip-format minimum (`1980-01-01T00:00:00Z`), entries are sorted by zip path, and unix permissions are pinned to `0o644` so umask drift can't leak in. The bundle excludes Coral-specific surfaces that aren't portable: `template/schema/` (lint-rule schema), `template/workflows/` (GitHub Actions yaml), and `template/commands/` (Claude-Code slash-command wrappers — the agent personas themselves are the portable surface). `SKILL.md` reads each agent/prompt's YAML frontmatter `description` field for the per-file Contents listing; missing/malformed frontmatter falls back to an empty description rather than failing the build. Frontmatter `version` always equals `env!("CARGO_PKG_VERSION")` so the manifest can never drift from the running binary. The companion `coral skill publish` is a thin stub that prints the deferred-message `publish is deferred to v0.23+; for now, run \`coral skill build\` and submit the zip manually to https://github.com/anthropics/skills` and exits 0 — the real Anthropic-Skills fork+PR flow lands in v0.23+. **One new workspace dep: `zip = "2"`** (~50 KB) with `default-features = false, features = ["deflate"]` — this drops the `bzip2`/`xz2`/`zstd` system-library transitives we'd otherwise pull in (we use deflate exclusively). Hand-rolling the zip header (LFH + central directory + EOCD) was rejected as error-prone for a release-shipping artifact. **BC sacred: all v0.22.5 surfaces are byte-identical** — pinned by `bc_regression` (8 tests still green), `template/` is unchanged. **1274 tests pass (was 1264; +10 = 4 unit + 6 e2e), all green.** Closes the v0.22 sprint feature backlog.
+
+### Added
+
+- **`coral skill build [--output PATH]`** (`crates/coral-cli/src/commands/skill.rs::build`). Walks `template/{agents,prompts,hooks}`, generates `SKILL.md`, writes a deterministic deflate zip via `zip::write::ZipWriter`, atomic-renames the result into place. Default output path: `dist/coral-skill-<version>.zip` relative to cwd. Prints `wrote <path> (<N> files, <K> bytes uncompressed)` and exits 0.
+- **`coral skill publish`** stub (same module, `::publish`). v0.22.6 only emits the deferred-message and exits 0; pinned byte-for-byte by `tests/skill_build.rs::skill_publish_stub_emits_deferred_message`.
+- **Auto-generated `SKILL.md`** with YAML frontmatter (`name`, `description`, `version`) + a "Contents" section enumerating every shipped file with its frontmatter `description`. Generation is in `commands::skill::generate_skill_md`; description extraction in `commands::skill::parse_description` (tolerant of missing frontmatter, missing `description:` key, and non-UTF-8 bytes).
+- **`zip = "2"` workspace dependency** (`Cargo.toml [workspace.dependencies]`) wired into `coral-cli` as both runtime and dev dep. Justified inline in the manifest comment.
+
+### Tests (+10)
+
+- **Unit (4)** in `crates/coral-cli/src/commands/skill.rs::tests`: `parse_description_handles_simple_frontmatter`, `parse_description_returns_none_without_frontmatter`, `parse_description_returns_none_when_key_missing`, `skill_md_includes_version_from_cargo`.
+- **E2E (6)** in `crates/coral-cli/tests/skill_build.rs`: `skill_build_produces_valid_zip` (AC #1, #2), `skill_build_includes_agents_prompts_hooks` (AC #5), `skill_build_excludes_schema_workflows_commands` (AC #6), `skill_build_skill_md_frontmatter_has_name_description_version` (AC #3, #4), `skill_build_deterministic_two_runs` (AC #8 — sleeps 1.1s between runs so any naive `now()`-based timestamping would diff), `skill_publish_stub_emits_deferred_message` (AC #9 — pins the deferred-message text byte-for-byte).
+
+### Acceptance criteria — 10/10 met
+
+1. `coral skill build` produces `dist/coral-skill-0.22.6.zip` and exits 0.
+2. The zip re-opens cleanly via `zip::ZipArchive` (no torn-archive risk — atomic write via `tempfile::NamedTempFile::persist`).
+3. The bundle contains a root `SKILL.md` with valid YAML frontmatter (`name`, `description`, `version`).
+4. SKILL.md frontmatter `version` equals `env!("CARGO_PKG_VERSION")`.
+5. `agents/wiki-linter.md`, `prompts/consolidate.md`, `hooks/pre-commit.sh` (and every other regular file under those three subdirs) ship with the `template/` prefix stripped.
+6. `template/schema/`, `template/workflows/`, `template/commands/` are NOT in the bundle (asserted by both file-name and directory-prefix membership).
+7. `--output /tmp/foo.zip` writes to the override path; the default `dist/` is not touched.
+8. Two consecutive `coral skill build` invocations produce byte-identical zips.
+9. `coral skill publish` exits 0 and emits the spec-D5 deferred-message text.
+10. `template/` is read-only to the binary — content unchanged after build (holds by construction).
+
+### Pipeline note
+
+Final feature release of the v0.22 sprint. Out of scope, deferred to v0.23+:
+- Real `coral skill publish`: the Anthropic-Skills fork+PR flow (clone `anthropics/skills`, branch, copy bundle into a per-skill subdirectory, push, open PR via `gh`). v0.22.6 prints the manual-submission pointer and exits 0.
+- `template/schema/` / `template/workflows/` / `template/commands/` portability — revisit when each can be expressed without Coral-specific or Claude-Code-specific assumptions.
+- Skill-bundle signing / SHA-256 sidecar for reproducibility audits.
+- Customizing the bundle name (currently fixed to `coral-skill-<version>.zip`).
+
 ## [0.22.5] - 2026-05-09
 
 **Feature release: discoverable MCP server card per the 2025-11-25 spec.** Coral now publishes `/.well-known/mcp/server-card.json` on the HTTP/SSE transport AND mirrors the same payload via a new `coral mcp card` CLI subcommand. Both surfaces emit byte-identical pretty-printed JSON modulo the trailing newline `println!` adds. The card carries the spec-defined fields — `name`, `version`, `protocolVersion`, `transports`, `capabilities.{resources,tools,prompts}.count`, `vendor` — plus a Coral-specific `x-coral` namespace (`buildTimestamp`, `ciStatus`). Capability counts are sampled from the same catalog instances `coral mcp serve` uses, so the discovery payload can never drift out of sync with the JSON-RPC `initialize` reply. The HTTP route is mounted **before** the `/mcp` Origin allowlist — registries hit it from any origin (the card is public by design), while the `/mcp` DNS-rebinding mitigation stays unchanged for the actual MCP traffic. Zero new workspace dependencies — the card is a pure `serde_json::json!` macro plus `option_env!("CORAL_BUILD_TIMESTAMP")` for the (optional) build provenance hint, no build-script changes. **BC sacred: all v0.22.4 surfaces are byte-identical** — pinned by `bc_regression` (8 tests still green). **1264 tests pass (was 1258; +6 = 3 unit + 2 e2e + 1 CLI smoke), all green.** This is the second consecutive release dogfood-validated by the v0.22.4-fixed `scripts/release.sh`.

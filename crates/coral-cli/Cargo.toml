@@ -32,6 +32,7 @@ walkdir = { workspace = true }
 regex = { workspace = true }
 rayon = { workspace = true }
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
+zip = { workspace = true }
 coral-core = { workspace = true }
 coral-env = { workspace = true }
 coral-lint = { workspace = true }
@@ -46,3 +47,4 @@ tempfile = { workspace = true }
 assert_cmd = { workspace = true }
 predicates = { workspace = true }
 insta = { version = "1", features = ["yaml", "filters"] }
+zip = { workspace = true }

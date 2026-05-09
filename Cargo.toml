@@ -3,7 +3,7 @@ members = ["crates/*"]
 resolver = "2"
 
 [workspace.package]
-version = "0.22.5"
+version = "0.22.6"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT"
@@ -40,14 +40,23 @@ schemars = { version = "0.8", features = ["chrono"] }
 # dragging the rest of the workspace into tokio. This is the only new
 # dep in v0.21.1 (justified in the orchestrator's spec §4).
 tiny_http = "0.12"
-coral-core = { path = "crates/coral-core", version = "0.22.5" }
-coral-env = { path = "crates/coral-env", version = "0.22.5" }
-coral-lint = { path = "crates/coral-lint", version = "0.22.5" }
-coral-runner = { path = "crates/coral-runner", version = "0.22.5" }
-coral-session = { path = "crates/coral-session", version = "0.22.5" }
-coral-stats = { path = "crates/coral-stats", version = "0.22.5" }
-coral-test = { path = "crates/coral-test", version = "0.22.5" }
-coral-mcp = { path = "crates/coral-mcp", version = "0.22.5" }
+# v0.22.6: `coral skill build` produces an Anthropic-Skills-compatible
+# zip bundle from `template/`. We need a deterministic deflate-zip
+# writer; the std library doesn't ship one and writing a minimal
+# zip header by hand (LFH + central directory + EOCD) is
+# error-prone. `zip` 2.x (~50 KB) is single-purpose and pure-rust
+# with `default-features = false, features = ["deflate"]` (drops
+# bzip2/xz/zstd system-lib transitives — we don't use those
+# methods). Justified per orchestrator's spec §D3.
+zip = { version = "2", default-features = false, features = ["deflate"] }
+coral-core = { path = "crates/coral-core", version = "0.22.6" }
+coral-env = { path = "crates/coral-env", version = "0.22.6" }
+coral-lint = { path = "crates/coral-lint", version = "0.22.6" }
+coral-runner = { path = "crates/coral-runner", version = "0.22.6" }
+coral-session = { path = "crates/coral-session", version = "0.22.6" }
+coral-stats = { path = "crates/coral-stats", version = "0.22.6" }
+coral-test = { path = "crates/coral-test", version = "0.22.6" }
+coral-mcp = { path = "crates/coral-mcp", version = "0.22.6" }
 
 [profile.release]
 lto = "thin"

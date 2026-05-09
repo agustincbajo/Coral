@@ -1,5 +1,5 @@
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use coral_cli::commands;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -107,6 +107,14 @@ enum Cmd {
     /// frontmatter — the `coral lint` trust-by-curation gate blocks
     /// any commit until a human flips it to `true`.
     Session(commands::session::SessionArgs),
+    /// **v0.22.6**: Build / publish Coral as an Anthropic-Skills
+    /// bundle. `build` produces a deterministic deflate-zip at
+    /// `dist/coral-skill-<version>.zip` (or `--output PATH`)
+    /// containing the agent personas, prompt templates, hooks, and
+    /// an auto-generated `SKILL.md` manifest. `publish` is a stub
+    /// pointing users at the Anthropic-Skills repo; the real
+    /// fork+PR flow is deferred to v0.23+.
+    Skill(SkillArgs),
     /// **Hidden** test-only helper: acquires `with_exclusive_lock(path)`,
     /// reads the file as a u64 counter, increments by 1, writes back.
     /// Used by `tests/cross_process_lock.rs` to verify the v0.15
@@ -118,6 +126,35 @@ enum Cmd {
         /// Path to the counter file (must contain a valid u64).
         path: PathBuf,
     },
+}
+
+/// `coral skill <build|publish>` argument shell.
+///
+/// We use a nested `Subcommand` (rather than two top-level
+/// commands `coral skill-build` / `coral skill-publish`) to keep
+/// the CLI surface forward-compatible: v0.23+ will add `coral
+/// skill list`, `coral skill verify`, etc., once the
+/// Anthropic-Skills publish flow lands.
+#[derive(Args, Debug)]
+struct SkillArgs {
+    #[command(subcommand)]
+    command: SkillCmd,
+}
+
+#[derive(Subcommand, Debug)]
+enum SkillCmd {
+    /// Build the skill bundle zip from `template/`.
+    Build {
+        /// Override the default output path
+        /// (`dist/coral-skill-<version>.zip` relative to cwd).
+        /// When provided, the `dist/` directory is NOT created —
+        /// the caller picked a different location on purpose.
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
+    /// Publish stub. v0.22.6 only prints a deferred-message;
+    /// real implementation lands in v0.23+.
+    Publish,
 }
 
 fn main() -> ExitCode {
@@ -154,6 +191,10 @@ fn main() -> ExitCode {
         Cmd::ContextBuild(args) => commands::context_build::run(args, cli.wiki_root.as_deref()),
         Cmd::Contract(args) => commands::contract::run(args, cli.wiki_root.as_deref()),
         Cmd::Session(args) => commands::session::run(args, cli.wiki_root.as_deref()),
+        Cmd::Skill(args) => match args.command {
+            SkillCmd::Build { output } => commands::skill::build(output),
+            SkillCmd::Publish => commands::skill::publish(),
+        },
         Cmd::TestLockIncr { path } => run_test_lock_incr(&path),
     };
 

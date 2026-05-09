@@ -1,5 +1,7 @@
 /target
 examples/*/target
+# v0.22.6: `coral skill build` default output directory.
+/dist
 **/*.rs.bk
 Cargo.lock.bak
 .DS_Store
