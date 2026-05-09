@@ -306,8 +306,16 @@ cmd_tag() {
         return 5
     fi
 
-    note "running: cargo release tag $version --no-confirm --execute"
-    cargo release tag "$version" --no-confirm --execute
+    # `cargo release tag` does NOT take a positional version argument —
+    # it derives the tag name from the workspace's `[workspace.package]
+    # version` (which the prior `release.sh bump $version` already wrote
+    # into Cargo.toml). The earlier shape `cargo release tag $version`
+    # crashed with `unexpected argument '$version' found`. v0.22.2
+    # dogfood revealed this; pre-fix, the v0.22.0 tester didn't catch
+    # it because the test suite stash-validated `cargo release` only
+    # against tempdir clones that never reached the tag step.
+    note "running: cargo release tag --no-confirm --execute"
+    cargo release tag --no-confirm --execute
     note "running: cargo release push --no-confirm --execute"
     cargo release push --no-confirm --execute
 

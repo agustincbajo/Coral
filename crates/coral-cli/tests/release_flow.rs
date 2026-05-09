@@ -568,6 +568,57 @@ fn release_sh_tag_rejects_wrong_head_subject() {
 }
 
 // ----------------------------------------------------------------------------
+// Test #7b: release_sh_tag_invokes_cargo_release_without_positional_version
+// ----------------------------------------------------------------------------
+//
+// Regression pin for the v0.22.3 dogfood-revealed bug: pre-fix, `cmd_tag`
+// invoked `cargo release tag $version --no-confirm --execute`, but
+// `cargo release tag` does NOT accept a positional version arg (it derives
+// the tag name from the workspace's `[workspace.package].version`). The
+// stray positional crashed cargo-release with `unexpected argument
+// '0.22.2' found`. Post-fix, the invocation is `cargo release tag
+// --no-confirm --execute` (no positional). This test pins the source-level
+// invariant via a grep on `scripts/release.sh` so accidental re-introduction
+// of `tag $version` is caught at test time, not at release time.
+//
+// We grep the source rather than shim cargo-release because shimming would
+// require either a tempdir clone with the `release.toml` configured to
+// invoke a fake binary or a $PATH override, both of which are heavier than
+// the bug warrants. The dogfood loop already validates the live invocation
+// every release.
+
+#[test]
+fn release_sh_tag_invokes_cargo_release_without_positional_version() {
+    let release_sh = fs::read_to_string(script("release.sh")).unwrap();
+    // Find the `cargo release tag …` line(s) on NON-COMMENT lines (the
+    // file's docstring legitimately mentions the bug shape `cargo release
+    // tag $version`, so a naive whole-file match would always trip).
+    // Strip lines that are pure comments first.
+    let active_lines: String = release_sh
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let bad_pattern = regex::Regex::new(r#"cargo\s+release\s+tag\s+["$]"?version"#).unwrap();
+    assert!(
+        !bad_pattern.is_match(&active_lines),
+        "release.sh must NOT pass a positional version to `cargo release tag` \
+         (the subcommand derives version from Cargo.toml). v0.22.3 dogfood \
+         exposed this — pre-fix we hit `unexpected argument '0.22.2' found`. \
+         Found a `cargo release tag $version`-shaped line; verify the cmd_tag \
+         body in scripts/release.sh."
+    );
+
+    // Sanity: the canonical line MUST be present (otherwise the test is
+    // a no-op tautology).
+    assert!(
+        release_sh.contains("cargo release tag --no-confirm --execute"),
+        "release.sh must contain the canonical `cargo release tag --no-confirm --execute` line"
+    );
+}
+
+// ----------------------------------------------------------------------------
 // Test #8: release_gh_sh_dry_run_extracts_correct_section
 // ----------------------------------------------------------------------------
 

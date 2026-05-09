@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.3] - 2026-05-08
+
+**Patch release: fix `cargo release tag` positional-version argument bug.** The first dogfood run of `scripts/release.sh tag 0.22.2` (the second real use of the new release tooling, after `release.sh bump` was validated by the v0.22.1 cache fix) revealed another shape-bug the v0.22.0 tester didn't catch: `cmd_tag` was invoking `cargo release tag $version --no-confirm --execute`, but `cargo release tag` does NOT accept a positional version argument — it derives the tag name from the workspace's `[workspace.package].version` (already written by the prior `release.sh bump $version` step). The stray positional crashed cargo-release with `unexpected argument '0.22.2' found` immediately after the HEAD-subject validation passed. Pre-fix, no automated test exercised the post-validation path because all flows that would invoke `cargo release tag` would push to the live remote, so the test suite stopped short. Post-fix: invocation is `cargo release tag --no-confirm --execute` (no positional). v0.22.2 itself was tagged via the manual fallback (`git tag -a v0.22.2 -m "Coral v0.22.2"` + `git push origin v0.22.2`) because the bug was caught at tag-time. The new tooling is now validated end-to-end through `bump → tag → release-gh`; the `release.sh tag 0.22.3` invocation will be the first to fully run cargo-release's tag pipeline. **1258 tests pass (was 1257; +1 regression test).**
+
+### Fixed (in-cycle, before tag)
+
+- **`scripts/release.sh::cmd_tag` invocation shape.** Removed the stray positional `$version` from the `cargo release tag` invocation. The push step (`cargo release push --no-confirm --execute`) was always correct; only the tag step was broken.
+
+### Tests
+
+- **#7b `release_sh_tag_invokes_cargo_release_without_positional_version`** — source-grep regression test that asserts no NON-COMMENT line in `scripts/release.sh` contains the `cargo release tag $version`-shaped pattern, AND that the canonical `cargo release tag --no-confirm --execute` line IS present (so the test isn't a tautology). Comment-line filtering excludes the legitimate doc-comment that explains the bug history.
+
+### Pipeline note
+
+Patch release within v0.22 sprint. The `release.sh tag 0.22.3` invocation (planned for the maintainer's next move) is the first end-to-end use of the new tooling that exercises every step (bump + tag + push + gh-release). v0.22.{4,5} (originally v0.22.{3,4} pre-fix) cover MCP registry publish + coral skill build/publish.
+
 ## [0.22.2] - 2026-05-08
 
 **Feature release: `coral test --emit k6` smoke→load handoff.** Adds an emitter that walks the same TestCase discovery + filter pipeline `coral test` already uses and serializes the resulting HTTP step set to a single k6 JavaScript load-test script. The user runs `k6 run <emitted file>`; Coral itself never executes k6 — that's the handoff point. Coverage targets the ~95% case: UserDefined HTTP steps + HTTP Healthcheck probes translate 1:1; TCP/Exec/Grpc healthchecks and `YamlStep::Exec` steps emit `// SKIPPED` comments AND are returned via `EmitOutput.skipped` so the CLI surfaces a stderr summary. Output is byte-deterministic across runs (cases iterate in `(service, id)` lexicographic order). `--emit k6` does NOT require `coral up` — it reads only `EnvironmentSpec`, so it works on a clean checkout. **Zero new workspace dependencies** — pure `format!` + `String::push_str` string formatting; no JS AST library, no template engine. **BC sacred: `coral test` (no `--emit`) is byte-identical to v0.22.1** — pinned by `bc_regression::coral_test_no_emit_no_match_stdout_pinned_to_v0_22_1`. **1257 tests pass (was 1228; +29 = +21 ship + 8 in-cycle fix), all green.** `bc-regression` green.
