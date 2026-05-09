@@ -471,3 +471,111 @@ fn unknown_path_returns_404() {
     let (status, _, _) = send_request(addr, req.as_bytes());
     assert_eq!(status, 404);
 }
+
+/// v0.22.5 — `GET /.well-known/mcp/server-card.json` returns 200 with
+/// valid JSON matching the spec D1 schema. The card is public — no
+/// Origin allowlist, no Mcp-Session-Id requirement — so this test
+/// deliberately omits both. Acceptance criteria #1, #2, #3, #4 all
+/// covered here.
+#[test]
+fn well_known_card_endpoint_returns_200_with_valid_json() {
+    let addr = spawn_server(make_handler());
+    let req = format!(
+        "GET /.well-known/mcp/server-card.json HTTP/1.1\r\n\
+         Host: {addr}\r\n\
+         Accept: application/json\r\n\
+         Connection: close\r\n\r\n"
+    );
+    let (status, headers, body) = send_request(addr, req.as_bytes());
+    assert_eq!(status, 200, "card endpoint must be 200");
+    let content_type = header(&headers, "Content-Type").unwrap_or_default();
+    assert!(
+        content_type.starts_with("application/json"),
+        "Content-Type must be application/json, got: {content_type:?}"
+    );
+    let json: serde_json::Value =
+        serde_json::from_slice(&body).expect("card body must be valid JSON");
+    // AC #3: name + version + protocolVersion top-level fields.
+    assert_eq!(json["name"], "coral");
+    assert_eq!(json["version"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(json["protocolVersion"], "2025-11-25");
+    // AC #4: capability counts match the catalog .len(). We use
+    // ToolCatalog::all().len() because the card reports the FULL
+    // catalog independent of --allow-write-tools.
+    let tools_count = json["capabilities"]["tools"]["count"]
+        .as_u64()
+        .expect("tools.count is integer");
+    assert_eq!(
+        tools_count as usize,
+        coral_mcp::ToolCatalog::all().len(),
+        "card tools count must equal ToolCatalog::all().len()"
+    );
+    let prompts_count = json["capabilities"]["prompts"]["count"]
+        .as_u64()
+        .expect("prompts.count is integer");
+    assert_eq!(
+        prompts_count as usize,
+        coral_mcp::PromptCatalog::list().len()
+    );
+    // AC #8: the endpoint accepts cross-origin GETs. Re-issue with a
+    // disallowed Origin and confirm it still 200s. Without the new
+    // route shape this would 403 because the legacy `/mcp` Origin
+    // allowlist would have fired.
+    let req2 = format!(
+        "GET /.well-known/mcp/server-card.json HTTP/1.1\r\n\
+         Host: {addr}\r\n\
+         Origin: https://attacker.example.com\r\n\
+         Accept: application/json\r\n\
+         Connection: close\r\n\r\n"
+    );
+    let (status2, _, _) = send_request(addr, req2.as_bytes());
+    assert_eq!(
+        status2, 200,
+        "card endpoint must accept cross-origin GETs (no Origin allowlist on the public card)"
+    );
+}
+
+/// v0.22.5 — anything else under `/.well-known/mcp/*` (or a non-GET
+/// method on the card path) returns 404. Pins the contract that the
+/// card is the only well-known resource we publish, and that the new
+/// branch doesn't accidentally shadow `/mcp` traffic. Acceptance
+/// criterion #7.
+#[test]
+fn well_known_unknown_path_returns_404() {
+    let addr = spawn_server(make_handler());
+    // 1. Unknown sibling under /.well-known/mcp/ returns 404.
+    let req = format!(
+        "GET /.well-known/mcp/something-else HTTP/1.1\r\n\
+         Host: {addr}\r\n\
+         Accept: application/json\r\n\
+         Connection: close\r\n\r\n"
+    );
+    let (status, _, _) = send_request(addr, req.as_bytes());
+    assert_eq!(
+        status, 404,
+        "unknown well-known path must be 404; got {status}"
+    );
+    // 2. Non-GET on the card path is 404 (we don't accept POST/DELETE
+    //    on the card — it's a static read-only resource).
+    let req2 = format!(
+        "POST /.well-known/mcp/server-card.json HTTP/1.1\r\n\
+         Host: {addr}\r\n\
+         Accept: application/json\r\n\
+         Content-Length: 0\r\n\
+         Connection: close\r\n\r\n"
+    );
+    let (status2, _, _) = send_request(addr, req2.as_bytes());
+    assert_eq!(
+        status2, 404,
+        "POST on /.well-known/mcp/server-card.json must be 404; got {status2}"
+    );
+    // 3. The card route MUST NOT have shadowed /mcp — sanity check the
+    //    real endpoint still works after the new branch lands.
+    let body = r#"{"jsonrpc":"2.0","id":1,"method":"ping","params":{}}"#;
+    let mcp_req = build_post(addr, body, &[]);
+    let (mcp_status, _, _) = send_request(addr, &mcp_req);
+    assert_eq!(
+        mcp_status, 200,
+        "/mcp must still respond 200 after well-known route landed"
+    );
+}

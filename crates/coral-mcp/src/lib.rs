@@ -32,12 +32,14 @@
 //! for AI-era development", and this crate is what makes it
 //! consumable by any agent.
 
+pub mod card;
 pub mod prompts;
 pub mod resources;
 pub mod server;
 pub mod tools;
 pub mod transport;
 
+pub use card::server_card;
 pub use prompts::{PromptCatalog, PromptDescriptor};
 pub use resources::{Resource, ResourceProvider, WikiResourceProvider};
 pub use server::{McpHandler, NoOpDispatcher, PROTOCOL_VERSION, ToolCallResult, ToolDispatcher};

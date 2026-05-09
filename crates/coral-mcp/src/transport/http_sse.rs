@@ -191,8 +191,33 @@ fn handle_request(
         return respond_options(request);
     }
 
-    // Path routing. We accept exact `/mcp` only; anything else is 404.
+    // v0.22.5: discoverable MCP server card per the 2025-11-25 spec.
+    // Mounted at `/.well-known/mcp/server-card.json` and intentionally
+    // exempt from the `/mcp` Origin allowlist below — registries and
+    // discovery probes hit this from any origin (including a fresh
+    // browser tab on `https://example.com`) and a 403 would defeat the
+    // whole point of "discoverable". The card is a static JSON document
+    // built from compile-time constants + catalog `.len()` counts —
+    // there's no session state, no tool dispatch, no PII, no exfil
+    // surface. The load-bearing defense for the actual MCP traffic
+    // (POST /mcp) remains the 127.0.0.1 default bind + Origin allowlist
+    // applied below.
+    //
+    // Any other path under `/.well-known/mcp/*` (or a non-GET method
+    // on the card path) returns 404 — the card is the only well-known
+    // resource we publish.
     let path = url.split('?').next().unwrap_or("");
+    if path == "/.well-known/mcp/server-card.json" {
+        if !matches!(method, tiny_http::Method::Get) {
+            return respond_simple(request, 404, "application/json", r#"{"error":"not found"}"#);
+        }
+        return handle_well_known_card(request, handler);
+    }
+    if path.starts_with("/.well-known/mcp/") {
+        return respond_simple(request, 404, "application/json", r#"{"error":"not found"}"#);
+    }
+
+    // Path routing. We accept exact `/mcp` only; anything else is 404.
     if path != "/mcp" {
         return respond_simple(
             request,
@@ -421,6 +446,31 @@ fn handle_delete(
             r#"{"error":"session not found"}"#,
         )
     }
+}
+
+/// `GET /.well-known/mcp/server-card.json` — discoverable MCP server
+/// card per the 2025-11-25 spec. Public by design (no Origin check, no
+/// session id), pretty-printed JSON, `Content-Type: application/json`.
+///
+/// The body is computed via [`crate::card::server_card`] sampling the
+/// handler's resource provider + the static `ToolCatalog` /
+/// `PromptCatalog`. Counts reflect the FULL catalog so a registry
+/// observing the card sees capability shape independent of the per-
+/// process `--allow-write-tools` gate.
+///
+/// v0.22.5 acceptance criterion: this surface and `coral mcp card`
+/// emit byte-identical bodies modulo the trailing newline `println!`
+/// adds. Pinned by the e2e test
+/// `well_known_card_endpoint_returns_200_with_valid_json` and the
+/// CLI smoke test `cli_mcp_card_emits_json_to_stdout`.
+fn handle_well_known_card(request: tiny_http::Request, handler: &McpHandler) -> io::Result<()> {
+    let card = crate::card::server_card(
+        handler.resources.as_ref(),
+        &crate::tools::ToolCatalog,
+        &crate::prompts::PromptCatalog,
+    );
+    let body = serde_json::to_string_pretty(&card).unwrap_or_else(|_| "{}".to_string());
+    respond_simple(request, 200, "application/json", &body)
 }
 
 /// CORS preflight responder. Tight allowlist — no wildcard origin,

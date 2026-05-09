@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.5] - 2026-05-09
+
+**Feature release: discoverable MCP server card per the 2025-11-25 spec.** Coral now publishes `/.well-known/mcp/server-card.json` on the HTTP/SSE transport AND mirrors the same payload via a new `coral mcp card` CLI subcommand. Both surfaces emit byte-identical pretty-printed JSON modulo the trailing newline `println!` adds. The card carries the spec-defined fields — `name`, `version`, `protocolVersion`, `transports`, `capabilities.{resources,tools,prompts}.count`, `vendor` — plus a Coral-specific `x-coral` namespace (`buildTimestamp`, `ciStatus`). Capability counts are sampled from the same catalog instances `coral mcp serve` uses, so the discovery payload can never drift out of sync with the JSON-RPC `initialize` reply. The HTTP route is mounted **before** the `/mcp` Origin allowlist — registries hit it from any origin (the card is public by design), while the `/mcp` DNS-rebinding mitigation stays unchanged for the actual MCP traffic. Zero new workspace dependencies — the card is a pure `serde_json::json!` macro plus `option_env!("CORAL_BUILD_TIMESTAMP")` for the (optional) build provenance hint, no build-script changes. **BC sacred: all v0.22.4 surfaces are byte-identical** — pinned by `bc_regression` (8 tests still green). **1264 tests pass (was 1258; +6 = 3 unit + 2 e2e + 1 CLI smoke), all green.** This is the second consecutive release dogfood-validated by the v0.22.4-fixed `scripts/release.sh`.
+
+### Added
+
+- **`GET /.well-known/mcp/server-card.json` on the HTTP/SSE transport** (`crates/coral-mcp/src/transport/http_sse.rs::handle_well_known_card`). 200 + `Content-Type: application/json` + pretty-printed body. Branch lands in `handle_request` BEFORE the Origin allowlist so cross-origin GETs (browser tabs, registry probes) are accepted; the `/mcp` Origin check is unchanged. Any other path under `/.well-known/mcp/*`, or a non-GET method on the card path, returns 404.
+- **`coral mcp card` CLI subcommand** (`crates/coral-cli/src/commands/mcp.rs::card`). No flags. Constructs the same `WikiResourceProvider` / `ToolCatalog` / `PromptCatalog` instances `coral mcp serve` uses, prints `serde_json::to_string_pretty(&card)` followed by exactly one trailing newline, exits 0. Errors propagate via anyhow.
+- **`coral_mcp::card::server_card(&dyn ResourceProvider, &ToolCatalog, &PromptCatalog) -> serde_json::Value`** (new module `crates/coral-mcp/src/card.rs`). The single source of truth for the card payload; both surfaces call it. Re-exported as `coral_mcp::server_card`.
+- **`x-coral` namespace.** `buildTimestamp` reads from `option_env!("CORAL_BUILD_TIMESTAMP")` so reproducible/CI builds may inject an ISO-8601 timestamp; a plain `cargo build` produces `"unknown"`. `ciStatus` is the literal `"green"` because the binary itself is the artifact CI just blessed (a `"red"` value would lie about the running binary's provenance).
+
+### Tests (+6)
+
+- **Unit (3)** in `crates/coral-mcp/src/card.rs::tests`: `card_has_name_version_protocolversion`, `card_capabilities_counts_match_catalog_lens`, `card_serializes_to_pretty_json`.
+- **E2E (2)** in `crates/coral-mcp/tests/mcp_http_sse_e2e.rs`: `well_known_card_endpoint_returns_200_with_valid_json` (covers AC #1, #2, #3, #4, #8 — endpoint shape + content type + capability counts + cross-origin GET), `well_known_unknown_path_returns_404` (AC #7 — sibling well-known paths and non-GET methods on the card path).
+- **CLI smoke (1)** in `crates/coral-cli/tests/mcp_card_smoke.rs`: `cli_mcp_card_emits_json_to_stdout` (AC #5 — exit 0 + valid JSON of the same schema, with `version` from `CARGO_PKG_VERSION`).
+
+### Acceptance criteria — 8/8 met
+
+1. `GET /.well-known/mcp/server-card.json` returns 200 with valid JSON matching D1 schema.
+2. `Content-Type: application/json` on the card response.
+3. `name == "coral"`, `version == env!("CARGO_PKG_VERSION")` (= "0.22.5"), `protocolVersion == "2025-11-25"`.
+4. `capabilities.{resources,tools,prompts}.count` match catalog `.len()`.
+5. `coral mcp card` exits 0, prints valid JSON of the same schema.
+6. `coral mcp card` stdout equals HTTP body byte-for-byte modulo trailing newline (both surfaces share `server_card()` + `to_string_pretty()`).
+7. `GET /.well-known/mcp/anything-else` → 404; non-GET on the card path → 404.
+8. Card endpoint accepts cross-origin GETs (the new branch lands BEFORE the Origin allowlist); `/mcp` Origin check unchanged.
+
+### Pipeline note
+
+Feature release within v0.22 sprint. Second consecutive release dogfood-validated by the v0.22.4-fixed `scripts/release.sh` (`bump` → `tag` → push → gh-release). Out of scope, deferred:
+- Build-script timestamp injection — the `CORAL_BUILD_TIMESTAMP` env knob exists; CI can set it. Default is `"unknown"`.
+- Auto-publishing to external registries — users self-host. v0.22.6 will cover the published-skill build pipeline.
+- JSON Schema validation against an external file — assertions cover shape; no schema dep added.
+
 ## [0.22.4] - 2026-05-08
 
 **Patch release: simplify `release.sh tag` to use `git tag -a` directly.** The v0.22.3 dogfood revealed that `cargo release tag --execute` is a NO-OP when the version bump came from a manual Cargo.toml edit (instead of `cargo release X.Y.Z`). cargo-release tracks "we just released X.Y.Z" as in-memory state from the bump step; without that state, `cargo release tag --execute` exits silently and creates nothing. Real-world Coral releases mix manual bumps (when the dev applies a tester finding inline, like v0.21.3 → v0.21.4) with cargo-release-driven bumps, so depending on cargo-release's state-tracking is fragile. v0.22.4 ditches `cargo release tag` entirely and uses plain `git tag -a "v$version" -m "Coral v$version"` + `git push origin main` + `git push origin "v$version"`. The annotated tag matches the conventions previously declared in `release.toml` (`tag-name = "v{{version}}"`, `tag-message = "Coral v{{version}}"`). Net effect: `release.sh tag X.Y.Z` now works regardless of whether the prior bump came from `release.sh bump` or a manual edit. The regression test #7b is updated to assert `git tag -a` is the canonical line (replacing the prior assertion that `cargo release tag --no-confirm --execute` appears).
@@ -1450,7 +1485,8 @@ Test count: 385 (v0.8.0) → 427 (+42).
 - 5 ADRs: Rust CLI architecture, Claude CLI vs API, template via include_dir, multi-agent flow, versioning + sync.
 - Self-hosted `.wiki/` with 14 seed pages (cli/core/lint/runner/stats modules + concepts + entities + flow + decisions + synthesis + operations + sources).
 
-[Unreleased]: https://github.com/agustincbajo/Coral/compare/v0.22.0...HEAD
+[Unreleased]: https://github.com/agustincbajo/Coral/compare/v0.22.5...HEAD
+[0.22.5]: https://github.com/agustincbajo/Coral/releases/tag/v0.22.5
 [0.22.0]: https://github.com/agustincbajo/Coral/releases/tag/v0.22.0
 [0.21.4]: https://github.com/agustincbajo/Coral/releases/tag/v0.21.4
 [0.21.3]: https://github.com/agustincbajo/Coral/releases/tag/v0.21.3

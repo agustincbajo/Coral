@@ -316,7 +316,7 @@ dependencies = [
 
 [[package]]
 name = "coral-cli"
-version = "0.22.4"
+version = "0.22.5"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -348,7 +348,7 @@ dependencies = [
 
 [[package]]
 name = "coral-core"
-version = "0.22.4"
+version = "0.22.5"
 dependencies = [
  "ahash",
  "chrono",
@@ -370,7 +370,7 @@ dependencies = [
 
 [[package]]
 name = "coral-env"
-version = "0.22.4"
+version = "0.22.5"
 dependencies = [
  "chrono",
  "coral-core",
@@ -386,7 +386,7 @@ dependencies = [
 
 [[package]]
 name = "coral-lint"
-version = "0.22.4"
+version = "0.22.5"
 dependencies = [
  "coral-core",
  "coral-runner",
@@ -404,7 +404,7 @@ dependencies = [
 
 [[package]]
 name = "coral-mcp"
-version = "0.22.4"
+version = "0.22.5"
 dependencies = [
  "chrono",
  "coral-core",
@@ -421,7 +421,7 @@ dependencies = [
 
 [[package]]
 name = "coral-runner"
-version = "0.22.4"
+version = "0.22.5"
 dependencies = [
  "rayon",
  "regex",
@@ -437,7 +437,7 @@ dependencies = [
 
 [[package]]
 name = "coral-session"
-version = "0.22.4"
+version = "0.22.5"
 dependencies = [
  "chrono",
  "coral-core",
@@ -454,7 +454,7 @@ dependencies = [
 
 [[package]]
 name = "coral-stats"
-version = "0.22.4"
+version = "0.22.5"
 dependencies = [
  "ahash",
  "chrono",
@@ -466,7 +466,7 @@ dependencies = [
 
 [[package]]
 name = "coral-test"
-version = "0.22.4"
+version = "0.22.5"
 dependencies = [
  "chrono",
  "coral-core",

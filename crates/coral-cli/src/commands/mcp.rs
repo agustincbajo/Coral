@@ -16,8 +16,8 @@ use anyhow::Result;
 use clap::{Args, Subcommand};
 use coral_core::{search, walk};
 use coral_mcp::{
-    McpHandler, ResourceProvider, ServerConfig, ToolCallResult, ToolDispatcher, Transport,
-    WikiResourceProvider, transport::HttpSseTransport,
+    McpHandler, PromptCatalog, ResourceProvider, ServerConfig, ToolCallResult, ToolCatalog,
+    ToolDispatcher, Transport, WikiResourceProvider, server_card, transport::HttpSseTransport,
 };
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
@@ -34,6 +34,15 @@ pub struct McpArgs {
 pub enum McpCmd {
     /// Serve the MCP protocol over stdin/stdout.
     Serve(ServeArgs),
+    /// Print the discoverable MCP server card as pretty-printed JSON to
+    /// stdout and exit. Mirrors the body served at
+    /// `GET /.well-known/mcp/server-card.json` on the HTTP transport
+    /// (modulo the trailing newline `println!` adds).
+    ///
+    /// v0.22.5: registries and curious humans can hit either surface
+    /// to learn what this Coral build advertises (capabilities, vendor,
+    /// build provenance) before deciding to connect.
+    Card,
 }
 
 #[derive(Args, Debug)]
@@ -104,7 +113,34 @@ pub const DEFAULT_HTTP_PORT: u16 = 3737;
 pub fn run(args: McpArgs, _wiki_root: Option<&Path>) -> Result<ExitCode> {
     match args.command {
         McpCmd::Serve(a) => serve(a),
+        McpCmd::Card => card(),
     }
+}
+
+/// `coral mcp card` — print the server card as pretty-printed JSON.
+///
+/// v0.22.5 acceptance criterion #6: stdout is byte-identical to the
+/// HTTP body modulo the trailing newline `println!` adds. Both
+/// surfaces call [`server_card`] with the same `WikiResourceProvider`
+/// / `ToolCatalog` / `PromptCatalog` instances, so capability counts
+/// agree across them.
+///
+/// We construct the same `WikiResourceProvider` `coral mcp serve` uses
+/// (rooted at the current working directory, `include_unreviewed =
+/// false`) so a registry probing `coral mcp card` from a real project
+/// observes the same `resources.count` it would see on
+/// `GET /.well-known/mcp/server-card.json`. The CLI subcommand is
+/// otherwise a thin wrapper — no flags, no I/O beyond stdout, exit 0
+/// on success and propagate errors via anyhow.
+fn card() -> Result<ExitCode> {
+    let cwd = std::env::current_dir()?;
+    let resources: Box<dyn ResourceProvider> = Box::new(WikiResourceProvider::new(cwd));
+    let card = server_card(resources.as_ref(), &ToolCatalog, &PromptCatalog);
+    // `to_string_pretty` then `println!` is the canonical form: HTTP
+    // body uses the same pretty serialization, so stdout matches it
+    // byte-for-byte plus exactly one trailing `\n`.
+    println!("{}", serde_json::to_string_pretty(&card)?);
+    Ok(ExitCode::SUCCESS)
 }
 
 fn serve(args: ServeArgs) -> Result<ExitCode> {
