@@ -123,6 +123,40 @@ cmd_preflight() {
     ok "ci-locally.sh passed"
 }
 
+# Derive `<owner>/<repo>` from `git remote get-url origin`. Strips trailing
+# `.git` and either `git@github.com:` or `https://github.com/` prefix. Falls
+# back to the historical hardcoded `agustincbajo/Coral` if origin is missing
+# or unparseable — that keeps preflight from blowing up on tempdir test
+# fixtures that lack a real origin.
+#
+# MEDIUM 4 (v0.22.0 tester audit): pre-fix this was hardcoded inside
+# `rewrite_changelog_footer`, so a fork would silently emit `agustincbajo`
+# URLs in its CHANGELOG link-footer.
+github_owner_repo() {
+    local origin
+    origin="$(git -C "$REPO_ROOT" remote get-url origin 2>/dev/null || true)"
+    if [[ -z "$origin" ]]; then
+        printf 'agustincbajo/Coral'
+        return 0
+    fi
+    # Strip trailing `.git`.
+    origin="${origin%.git}"
+    # Match either git@github.com:OWNER/REPO or https://github.com/OWNER/REPO.
+    # We DON'T validate the host beyond that — a self-hosted GitHub Enterprise
+    # would parse the same way, and the comparison/tag URL shape is identical.
+    local owner_repo=""
+    if [[ "$origin" =~ ^git@[^:]+:(.+)$ ]]; then
+        owner_repo="${BASH_REMATCH[1]}"
+    elif [[ "$origin" =~ ^https?://[^/]+/(.+)$ ]]; then
+        owner_repo="${BASH_REMATCH[1]}"
+    fi
+    if [[ -z "$owner_repo" || "$owner_repo" != */* ]]; then
+        printf 'agustincbajo/Coral'
+        return 0
+    fi
+    printf '%s' "$owner_repo"
+}
+
 # Idempotently rewrite the link-footer at the bottom of CHANGELOG.md so:
 #   [Unreleased]: …/compare/vNEW...HEAD
 #   [NEW]:       …/releases/tag/vNEW
@@ -137,13 +171,19 @@ rewrite_changelog_footer() {
         return 0
     fi
 
+    # Derive owner/repo from git origin (MEDIUM 4 fix). Escape `/` for the
+    # awk regex AND for the sed-style URL-rewrite line below.
+    local owner_repo owner_repo_re
+    owner_repo="$(github_owner_repo)"
+    owner_repo_re="$(printf '%s' "$owner_repo" | sed 's|/|\\/|g')"
+
     # Extract the previous version from the `[Unreleased]: …compare/vX.Y.Z…HEAD` line.
     # If the footer is missing entirely, log and continue — the maintainer can
     # add a footer later. This keeps preflight robust against truncated/test
     # CHANGELOG fixtures.
     local prev
-    prev="$(grep -E '^\[Unreleased\]: https://github\.com/agustincbajo/Coral/compare/v[0-9]+\.[0-9]+\.[0-9]+\.\.\.HEAD$' CHANGELOG.md \
-        | sed -E 's|^\[Unreleased\]: https://github\.com/agustincbajo/Coral/compare/v([0-9]+\.[0-9]+\.[0-9]+)\.\.\.HEAD$|\1|' || true)"
+    prev="$(grep -E "^\[Unreleased\]: https://github\.com/${owner_repo}/compare/v[0-9]+\.[0-9]+\.[0-9]+\.\.\.HEAD\$" CHANGELOG.md \
+        | sed -E "s|^\[Unreleased\]: https://github\.com/${owner_repo}/compare/v([0-9]+\.[0-9]+\.[0-9]+)\.\.\.HEAD\$|\1|" || true)"
     if [[ -z "$prev" ]]; then
         note "rewrite_changelog_footer: no [Unreleased]: compare/vX.Y.Z…HEAD line found; skipping footer rewrite"
         return 0
@@ -154,12 +194,15 @@ rewrite_changelog_footer() {
     # Use awk to avoid sed-platform-portability issues (BSD vs GNU).
     local tmp
     tmp="$(mktemp)"
-    awk -v new="$version" -v prev="$prev" '
-        BEGIN { rewritten = 0 }
-        /^\[Unreleased\]: https:\/\/github\.com\/agustincbajo\/Coral\/compare\/v[0-9]+\.[0-9]+\.[0-9]+\.\.\.HEAD$/ {
+    awk -v new="$version" -v prev="$prev" -v owner_repo_re="$owner_repo_re" -v owner_repo="$owner_repo" '
+        BEGIN {
+            rewritten = 0
+            re = "^\\[Unreleased\\]: https://github\\.com/" owner_repo_re "/compare/v[0-9]+\\.[0-9]+\\.[0-9]+\\.\\.\\.HEAD$"
+        }
+        $0 ~ re {
             if (!rewritten) {
-                print "[Unreleased]: https://github.com/agustincbajo/Coral/compare/v" new "...HEAD"
-                print "[" new "]: https://github.com/agustincbajo/Coral/releases/tag/v" new
+                print "[Unreleased]: https://github.com/" owner_repo "/compare/v" new "...HEAD"
+                print "[" new "]: https://github.com/" owner_repo "/releases/tag/v" new
                 rewritten = 1
                 next
             }
@@ -171,7 +214,7 @@ rewrite_changelog_footer() {
         err "rewrite_changelog_footer: rewrite did not land; check CHANGELOG.md for shape drift."
         return 1
     fi
-    ok "CHANGELOG link-footer rewritten ([Unreleased]: v$prev → v$version)"
+    ok "CHANGELOG link-footer rewritten ([Unreleased]: v$prev → v$version, owner=$owner_repo)"
 }
 
 # ---- bump --------------------------------------------------------------------

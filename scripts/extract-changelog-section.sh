@@ -58,24 +58,38 @@ fi
 escaped="${version//./\\.}"
 
 # awk strategy:
-#   - When we hit `## [X.Y.Z]`, set flag=1 and print the line.
-#   - When we hit any OTHER `## [` heading, set flag=0 (and don't print).
-#   - While flag is 1, print every line.
+#   - Track fence state: a line that BEGINS with ``` toggles `in_fence`.
+#     While in_fence, no `^## \[` line is treated as a heading — this
+#     matters when a CHANGELOG body has fenced markdown examples like
+#     ``` ## [Old example] ``` that would otherwise terminate the section
+#     prematurely (HIGH 2 in the v0.22.0 tester audit).
+#   - When we hit `## [X.Y.Z]` OUTSIDE a fence, set flag=1 and print.
+#   - When we hit any OTHER `## [` heading OUTSIDE a fence, set flag=0
+#     and stop printing.
+#   - While flag is 1, print every line (including fenced lines verbatim).
 #
 # This includes the starting heading and excludes the next-version heading.
 # Multiple matches of the same version (shouldn't happen, but be safe) only
 # print the first; once flag flips off it doesn't flip back on.
 output=$(awk -v ver="$escaped" '
-    BEGIN { flag = 0; seen = 0 }
+    BEGIN { flag = 0; seen = 0; in_fence = 0 }
     {
-        if (match($0, "^## \\[" ver "\\]")) {
+        # Fence toggle: any line beginning with ``` flips fence state.
+        # The `^` anchor + literal backticks match opening AND closing
+        # fences regardless of language tag (```rust, ```markdown, ```).
+        if (match($0, "^```")) {
+            if (flag) print
+            in_fence = !in_fence
+            next
+        }
+        if (!in_fence && match($0, "^## \\[" ver "\\]")) {
             if (seen) next
             flag = 1
             seen = 1
             print
             next
         }
-        if (flag && match($0, "^## \\[")) {
+        if (flag && !in_fence && match($0, "^## \\[")) {
             flag = 0
             next
         }

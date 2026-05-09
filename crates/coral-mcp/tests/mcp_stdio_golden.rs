@@ -87,15 +87,20 @@ fn stdio_transcript_response_shape_is_byte_identical_to_v0_21_0() {
         .as_str()
         .expect("serverInfo.version must be a string");
     // Pin: server version is the package version baked in via
-    // `env!("CARGO_PKG_VERSION")`. Whitelist versions in the 0.21.x
-    // sprint — the JSON-RPC envelope shape is byte-identical to
-    // v0.21.0 across every patch in the cycle.
+    // `env!("CARGO_PKG_VERSION")`. The JSON-RPC envelope shape is
+    // byte-identical to v0.21.0 across every subsequent patch — the
+    // version string is just whatever ships at test-build time.
+    //
+    // MEDIUM 5 (v0.22.0 tester audit): pre-fix this used a hardcoded
+    // `matches!(... "0.21.0" | "0.21.1" | ...)` whitelist that aborted
+    // the FIRST `release.sh bump` past v0.21.4 (the bumped tree's
+    // `CARGO_PKG_VERSION` doesn't appear in the whitelist, so preflight
+    // CI fails). The regex below accepts any `X.Y.Z` (with optional
+    // pre-release tag), making the pin bump-immune.
+    let semver_re = regex::Regex::new(r"^\d+\.\d+\.\d+(-[A-Za-z0-9]+(\.[A-Za-z0-9]+)*)?$").unwrap();
     assert!(
-        matches!(
-            server_version,
-            "0.21.0" | "0.21.1" | "0.21.2" | "0.21.3" | "0.21.4"
-        ),
-        "unexpected server version: {server_version}"
+        semver_re.is_match(server_version),
+        "server version is not SemVer-shaped: {server_version}"
     );
     // Capabilities surface stable across the refactor.
     let caps = &responses[0]["result"]["capabilities"];

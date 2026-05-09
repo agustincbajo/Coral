@@ -34,3 +34,4 @@ coral-stats = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+regex = { workspace = true }

@@ -409,6 +409,7 @@ dependencies = [
  "chrono",
  "coral-core",
  "coral-stats",
+ "regex",
  "serde",
  "serde_json",
  "tempfile",

@@ -80,8 +80,18 @@ fi
 # Title extraction:
 #   - skip the `## [X.Y.Z] - YYYY-MM-DD` heading and any blank lines after.
 #   - the first body line is by convention `**Feature release: <subject>.** <prose...>`.
-#     We extract the leading bold span: text from `**` to the FIRST `**` that closes it.
+#     We extract the leading bold span: text from the OPENING `**` up to the
+#     CLOSING `**` that terminates the title.
 #   - fall back to "Coral vX.Y.Z" if no bold prefix is found.
+#
+# Nesting policy (MEDIUM 3 in the v0.22.0 tester audit): the leading bold
+# span MUST NOT contain a nested `**bold**` run. A line like
+#   **Feature release: This is **really** important.** body
+# is ambiguous — the naïve `[^*]+` greedy match stops at the first inner
+# `**`, truncating the title. We DETECT this case (>=4 `**` markers on
+# the line) and exit with a clear error so the maintainer can refactor
+# the CHANGELOG line. Use a single emphasis style (e.g. backticks for
+# code, asterisks ONLY for the outer title bold).
 title=""
 first_body_line=""
 while IFS= read -r line; do
@@ -91,11 +101,55 @@ while IFS= read -r line; do
     break
 done < "$notes_file"
 
-# Match the leading `**...**` span (greedy until the first closing `**`).
-if [[ "$first_body_line" =~ ^\*\*([^*]+(\*[^*]+)*)\*\*  ]]; then
-    title="${BASH_REMATCH[1]}"
+if [[ "$first_body_line" =~ ^\*\* ]]; then
+    # MEDIUM 3 (v0.22.0 tester audit): the title's leading bold span MUST
+    # NOT contain a nested `**…**` run. Markdown's rendered semantics say
+    # the FIRST `**` after the opener closes the bold span. A line like
+    #   **Feature release: This is **really** important.** rest
+    # has 4 `**` markers — markdown renders it as
+    #   <b>Feature release: This is </b>really<b> important.</b> rest
+    # which is almost certainly not what the maintainer intended (the
+    # intended bold ran from start to "important.**"). We DETECT this
+    # case via the heuristic "title ends in whitespace" (the truncated
+    # title `Feature release: This is ` always ends with a space because
+    # the closer-`**` came mid-sentence) and fail loud with remediation
+    # hints. Maintainer's options:
+    #   1. Drop the inner `**…**` run (use backticks or *italic* instead).
+    #   2. Put the title on its own line — `**Title.**\n\nBody prose…`.
+    #
+    # We compute the title via the markdown-spec FIRST-marker rule:
+    # strip the leading `**`, then strip everything from the FIRST `**`
+    # onwards.
+    rest_after_opener="${first_body_line#\*\*}"
+    if [[ "$rest_after_opener" != *"**"* ]]; then
+        err "first body line opens with '**' but has no closing '**'; cannot extract title"
+        err "  line was: $first_body_line"
+        exit 8
+    fi
+    # `${var%%\*\**}` = strip LONGEST trailing suffix matching `**<anything>`,
+    # leaving everything BEFORE the first `**` close.
+    leading_span="${rest_after_opener%%\*\**}"
+    if [[ -z "$leading_span" ]]; then
+        err "first body line opens with '****' (empty bold title); refusing to guess a title"
+        err "  line was: $first_body_line"
+        exit 8
+    fi
+    # MEDIUM 3 detection: a leading_span that ends with whitespace is the
+    # smoking gun for a nested-`**` truncation — legitimate titles end at
+    # a closing `**` placed AFTER terminal punctuation (`.**`, `)**`,
+    # `\`**`), never after a space. Trailing newlines are ruled out
+    # already (we read line-by-line with IFS=$'\n').
+    if [[ "$leading_span" =~ [[:space:]]$ ]]; then
+        err "title appears truncated by a nested '**...**' span on the first body line."
+        err "  extracted: '${leading_span}'"
+        err "  remediation: rewrite the line so the title's bold span is unambiguous —"
+        err "    (a) drop the inner '**...**' (use backticks or *italic* instead), or"
+        err "    (b) put the title on its own line, with body prose starting on the next line."
+        err "  full line: $first_body_line"
+        exit 8
+    fi
     # Trim trailing period — looks better as a release title.
-    title="${title%.}"
+    title="${leading_span%.}"
 else
     title="Coral $tag"
 fi

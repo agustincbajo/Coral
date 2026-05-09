@@ -101,6 +101,62 @@ fn extract_changelog_section_returns_v0_21_4_block() {
 }
 
 // ----------------------------------------------------------------------------
+// Test #1b: extract_changelog_section_skips_fenced_pseudo_headings (HIGH 2)
+// ----------------------------------------------------------------------------
+//
+// Regression pin for the v0.22.0 tester finding HIGH 2: the awk extractor
+// must NOT treat a `## [` line inside a fenced code block as a heading
+// boundary. CHANGELOG bodies often include markdown examples wrapped in
+// triple backticks; pre-fix, the section truncated at the fence-internal
+// pseudo-heading.
+
+#[test]
+fn extract_changelog_section_skips_fenced_pseudo_headings() {
+    let tmp = TempDir::new().unwrap();
+    let cl = tmp.path().join("CHANGELOG.md");
+    fs::write(
+        &cl,
+        "## [0.22.0] - 2026-05-08\n\
+         Body before code.\n\
+         ```markdown\n\
+         ## [Old example]\n\
+         ```\n\
+         Body after code.\n\
+         ## [0.21.4] - 2026-05-08\n\
+         older body\n",
+    )
+    .unwrap();
+
+    let output = StdCommand::new(script("extract-changelog-section.sh"))
+        .arg("0.22.0")
+        .arg(&cl)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "expected exit 0, got {}: stderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Body after code."),
+        "section was truncated at the fence-internal `## [Old example]`; got:\n{stdout}"
+    );
+    // Fence content must round-trip verbatim, INCLUDING the pseudo-heading.
+    assert!(
+        stdout.contains("## [Old example]"),
+        "fence body must be preserved; got:\n{stdout}"
+    );
+    // Next-version heading must STILL terminate the section.
+    assert!(
+        !stdout.contains("older body"),
+        "section bled past `## [0.21.4]` heading; got:\n{stdout}"
+    );
+}
+
+// ----------------------------------------------------------------------------
 // Test #2: extract_changelog_section_missing_version_exits_1
 // ----------------------------------------------------------------------------
 
@@ -377,8 +433,20 @@ fn release_sh_tag_rejects_wrong_head_subject() {
     let work = tmp.path();
     init_minimal_repo(work);
 
+    // Copy `release.sh` into the tempdir so its `cd "$REPO_ROOT"`
+    // (where `REPO_ROOT` is `$(git rev-parse --show-toplevel)`) resolves
+    // to THIS tempdir rather than the live Coral repo. Without the copy,
+    // the script jumps back to the live repo whose HEAD subject IS
+    // `release(v0.22.0):`, validation passes, and `cargo release tag`
+    // gets a stray positional arg — exactly the failure mode tracked in
+    // the v0.22.0 tester audit (HIGH 1).
+    let scripts_dir = work.join("scripts");
+    fs::create_dir(&scripts_dir).unwrap();
+    fs::copy(script("release.sh"), scripts_dir.join("release.sh")).unwrap();
+    set_exec(&scripts_dir.join("release.sh"));
+
     // HEAD subject is "init" — does NOT start with `release(v0.22.0):`.
-    let output = StdCommand::new(script("release.sh"))
+    let output = StdCommand::new(scripts_dir.join("release.sh"))
         .arg("tag")
         .arg("0.22.0")
         .current_dir(work)
@@ -436,6 +504,76 @@ fn release_gh_sh_dry_run_extracts_correct_section() {
         .stdout(contains("Feature release"))
         .stdout(contains("MultiStepRunner"))
         .stdout(contains("notes-file"));
+}
+
+// ----------------------------------------------------------------------------
+// Test #9 (MEDIUM 4): release_sh_rewrites_footer_using_origin_owner_repo
+// ----------------------------------------------------------------------------
+//
+// Regression pin for the v0.22.0 tester finding MEDIUM 4: the link-footer
+// rewriter previously hardcoded `agustincbajo/Coral`, so a fork would emit
+// upstream-pointing URLs. Post-fix, the helper derives `<owner>/<repo>`
+// from `git remote get-url origin`. We exercise the path with origin set
+// to `https://github.com/foo/bar.git` and assert the rewritten footer
+// uses `foo/bar`.
+
+#[test]
+fn release_sh_rewrites_footer_using_origin_owner_repo() {
+    let tmp = TempDir::new().unwrap();
+    let work = tmp.path();
+    init_minimal_repo(work);
+
+    // Add origin pointing to a fork-shaped URL.
+    git(
+        work,
+        &["remote", "add", "origin", "https://github.com/foo/bar.git"],
+    );
+
+    // CHANGELOG with a footer in the canonical shape, anchored on `foo/bar`.
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let cl = format!(
+        "# Changelog\n\n## [Unreleased]\n\n## [9.9.9] - {today}\n\nbody.\n\n\
+         [Unreleased]: https://github.com/foo/bar/compare/v9.8.0...HEAD\n\
+         [9.8.0]: https://github.com/foo/bar/releases/tag/v9.8.0\n"
+    );
+    fs::write(work.join("CHANGELOG.md"), cl).unwrap();
+
+    let scripts_dir = work.join("scripts");
+    fs::create_dir(&scripts_dir).unwrap();
+    fs::copy(script("release.sh"), scripts_dir.join("release.sh")).unwrap();
+    let stub_ci = scripts_dir.join("ci-locally.sh");
+    fs::write(&stub_ci, "#!/usr/bin/env bash\nexit 0\n").unwrap();
+    set_exec(&stub_ci);
+    set_exec(&scripts_dir.join("release.sh"));
+
+    let output = StdCommand::new(scripts_dir.join("release.sh"))
+        .arg("preflight")
+        .env("NEW_VERSION", "9.9.9")
+        .env("CI_LOCALLY", &stub_ci)
+        .current_dir(work)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "preflight should succeed; stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let cl_after = fs::read_to_string(work.join("CHANGELOG.md")).unwrap();
+    assert!(
+        cl_after.contains("[Unreleased]: https://github.com/foo/bar/compare/v9.9.9...HEAD"),
+        "[Unreleased] line not rewritten with foo/bar owner; got:\n{cl_after}"
+    );
+    assert!(
+        cl_after.contains("[9.9.9]: https://github.com/foo/bar/releases/tag/v9.9.9"),
+        "[9.9.9] tag link not present with foo/bar owner; got:\n{cl_after}"
+    );
+    // Must NOT have leaked the upstream owner.
+    assert!(
+        !cl_after.contains("agustincbajo/Coral"),
+        "footer leaked the hardcoded upstream owner; got:\n{cl_after}"
+    );
 }
 
 // ----------------------------------------------------------------------------
