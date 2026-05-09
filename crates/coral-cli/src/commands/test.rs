@@ -91,12 +91,21 @@ pub fn run(args: TestArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
     // ---- Flag-interaction validation (acceptance #9) ------------
     // These checks run BEFORE any I/O so misuse fails fast with exit 2.
     if args.emit.is_some() {
-        // `--format junit` (and any non-default `--format`) is
-        // execution-only; `--emit` selects an emitter, not a runner
-        // output format.
-        if matches!(args.format, Format::Junit) {
+        // `--format` is execution-only; `--emit` selects an emitter, not
+        // a runner output format. Reject ANY non-default `--format`
+        // value, not just `junit` — `--format json --emit k6` was
+        // silently accepted in the v0.22.2 ship and printed k6 JS on
+        // stdout while the user expected JSON. Default is `Markdown`,
+        // so any other value here was explicitly chosen by the user
+        // and must conflict.
+        if !matches!(args.format, Format::Markdown) {
+            let chosen = match args.format {
+                Format::Markdown => "markdown",
+                Format::Json => "json",
+                Format::Junit => "junit",
+            };
             eprintln!(
-                "--format applies to test execution; --emit selects an emitter (drop --format or drop --emit)"
+                "--format {chosen} applies to test execution; --emit selects an emitter (you used both)"
             );
             return Ok(ExitCode::from(2));
         }

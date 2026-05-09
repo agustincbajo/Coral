@@ -116,16 +116,20 @@ pub fn emit_k6(cases: &[TestCase], spec: &EnvironmentSpec) -> EmitOutput {
     // valid even when a user hand-edits the emitted file.
     let services_with_ports = collect_service_ports(spec);
     for (name, port) in &services_with_ports {
-        let upper = name.to_uppercase();
+        // Service names allow dashes / dots (e.g. `my-api`, `db.primary`),
+        // but JavaScript identifiers and shell env-var names do not.
+        // Sanitize the same way for both `SVC_<IDENT>_BASE` (JS const) and
+        // `CORAL_<IDENT>_BASE` (env-var override) so the two stay in sync.
+        let ident = to_js_ident(name);
         script.push_str(&format!(
-            "const SVC_{upper}_BASE = __ENV.CORAL_{upper}_BASE || 'http://localhost:{port}';\n"
+            "const SVC_{ident}_BASE = __ENV.CORAL_{ident}_BASE || 'http://localhost:{port}';\n"
         ));
     }
     // Default BASE: first service's URL or fallback. Some emitted
     // bodies reference `BASE` directly when the case has no service.
     if let Some((first_name, _)) = services_with_ports.first() {
-        let upper = first_name.to_uppercase();
-        script.push_str(&format!("const BASE = SVC_{upper}_BASE;\n"));
+        let ident = to_js_ident(first_name);
+        script.push_str(&format!("const BASE = SVC_{ident}_BASE;\n"));
     } else {
         script.push_str("const BASE = __ENV.CORAL_BASE || 'http://localhost:3000';\n");
     }
@@ -383,7 +387,10 @@ fn service_base_const(service: Option<&str>, services_with_ports: &[(String, u16
     match service {
         Some(name) => {
             if services_with_ports.iter().any(|(n, _)| n == name) {
-                ServiceBase::Const(format!("SVC_{}_BASE", name.to_uppercase()))
+                // `to_js_ident` matches the header emission so the body
+                // reference resolves to the declared const (dashes /
+                // dots in service names map to underscores).
+                ServiceBase::Const(format!("SVC_{}_BASE", to_js_ident(name)))
             } else {
                 ServiceBase::FallbackBase(name.to_string())
             }
@@ -478,6 +485,66 @@ fn split_http_line(line: &str) -> Option<(&'static str, String)> {
     Some((method, path))
 }
 
+/// Sanitize a service name (e.g. `my-api`, `db.primary`) into a token
+/// that is safe to splice into BOTH a JS `const` identifier and a
+/// shell env-var name. Coral allows dashes and dots in service names
+/// (the manifest schema is permissive); JavaScript identifiers and
+/// POSIX env-vars do not — both must match `[A-Z_][A-Z0-9_]*`.
+///
+/// Transform: uppercase, then map `-` and `.` to `_`. The result is
+/// then validated against `^[A-Z_][A-Z0-9_]*$`; if a name contains an
+/// unmappable character (whitespace, `@`, …) we fall back to a
+/// deterministic alphanumeric digest so the script still parses.
+/// Regression: `my-api` (HIGH bug, v0.22.2) → `MY_API`, both
+/// `SVC_MY_API_BASE` and `__ENV.CORAL_MY_API_BASE` emitted.
+fn to_js_ident(name: &str) -> String {
+    let upper = name.to_uppercase();
+    let mapped: String = upper
+        .chars()
+        .map(|c| if c == '-' || c == '.' { '_' } else { c })
+        .collect();
+    if is_valid_js_ident(&mapped) {
+        return mapped;
+    }
+    // Fallback: replace any non-`[A-Z0-9_]` character with `_`, then
+    // ensure the leading char isn't a digit. Deterministic, lossy but
+    // syntactically safe — matches the contract above (script parses).
+    let mut out: String = mapped
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if out
+        .chars()
+        .next()
+        .map(|c| c.is_ascii_digit())
+        .unwrap_or(false)
+    {
+        out.insert(0, '_');
+    }
+    if out.is_empty() {
+        out.push('_');
+    }
+    out
+}
+
+/// True iff `s` is a non-empty ASCII string matching `^[A-Z_][A-Z0-9_]*$`
+/// — the strict subset of JS identifiers (and POSIX env-var names) the
+/// k6 emitter relies on.
+fn is_valid_js_ident(s: &str) -> bool {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) if c == '_' || c.is_ascii_uppercase() => {}
+        _ => return false,
+    }
+    chars.all(|c| c == '_' || c.is_ascii_uppercase() || c.is_ascii_digit())
+}
+
 /// Render `s` as a single-quoted JS string, escaping single quotes and
 /// backslashes. Adequate for the labels and header values we emit;
 /// k6 parses with V8 so this is the same escaping rules as
@@ -563,6 +630,105 @@ mod tests {
         assert_eq!(js_string("hello"), "'hello'");
         assert_eq!(js_string("it's"), "'it\\'s'");
         assert_eq!(js_string("a\\b"), "'a\\\\b'");
+    }
+
+    #[test]
+    fn to_js_ident_uppercases_and_maps_dash_and_dot() {
+        // Plain alphanumeric: just uppercase.
+        assert_eq!(to_js_ident("api"), "API");
+        // HIGH regression (v0.22.2): dash → underscore.
+        assert_eq!(to_js_ident("my-api"), "MY_API");
+        // Dotted names (e.g. `db.primary`): same treatment.
+        assert_eq!(to_js_ident("db.primary"), "DB_PRIMARY");
+        // Mixed case input lowercases first via to_uppercase.
+        assert_eq!(to_js_ident("MyApi"), "MYAPI");
+        // Multiple dashes survive.
+        assert_eq!(to_js_ident("user-svc-v2"), "USER_SVC_V2");
+        // Underscore is preserved.
+        assert_eq!(to_js_ident("user_svc"), "USER_SVC");
+    }
+
+    #[test]
+    fn to_js_ident_output_always_matches_strict_ident_grammar() {
+        // The contract: every output passes `is_valid_js_ident` (so the
+        // emitted JS const + shell env-var name are both syntactically
+        // safe). Cover the awkward cases.
+        for name in [
+            "api",
+            "my-api",
+            "db.primary",
+            "1starts_with_digit",
+            "with space",
+            "weird@name",
+            "kebab-and-dot.x",
+        ] {
+            let id = to_js_ident(name);
+            assert!(
+                is_valid_js_ident(&id),
+                "to_js_ident({name:?}) = {id:?} is not a valid JS/env-var ident"
+            );
+        }
+    }
+
+    #[test]
+    fn is_valid_js_ident_rejects_dashes_and_leading_digits() {
+        assert!(is_valid_js_ident("API"));
+        assert!(is_valid_js_ident("MY_API"));
+        assert!(is_valid_js_ident("_LEADING_UNDERSCORE"));
+        assert!(is_valid_js_ident("X1"));
+        assert!(!is_valid_js_ident(""));
+        assert!(!is_valid_js_ident("MY-API"));
+        assert!(!is_valid_js_ident("1API"));
+        assert!(!is_valid_js_ident("api")); // strict: uppercase only
+    }
+
+    #[test]
+    fn dash_in_service_name_emits_valid_js_ident() {
+        // Pre-fix: `my-api` produced `SVC_MY-API_BASE` and crashed
+        // `node --check`. Post-fix: `MY_API` for both the const and the
+        // env-var override. Pin both sites against drift.
+        let mut services = BTreeMap::new();
+        services.insert(
+            "my-api".to_string(),
+            ServiceKind::Real(Box::new(RealService {
+                repo: None,
+                image: Some("nginx:latest".into()),
+                build: None,
+                ports: vec![3000],
+                env: BTreeMap::new(),
+                depends_on: vec![],
+                healthcheck: None,
+                watch: None,
+            })),
+        );
+        let spec = EnvironmentSpec {
+            name: "dev".into(),
+            backend: "compose".into(),
+            mode: EnvMode::Managed,
+            compose_command: "auto".into(),
+            production: false,
+            env_file: None,
+            services,
+        };
+        let out = emit_k6(&[], &spec);
+        assert!(
+            out.script.contains(
+                "const SVC_MY_API_BASE = __ENV.CORAL_MY_API_BASE || 'http://localhost:3000';"
+            ),
+            "dash service name must produce JS-safe const + env-var; got: {}",
+            out.script
+        );
+        assert!(
+            out.script.contains("const BASE = SVC_MY_API_BASE;"),
+            "BASE alias must reference the sanitized const; got: {}",
+            out.script
+        );
+        // Double-check we never emit the broken pre-fix form.
+        assert!(
+            !out.script.contains("SVC_MY-API_BASE"),
+            "must not emit pre-fix unsanitized form: {}",
+            out.script
+        );
     }
 
     #[test]

@@ -148,3 +148,175 @@ fn cli_emit_k6_rejects_format_junit_combo() {
         .stderr(predicate::str::contains("--format"))
         .stderr(predicate::str::contains("--emit"));
 }
+
+#[test]
+fn cli_emit_k6_rejects_format_json_combo() {
+    // v0.22.2 in-cycle fix: ANY non-default `--format` must be
+    // rejected when `--emit` is set. Pre-fix only `junit` was caught;
+    // `--format json --emit k6` silently produced k6 JS on stdout
+    // while the user expected JSON. Mirror the junit case.
+    let dir = TempDir::new().unwrap();
+    write_fixture(&dir);
+
+    Command::cargo_bin("coral")
+        .unwrap()
+        .args(["test", "--emit", "k6", "--format", "json"])
+        .current_dir(dir.path())
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("--format"))
+        .stderr(predicate::str::contains("--emit"))
+        // Message names the offending format value so the user can
+        // see which side of the conflict they typed.
+        .stderr(predicate::str::contains("json"));
+}
+
+#[test]
+fn cli_emit_k6_accepts_default_format_markdown() {
+    // Sanity check the gate doesn't over-trigger: `--format markdown`
+    // (the clap default) with `--emit k6` is allowed because the user
+    // didn't actually pick a competing format. Without this pin the
+    // earlier fix risks rejecting every `--emit` invocation since clap
+    // populates the default into the field unconditionally.
+    let dir = TempDir::new().unwrap();
+    write_fixture(&dir);
+
+    Command::cargo_bin("coral")
+        .unwrap()
+        .args(["test", "--emit", "k6", "--format", "markdown"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+}
+
+// ---------------------------------------------------------------
+// `node --check` coverage (v0.22.2 in-cycle fix, MEDIUM 2).
+//
+// Pre-fix: AC #2 ("emitted JS passes node --check") was only verified
+// in dev rehearsal — no automated test invoked node, so the dash-in-
+// service-name HIGH bug shipped because nothing was actually feeding
+// the emitter output to a JS engine. These tests pin the contract
+// against drift. We use `.mjs` (ESM) extension so node --check
+// surfaces ESM-only syntax errors (the dash bug only failed under ESM,
+// not CJS).
+//
+// `node` is a hard build dep for the k6 emitter contract but optional
+// for non-k6 work — gate-skip cleanly when absent so a developer
+// without node can still pass `cargo test`.
+// ---------------------------------------------------------------
+
+/// Skip the test (printing a notice) if `node` isn't on PATH. Same
+/// pattern as `cargo_release_available()` in `release_flow.rs`.
+fn node_available() -> bool {
+    std::process::Command::new("node")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+#[test]
+fn cli_emit_k6_output_passes_node_check_happy_path() {
+    if !node_available() {
+        eprintln!("SKIP cli_emit_k6_output_passes_node_check_happy_path: node not on PATH");
+        return;
+    }
+    let dir = TempDir::new().unwrap();
+    write_fixture(&dir);
+
+    let target = dir.path().join("load.mjs");
+    Command::cargo_bin("coral")
+        .unwrap()
+        .args([
+            "test",
+            "--emit",
+            "k6",
+            "--emit-output",
+            target.to_str().unwrap(),
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    let node_out = std::process::Command::new("node")
+        .args(["--check", target.to_str().unwrap()])
+        .output()
+        .expect("node --check should run");
+    assert!(
+        node_out.status.success(),
+        "emitted JS failed `node --check`:\n--- stderr ---\n{}\n--- script ---\n{}",
+        String::from_utf8_lossy(&node_out.stderr),
+        std::fs::read_to_string(&target).unwrap_or_default()
+    );
+}
+
+#[test]
+fn cli_emit_k6_output_passes_node_check_with_dashed_service_name() {
+    // HIGH regression test for the v0.22.2 in-cycle fix. Pre-fix this
+    // produced `const SVC_MY-API_BASE = ...` which crashed `node
+    // --check` with `SyntaxError: Missing initializer in const
+    // declaration`. Post-fix: `SVC_MY_API_BASE`, parses cleanly.
+    if !node_available() {
+        eprintln!(
+            "SKIP cli_emit_k6_output_passes_node_check_with_dashed_service_name: node not on PATH"
+        );
+        return;
+    }
+    let dir = TempDir::new().unwrap();
+    let toml = r#"apiVersion = "coral.dev/v1"
+[project]
+name = "demo"
+
+[[environments]]
+name = "dev"
+backend = "compose"
+
+[environments.services."my-api"]
+kind = "real"
+image = "nginx:latest"
+ports = [3000]
+
+[environments.services."my-api".healthcheck]
+kind = "http"
+path = "/h"
+"#;
+    std::fs::write(dir.path().join("coral.toml"), toml).unwrap();
+
+    let target = dir.path().join("load.mjs");
+    Command::cargo_bin("coral")
+        .unwrap()
+        .args([
+            "test",
+            "--emit",
+            "k6",
+            "--emit-output",
+            target.to_str().unwrap(),
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    // Pin the sanitized form: the `_` (not `-`) is the load-bearing
+    // change. If the emitter regresses, this assertion catches it
+    // before `node --check` even runs.
+    let script = std::fs::read_to_string(&target).expect("emitted file");
+    assert!(
+        script.contains("const SVC_MY_API_BASE = __ENV.CORAL_MY_API_BASE"),
+        "dash service name must produce JS-safe ident; got:\n{script}"
+    );
+    assert!(
+        !script.contains("SVC_MY-API_BASE"),
+        "must not emit pre-fix unsanitized form; got:\n{script}"
+    );
+
+    let node_out = std::process::Command::new("node")
+        .args(["--check", target.to_str().unwrap()])
+        .output()
+        .expect("node --check should run");
+    assert!(
+        node_out.status.success(),
+        "dash-named service emitted JS failed `node --check`:\n--- stderr ---\n{}\n--- script ---\n{}",
+        String::from_utf8_lossy(&node_out.stderr),
+        script
+    );
+}
