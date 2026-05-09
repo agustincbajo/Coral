@@ -649,6 +649,7 @@ mod tests {
             recorded: Some(RecordedConfig {
                 ignore_response_fields: ignore,
             }),
+            property_tests: Vec::new(),
         }
     }
 

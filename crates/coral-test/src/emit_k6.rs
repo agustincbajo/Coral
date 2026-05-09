@@ -626,6 +626,7 @@ mod tests {
             chaos_scenarios: Vec::new(),
             monitors: Vec::new(),
             recorded: None,
+            property_tests: Vec::new(),
         }
     }
 
@@ -717,6 +718,7 @@ mod tests {
             chaos_scenarios: Vec::new(),
             monitors: Vec::new(),
             recorded: None,
+            property_tests: Vec::new(),
         };
         let out = emit_k6(&[], &spec);
         assert!(
@@ -799,6 +801,7 @@ mod tests {
             chaos_scenarios: Vec::new(),
             monitors: Vec::new(),
             recorded: None,
+            property_tests: Vec::new(),
         }
     }
 

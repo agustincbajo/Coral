@@ -3,7 +3,7 @@ members = ["crates/*"]
 resolver = "2"
 
 [workspace.package]
-version = "0.23.2"
+version = "0.23.3"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT"
@@ -57,14 +57,27 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 # about path. ~30 KB single-purpose dep with `libc` as the only
 # transitive — both already in the tree via tracing/clap.
 signal-hook = "0.3"
-coral-core = { path = "crates/coral-core", version = "0.23.2" }
-coral-env = { path = "crates/coral-env", version = "0.23.2" }
-coral-lint = { path = "crates/coral-lint", version = "0.23.2" }
-coral-runner = { path = "crates/coral-runner", version = "0.23.2" }
-coral-session = { path = "crates/coral-session", version = "0.23.2" }
-coral-stats = { path = "crates/coral-stats", version = "0.23.2" }
-coral-test = { path = "crates/coral-test", version = "0.23.2" }
-coral-mcp = { path = "crates/coral-mcp", version = "0.23.2" }
+# v0.23.3: `coral test --kind property-based` runs Schemathesis-style
+# property tests over OpenAPI specs. proptest gives us hand-rolled
+# `BoxedStrategy<Value = serde_json::Value>` for the 5 JSON-Schema
+# types we generate (string/number/integer/object/array), plus
+# automatic shrinking on failure. **Already in the dev-dep tree of
+# `coral-core` and `coral-lint`** — promoting to a workspace dep just
+# centralizes the version pin. No new transitives — everything in
+# proptest 1.x's tree (`bit-set`, `bit-vec`, `bitflags`, `num-traits`,
+# `quick-error`, `rand`, `rand_chacha`, `regex`, `regex-syntax`,
+# `unarray`) was already pulled in by criterion / regex / rand /
+# proptest itself when the dev-deps compiled. Justified per
+# orchestrator's spec working-agreement #2.
+proptest = "1"
+coral-core = { path = "crates/coral-core", version = "0.23.3" }
+coral-env = { path = "crates/coral-env", version = "0.23.3" }
+coral-lint = { path = "crates/coral-lint", version = "0.23.3" }
+coral-runner = { path = "crates/coral-runner", version = "0.23.3" }
+coral-session = { path = "crates/coral-session", version = "0.23.3" }
+coral-stats = { path = "crates/coral-stats", version = "0.23.3" }
+coral-test = { path = "crates/coral-test", version = "0.23.3" }
+coral-mcp = { path = "crates/coral-mcp", version = "0.23.3" }
 
 [profile.release]
 lto = "thin"

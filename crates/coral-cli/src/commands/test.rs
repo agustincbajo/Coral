@@ -117,6 +117,20 @@ pub struct TestRunArgs {
     /// atomically (temp + rename) instead of stdout.
     #[arg(long, value_name = "PATH")]
     pub emit_output: Option<std::path::PathBuf>,
+
+    /// v0.23.3: override `[[environments.<env>.property_tests]].iterations`
+    /// for this invocation only. `--kind property-based` only.
+    /// CLI > manifest > 50 (default).
+    #[arg(long, value_name = "N")]
+    pub iterations: Option<u32>,
+
+    /// v0.23.3: override `[[environments.<env>.property_tests]].seed`
+    /// for this invocation only. When set, two runs with the same
+    /// `--seed` produce byte-identical request sequences (acceptance
+    /// criterion #6). Without the flag, a fresh seed is drawn from
+    /// the system clock and logged to stderr + Evidence::stdout_tail.
+    #[arg(long, value_name = "N")]
+    pub seed: Option<u64>,
 }
 
 #[derive(clap::ValueEnum, Clone, Debug, Copy, PartialEq, Eq)]
@@ -133,6 +147,10 @@ pub enum KindArg {
     /// v0.23.2: replay Keploy-captured exchanges from
     /// `.coral/tests/recorded/<service>/*.yaml`.
     Recorded,
+    /// v0.23.3: Schemathesis-style property-based fuzzing of every
+    /// `(path, method)` operation declared in the OpenAPI spec
+    /// pinned by `[[environments.<env>.property_tests]]`.
+    PropertyBased,
 }
 
 #[derive(clap::ValueEnum, Clone, Debug)]
@@ -279,6 +297,15 @@ fn run_inner(args: TestRunArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
                         out.push(TestKind::Recorded);
                     }
                 }
+                KindArg::PropertyBased => {
+                    // v0.23.3: property-based fuzzing from OpenAPI.
+                    // Same opt-in stance as Recorded — empty kinds
+                    // list does not include it; the orchestrator
+                    // gate in `run_test_suite_filtered` enforces this.
+                    if !out.contains(&TestKind::PropertyBased) {
+                        out.push(TestKind::PropertyBased);
+                    }
+                }
             }
         }
         out
@@ -288,6 +315,8 @@ fn run_inner(args: TestRunArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
         tags: args.tags.clone(),
         kinds,
         include_discovered: args.include_discovered,
+        property_iterations: args.iterations,
+        property_seed: args.seed,
     };
     let reports = run_test_suite_filtered(
         &project.root,
@@ -698,6 +727,41 @@ mod tests {
             help_str.contains("recorded"),
             "record --help missing 'recorded' feature mention:\n{help_str}"
         );
+    }
+
+    /// Acceptance #10 (v0.23.3) — `--iterations 5` parses and lands
+    /// in `args.run.iterations`. Pinned because the runtime
+    /// resolution path (`property_iterations`) on `TestFilters`
+    /// trusts the CLI value.
+    #[test]
+    fn coral_test_iterations_seed_flags_parse() {
+        let parsed = ShimCli::try_parse_from([
+            "coral",
+            "test",
+            "--kind",
+            "property-based",
+            "--service",
+            "api",
+            "--iterations",
+            "5",
+            "--seed",
+            "42",
+        ])
+        .expect("parse");
+        match parsed.cmd {
+            ShimCmd::Test(t) => {
+                assert!(
+                    t.run
+                        .kinds
+                        .iter()
+                        .any(|k| matches!(k, KindArg::PropertyBased)),
+                    "kind property-based must parse: {:?}",
+                    t.run.kinds
+                );
+                assert_eq!(t.run.iterations, Some(5));
+                assert_eq!(t.run.seed, Some(42));
+            }
+        }
     }
 
     /// Test #6 — on macOS, `coral test record` exits 2 with a

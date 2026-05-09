@@ -61,6 +61,7 @@ fn spec_with_recorded(ignore_fields: Vec<String>) -> EnvironmentSpec {
         recorded: Some(RecordedConfig {
             ignore_response_fields: ignore_fields,
         }),
+        property_tests: Vec::new(),
     }
 }
 
@@ -305,6 +306,8 @@ fn run_test_suite_filtered_picks_up_recorded_when_kind_recorded() {
         tags: Vec::new(),
         kinds: vec![TestKind::Recorded],
         include_discovered: false,
+        property_iterations: None,
+        property_seed: None,
     };
     let reports = coral_test::run_test_suite_filtered(
         tmp.path(),
@@ -368,6 +371,8 @@ fn run_test_suite_filtered_skips_recorded_when_kind_unspecified() {
         tags: Vec::new(),
         kinds: Vec::new(), // no --kind flag → recorded NOT included
         include_discovered: false,
+        property_iterations: None,
+        property_seed: None,
     };
     let reports = coral_test::run_test_suite_filtered(
         tmp.path(),

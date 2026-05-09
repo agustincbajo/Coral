@@ -20,6 +20,7 @@ pub mod hurl_runner;
 pub mod mock;
 pub mod orchestrator;
 pub mod probe;
+pub mod property_runner;
 pub mod recorded_runner;
 pub mod report;
 pub mod spec;
@@ -38,6 +39,10 @@ pub use healthcheck_runner::HealthcheckRunner;
 pub use hurl_runner::HurlRunner;
 pub use mock::MockTestRunner;
 pub use orchestrator::{TestFilters, run_test_suite_filtered};
+pub use property_runner::{
+    DEFAULT_ITERATIONS as PROPERTY_DEFAULT_ITERATIONS, PropertyRunner, PropertyTestCaseSpec,
+    cases_from_property_specs, json_schema_strategy,
+};
 pub use recorded_runner::{KeployTestCase, RecordedRunner, discover_recorded};
 pub use report::{Evidence, JunitOutput, TestReport, TestStatus};
 pub use spec::{TestCase, TestKind, TestSource, TestSpec};

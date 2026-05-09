@@ -16,6 +16,7 @@
 use crate::error::TestResult;
 use crate::healthcheck_runner::HealthcheckRunner;
 use crate::hurl_runner::HurlRunner;
+use crate::property_runner::{PropertyRunner, cases_from_property_specs};
 use crate::recorded_runner::RecordedRunner;
 use crate::report::TestReport;
 use crate::spec::{TestCase, TestKind};
@@ -40,6 +41,14 @@ pub struct TestFilters {
     pub kinds: Vec<TestKind>,
     /// When true, also discover from OpenAPI specs in repos.
     pub include_discovered: bool,
+    /// v0.23.3: CLI override for `--iterations` on `coral test`. When
+    /// `Some(N)`, every property-based TestCase runs N iterations
+    /// regardless of `[[environments.<env>.property_tests]].iterations`.
+    /// `None` = honor the manifest, fall back to the default (50).
+    pub property_iterations: Option<u32>,
+    /// v0.23.3: CLI override for `--seed` on `coral test`. Same
+    /// precedence: `Some(N)` beats the manifest, `None` honors it.
+    pub property_seed: Option<u64>,
 }
 
 /// Build runners, discover + filter + execute the resulting TestCase
@@ -81,11 +90,19 @@ pub fn run_test_suite_filtered(
         .kinds
         .iter()
         .any(|k| matches!(k, TestKind::Recorded));
+    // v0.23.3: property-based fuzzing from OpenAPI specs. Same
+    // opt-in stance as recorded — empty kinds list does NOT include
+    // it. `coral test --kind property-based` is the explicit gate.
+    let want_property_based = filters
+        .kinds
+        .iter()
+        .any(|k| matches!(k, TestKind::PropertyBased));
 
     let hc_runner = HealthcheckRunner::new(backend.clone(), plan.clone(), spec.clone());
     let ud_runner = UserDefinedRunner::new(backend.clone(), plan.clone())
         .with_update_snapshots(update_snapshots);
     let rec_runner = RecordedRunner::new(backend.clone(), plan.clone(), spec.clone());
+    let prop_runner = PropertyRunner::new(backend.clone(), plan.clone(), spec.clone());
 
     let mut all_cases: Vec<(TestCase, &dyn TestRunner)> = Vec::new();
     if want_healthcheck {
@@ -112,6 +129,16 @@ pub fn run_test_suite_filtered(
     if want_recorded {
         for case in RecordedRunner::cases_from_project(project_root)? {
             all_cases.push((case, &rec_runner));
+        }
+    }
+    if want_property_based {
+        for case in cases_from_property_specs(
+            spec,
+            project_root,
+            filters.property_iterations,
+            filters.property_seed,
+        )? {
+            all_cases.push((case, &prop_runner));
         }
     }
 

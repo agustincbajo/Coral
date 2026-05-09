@@ -17,6 +17,14 @@ tracing = { workspace = true }
 chrono = { workspace = true }
 coral-core = { workspace = true }
 coral-env = { workspace = true }
+# v0.23.3: `PropertyRunner` does Schemathesis-style property-based
+# testing over OpenAPI specs. proptest gives us hand-rolled
+# `BoxedStrategy<Value = serde_json::Value>` for the 5 JSON-Schema
+# types and automatic shrinking on failure. Already in the dev-dep
+# tree of `coral-core` and `coral-lint`; promoted to a workspace
+# dep in v0.23.3 so the runtime pieces in this crate can pull it in
+# without re-versioning.
+proptest = { workspace = true }
 
 [features]
 default = ["healthcheck", "user_defined"]

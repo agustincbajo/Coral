@@ -30,7 +30,8 @@ pub use plan::{
 };
 pub use spec::{
     ChaosBackend, ChaosConfig, ChaosScenario, EnvironmentSpec, Healthcheck, HealthcheckKind,
-    HealthcheckTiming, MonitorSpec, OnFailure, RealService, RecordedConfig, ServiceKind, ToxicKind,
+    HealthcheckTiming, MonitorSpec, OnFailure, PropertyTestSpec, RealService, RecordedConfig,
+    ServiceKind, ToxicKind,
 };
 
 use std::path::PathBuf;

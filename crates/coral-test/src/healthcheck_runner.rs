@@ -214,6 +214,7 @@ mod tests {
             chaos_scenarios: Vec::new(),
             monitors: Vec::new(),
             recorded: None,
+            property_tests: Vec::new(),
         }
     }
 

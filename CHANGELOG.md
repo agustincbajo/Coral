@@ -7,6 +7,80 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.23.3] - 2026-05-09
+
+**Feature release — fourth and final of v0.23 sprint (testing platform): `PropertyBasedRunner` — Schemathesis-style property tests from OpenAPI specs.** Closes the v0.23 testing loop with a fourth primitive: deterministic, shrinking property-based fuzzing over `(path, method)` operations from an OpenAPI spec. Where `coral test --kind user_defined` runs hand-authored YAML, `coral test --kind healthcheck` runs auto-discovered probes, and `coral test --kind recorded` replays captured Keploy YAMLs, `coral test --kind property-based` walks the OpenAPI spec, generates random valid inputs from each operation's JSON Schema declarations, and asserts every iteration's response status lands in the spec's declared response set. The first failing iteration halts the case; proptest shrinks the input to the minimal failing form; the report's `Evidence` carries the shrunken counter-example so a failing run reproduces from the report alone. **One new workspace dep: `proptest = "1"`** (already in the dev-dep tree of `coral-core` and `coral-lint`; promoted to workspace-level so the runtime pieces in `coral-test` can pull it in). **BC sacred: all v0.23.2 surfaces byte-identical** — `bc_regression` green (8 tests), manifests without `[[environments.<env>.property_tests]]` round-trip unchanged (`property_tests_absent_round_trips_unchanged`).
+
+### Added
+
+- **`[[environments.<env>.property_tests]]` config blocks.** New `Vec<PropertyTestSpec>` field on `EnvironmentSpec` with `#[serde(default, skip_serializing_if = "Vec::is_empty")]`:
+  ```toml
+  [[environments.dev.property_tests]]
+  service = "api"
+  spec = "openapi.yaml"   # path, repo-root-relative
+  seed = 42               # optional; CLI overrides via --seed
+  iterations = 100        # optional; default 50; CLI overrides via --iterations
+  ```
+  Field shape: `{ service: String, spec: PathBuf, seed: Option<u64>, iterations: Option<u32> }`. `seed` and `iterations` are also `skip_serializing_if = "Option::is_none"` so the minimal block is just `service` + `spec`.
+- **`coral_test::property_runner` module.** Hand-rolled `BoxedStrategy<Value = serde_json::Value>` for the 5 JSON Schema types (string/number/integer/object/array), a per-endpoint `drive_case` loop that runs N proptest iterations and stops on the first failing status, and curl-subprocess HTTP invocation mirroring `recorded_runner.rs`.
+- **`TestKind::PropertyBased` is now a value-enum entry on `coral test --kind`.** Pre-v0.23.3 invocations are byte-compatible: empty `--kind` does NOT include property-based (orchestrator-side gate so `coral test --service api` doesn't suddenly find new cases).
+- **`coral test --kind property-based --iterations N --seed K`** CLI flags. `--iterations` overrides `[[property_tests]].iterations` for one invocation. `--seed` overrides the manifest seed. When neither is set, a fresh seed is drawn from the system clock + process id, `tracing::info!`-logged AND embedded into `Evidence::stdout_tail` so a failing run reproduces from the report alone — no manifest mutation needed.
+
+### Changed
+
+- **`EnvironmentSpec` gained one additive field** (`property_tests: Vec<PropertyTestSpec>`). Test fixtures across `coral-test` / `coral-env` / `coral-cli` updated to include `property_tests: Vec::new()`. Serde-side BC preserved via `#[serde(default, skip_serializing_if = "Vec::is_empty")]`.
+- **`TestFilters` gained two additive fields** (`property_iterations: Option<u32>`, `property_seed: Option<u64>`) so `run_test_suite_filtered` can plumb the CLI overrides without touching the manifest. Monitors pass `None` for both — they consume the manifest as-is.
+- **`coral_test::discover::parse_openapi_value`** extracted from the OpenAPI smoke discoverer so the property runner shares one parser implementation (and the 32 MiB DoS cap from v0.19.8) instead of duplicating the 30 lines.
+
+### Internal
+
+- **`proptest = "1"` promoted to workspace dep.** Was already a `dev-dependency` on `coral-core` and `coral-lint`; the v0.23.3 runtime path in `coral-test` needs it at compile-time too. Kept the version pin centralized so the three crates stay in sync. **No new transitives** — every leaf package (`bit-set`, `bit-vec`, `bitflags`, `num-traits`, `quick-error`, `rand`, `rand_chacha`, `regex`, `regex-syntax`, `unarray`) was already in the lockfile from criterion / regex / proptest itself in dev-deps.
+- **Curl-based HTTP invocation** mirrors `recorded_runner.rs` — `-w "\nHTTP_STATUS:%{http_code}"` for status capture, `-d` for JSON body, `--max-time 10` for the per-iteration timeout. The `split_curl_status` helper is re-implemented inside the property module instead of cross-crate-imported (kept the test module independent of `user_defined_runner`).
+- **D1 scope-narrowing decisions baked in:** GET + POST only (PUT/PATCH/DELETE silently dropped at discovery), path params + JSON request body only (no query/header generation), 5 JSON Schema types only (`null`/`boolean` + missing `type` fall back to `string`), status validation only (response-body schema validation deferred to v0.24+).
+- **Determinism (D5):** seed precedence is CLI > manifest > `fresh_random_u64_seed()` (a SplitMix64 finalizer over wall-clock nanos + pid). Seed expanded `u64 → 32 bytes` (replicated 4×) and handed to `TestRng::from_seed(RngAlgorithm::ChaCha, ...)` because ChaCha requires exactly 32 bytes — a u64 alone won't do.
+
+### Tests (+12)
+
+- **Spec / BC (2)** in `crates/coral-env/src/spec.rs`: `property_tests_absent_round_trips_unchanged` (T1 — BC pin), `property_test_config_with_seed_iterations_parses` (T2 — TOML round trip with all four fields populated).
+- **`property_runner` module (10)** in `crates/coral-test/src/property_runner.rs::tests`:
+  - `json_schema_string_type_generates_string_value` (T3)
+  - `json_schema_integer_type_generates_int_value` (T4)
+  - `json_schema_object_type_generates_object_with_required_fields` (T5)
+  - `seed_42_produces_deterministic_input_sequence` (T6)
+  - `omitted_seed_logs_actual_seed_used` (T7)
+  - `property_runner_failed_iteration_returns_first_counter_example` (T8)
+  - `property_runner_all_pass_returns_pass_status` (T9)
+  - `iterations_cli_flag_overrides_manifest` (T10)
+  - `cases_from_property_specs_emits_one_case_per_path_method`
+  - `cases_from_property_specs_skips_non_get_post_methods`
+- **CLI / value-enum (1)** in `crates/coral-cli/src/commands/test.rs::tests`:
+  - `coral_test_iterations_seed_flags_parse` (acceptance #10 + AC #6 sanity).
+- **Plus 7 supporting unit tests** in the property module covering `interpolate_path`, `u64_to_chacha_seed` determinism, `collect_expected_codes`, runner shape sanity, etc.
+
+### Acceptance criteria — 10/10 met
+
+1. Manifest without `[[property_tests]]` parses byte-identically (T1 — `property_tests_absent_round_trips_unchanged`).
+2. `[[environments.dev.property_tests]]` block parses with all four fields (T2).
+3. `coral test --kind property-based --service api` reads `openapi.yaml` and generates random requests (T3 + T4 + T5 — strategy tests; live-env exercise verified by `cases_from_property_specs_emits_one_case_per_path_method`).
+4. Each `(path, method)` from spec → ONE TestCase (`cases_from_property_specs_emits_one_case_per_path_method`).
+5. Runner executes configured iteration count (default 50) per endpoint (T9 — `5/5 inputs passed`).
+6. With `--seed 42`, two runs produce identical request sequences (T6).
+7. Without explicit seed, actual seed logged (`tracing::info!`) AND in `Evidence::stdout_tail` (T7).
+8. Failed iteration → TestReport::Fail with first shrunken counter-example (T8).
+9. All-pass → TestReport::Pass with "N/N inputs passed" in evidence (T9).
+10. `coral test --kind property-based --iterations 5` overrides manifest's iterations (T10 + `coral_test_iterations_seed_flags_parse`).
+
+### Pipeline note
+
+Fourth and final feature of v0.23 sprint — testing platform now ships four runner kinds: healthcheck, user-defined, recorded, and property-based. Out of scope, deferred to v0.24+:
+- Response-body schema validation (we currently only validate status codes; widening to body shape needs a stricter JSON Schema validator dep).
+- `$ref` / `oneOf` / `allOf` / `anyOf` resolution — v0.23.3 silently treats unknown JSON Schema types as `string`.
+- Query-string and custom-header generation.
+- PUT / PATCH / DELETE methods.
+- Stateful sequences (capture-from-one-endpoint, replay-into-another).
+- `--update-snapshots` for property cases.
+- Monitor integration of `--kind property-based` (the orchestrator gate is wired; the monitor handler intentionally passes `property_iterations: None, property_seed: None` for now).
+
 ## [0.23.2] - 2026-05-09
 
 **Feature release — third of v0.23 sprint (testing platform): `coral test record` (Keploy capture) + `RecordedRunner` replay.** Closes the synthetic-monitoring loop with a third primitive: capture real HTTP traffic via [Keploy](https://github.com/keploy/keploy) and replay it as deterministic TestCases. Where `coral test --kind user_defined` runs hand-authored YAML and `coral test --kind healthcheck` runs auto-discovered `[services.<name>.healthcheck]` probes, `coral test --kind recorded` replays Keploy-captured exchanges from `.coral/tests/recorded/<service>/*.yaml`. **Capture is Linux-only behind the `recorded` Cargo feature** — eBPF + cgroup-v2 + the `keploy` binary on PATH. **Parser + replay are always-on on every platform** (D4 in the orchestrator's spec) so a Mac contributor can replay a YAML captured on Linux CI without rebuilding. Three `dev`/`staging`-style decisions baked in: status code is required-equal, only `Content-Type` is asserted on response headers (other headers are noise), JSON body deep-equal AFTER recursively stripping every key in `[environments.<env>.recorded].ignore_response_fields`. **Zero new deps** — `serde_yaml_ng` already in workspace; capture path subprocesses curl + keploy. **BC sacred: all v0.23.1 surfaces byte-identical** — `bc_regression` green (8 tests), manifests without `[environments.<env>.recorded]` round-trip unchanged (`recorded_config_absent_round_trips_unchanged`). **1356 tests pass (was 1333; +23).** Pinned tested Keploy version: v2.x (the `api.keploy.io/v1beta1` schema; bump tracked separately).

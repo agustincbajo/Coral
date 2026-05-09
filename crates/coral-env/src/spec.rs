@@ -61,6 +61,53 @@ pub struct EnvironmentSpec {
     /// pinned by `recorded_config_absent_round_trips_unchanged`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recorded: Option<RecordedConfig>,
+    /// v0.23.3: property-based test configurations. Each entry maps
+    /// one OpenAPI spec to a service and triggers Schemathesis-style
+    /// fuzzing of every `(path, method)` operation it declares (GET +
+    /// POST only in v0.23.3). One TestCase per endpoint; each runs
+    /// `iterations` iterations with proptest-generated inputs against
+    /// the live env. Empty when the environment doesn't declare any
+    /// — `skip_serializing_if = "Vec::is_empty"` keeps v0.23.2
+    /// manifests byte-identical (pinned by
+    /// `property_tests_absent_round_trips_unchanged`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub property_tests: Vec<PropertyTestSpec>,
+}
+
+/// v0.23.3: a single `[[environments.<env>.property_tests]]` entry.
+///
+/// Pairs one OpenAPI spec with one service. The runner walks the spec,
+/// emits one `TestCase` per `(path, method)` operation, and runs
+/// `iterations` proptest iterations per case against the live env.
+///
+/// `seed` is optional: when omitted, the runner draws a fresh
+/// `u64` from `rand::random` and BOTH logs it (`tracing::info!`) AND
+/// embeds it into `Evidence::stdout_tail` so the run is reproducible
+/// from the report alone — no manifest mutation needed.
+///
+/// `iterations` defaults to 50 when omitted (D5 in the orchestrator's
+/// spec). The CLI's `--iterations` flag overrides this for one
+/// invocation without rewriting the manifest.
+///
+/// **Frozen for v0.23.3:** any new field MUST land with
+/// `#[serde(default, skip_serializing_if = ...)]` so existing
+/// manifests round-trip unchanged on a future binary.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PropertyTestSpec {
+    /// The service the OpenAPI spec describes. Must match a key in
+    /// `services` — the runner uses it to resolve the published port
+    /// (e.g. `${SVC_API_PORT}` baseUrl).
+    pub service: String,
+    /// Path to the OpenAPI spec, repo-root-relative. v0.23.3 supports
+    /// `*.yaml` / `*.yml` / `*.json`.
+    pub spec: PathBuf,
+    /// Optional fixed seed. When set, two runs of the same spec
+    /// produce byte-identical request sequences (acceptance #6).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<u64>,
+    /// Optional per-endpoint iteration count. `None` → 50.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub iterations: Option<u32>,
 }
 
 /// v0.23.1: a single monitor entry under `[[environments.<env>.monitors]]`.
@@ -498,6 +545,30 @@ impl EnvironmentSpec {
                 self.name, TOXIPROXY_SIDECAR_NAME
             ));
         }
+        // ---- v0.23.3 property_tests ----
+        // Each entry must reference a declared service. We don't
+        // re-check the spec file existence here — the
+        // `cases_from_property_specs` walker raises FixtureNotFound
+        // at run-time with a friendlier error.
+        for pt in &self.property_tests {
+            if !self.services.contains_key(&pt.service) {
+                return Err(format!(
+                    "property_tests entry targets unknown service '{}' in environment '{}'; \
+                     declared services: {}",
+                    pt.service,
+                    self.name,
+                    self.services.keys().cloned().collect::<Vec<_>>().join(", ")
+                ));
+            }
+            if let Some(0) = pt.iterations {
+                return Err(format!(
+                    "property_tests entry for service '{}' has iterations = 0 in environment '{}'; \
+                     pick a positive value or omit the field to use the default of 50",
+                    pt.service, self.name
+                ));
+            }
+        }
+
         for scenario in &self.chaos_scenarios {
             if !self.services.contains_key(&scenario.service) {
                 return Err(format!(
@@ -649,6 +720,7 @@ mod tests {
             chaos_scenarios: Vec::new(),
             monitors: Vec::new(),
             recorded: None,
+            property_tests: Vec::new(),
         };
         let serialized = toml::to_string(&spec).expect("serialize");
         // The serialized form must mention NEITHER `chaos` nor
@@ -761,6 +833,7 @@ backend = "pumba"
             }],
             monitors: Vec::new(),
             recorded: None,
+            property_tests: Vec::new(),
         };
         let err = spec.validate().expect_err("must reject");
         assert!(err.contains("chaos_scenarios"), "wrong msg: {err}");
@@ -808,6 +881,7 @@ backend = "pumba"
             }],
             monitors: Vec::new(),
             recorded: None,
+            property_tests: Vec::new(),
         };
         let err = spec.validate().expect_err("must reject");
         assert!(err.contains("ghost"), "wrong msg: {err}");
@@ -851,6 +925,7 @@ backend = "pumba"
             }],
             monitors: Vec::new(),
             recorded: None,
+            property_tests: Vec::new(),
         };
         let err = spec.validate().expect_err("must reject");
         assert!(err.contains("unknown_key"), "wrong msg: {err}");
@@ -888,6 +963,7 @@ backend = "pumba"
             chaos_scenarios: Vec::new(),
             monitors: Vec::new(),
             recorded: None,
+            property_tests: Vec::new(),
         };
         let serialized = toml::to_string(&spec).expect("serialize");
         // The serialized form must NOT mention `monitors` because it's
@@ -1046,6 +1122,7 @@ on_failure = "alert"
             chaos_scenarios: Vec::new(),
             monitors: Vec::new(),
             recorded: None,
+            property_tests: Vec::new(),
         }
     }
 
@@ -1081,6 +1158,7 @@ on_failure = "alert"
             chaos_scenarios: vec![],
             monitors: Vec::new(),
             recorded: None,
+            property_tests: Vec::new(),
         };
         let err = spec.validate().expect_err("must reject");
         assert!(err.contains("reserved"), "wrong msg: {err}");
@@ -1119,6 +1197,7 @@ on_failure = "alert"
             chaos_scenarios: Vec::new(),
             monitors: Vec::new(),
             recorded: None,
+            property_tests: Vec::new(),
         };
         let serialized = toml::to_string(&spec).expect("serialize");
         // The serialized form must NOT mention `recorded` because it's
@@ -1158,5 +1237,83 @@ ignore_response_fields = ["id", "timestamp", "created_at", "request_id"]
             ]
         );
         spec.validate().expect("recorded config validates");
+    }
+
+    // ---- v0.23.3: property_tests ----
+
+    /// **BC golden — T1 for v0.23.3.** A v0.23.2-shaped manifest without
+    /// `[[environments.<env>.property_tests]]` MUST round-trip
+    /// byte-identically on a v0.23.3 binary. The `property_tests`
+    /// field is `Vec<_>` and `skip_serializing_if = "Vec::is_empty"`,
+    /// so manifests pre-v0.23.3 never carry a `property_tests` line.
+    #[test]
+    fn property_tests_absent_round_trips_unchanged() {
+        let spec = EnvironmentSpec {
+            name: "dev".into(),
+            backend: "compose".into(),
+            mode: EnvMode::Managed,
+            compose_command: "auto".into(),
+            production: false,
+            env_file: None,
+            services: BTreeMap::from([(
+                "api".into(),
+                ServiceKind::Real(Box::new(RealService {
+                    repo: None,
+                    image: Some("api:dev".into()),
+                    build: None,
+                    ports: vec![3000],
+                    env: BTreeMap::new(),
+                    depends_on: vec![],
+                    healthcheck: None,
+                    watch: None,
+                })),
+            )]),
+            chaos: None,
+            chaos_scenarios: Vec::new(),
+            monitors: Vec::new(),
+            recorded: None,
+            property_tests: Vec::new(),
+        };
+        let serialized = toml::to_string(&spec).expect("serialize");
+        // The serialized form must NOT mention `property_tests`
+        // because it's skip-on-empty.
+        assert!(
+            !serialized.contains("property_tests"),
+            "v0.23.2 manifest serialized with property_tests noise: {serialized}"
+        );
+        let reparsed: EnvironmentSpec = toml::from_str(&serialized).expect("reparse");
+        assert_eq!(
+            reparsed, spec,
+            "property_tests-absent spec did not round-trip"
+        );
+        spec.validate().expect("validate clean spec");
+    }
+
+    /// Parse a full `[[environments.<env>.property_tests]]` block with
+    /// every field populated (`service`, `spec`, `seed`, `iterations`).
+    /// Acceptance criterion #2.
+    #[test]
+    fn property_test_config_with_seed_iterations_parses() {
+        let toml_src = r#"
+name = "dev"
+backend = "compose"
+[services.api]
+kind = "real"
+image = "api:dev"
+
+[[property_tests]]
+service = "api"
+spec = "openapi.yaml"
+seed = 42
+iterations = 100
+"#;
+        let spec: EnvironmentSpec = toml::from_str(toml_src).expect("parse");
+        assert_eq!(spec.property_tests.len(), 1);
+        let pt = &spec.property_tests[0];
+        assert_eq!(pt.service, "api");
+        assert_eq!(pt.spec, std::path::PathBuf::from("openapi.yaml"));
+        assert_eq!(pt.seed, Some(42));
+        assert_eq!(pt.iterations, Some(100));
+        spec.validate().expect("property_tests validates");
     }
 }

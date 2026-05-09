@@ -185,6 +185,12 @@ pub fn run(args: UpArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
                 tags: m.tag.iter().cloned().collect(),
                 kinds,
                 include_discovered: false,
+                // Monitors don't expose CLI overrides — they read the
+                // manifest's [[property_tests]] block as-is. v0.23.3
+                // ships this as a no-op pass-through; per-monitor seed
+                // pinning lands in v0.24+.
+                property_iterations: None,
+                property_seed: None,
             };
             run_test_suite_filtered(
                 &project.root,
@@ -482,6 +488,7 @@ mod tests {
             chaos_scenarios: Vec::new(),
             monitors: Vec::new(),
             recorded: None,
+            property_tests: Vec::new(),
         }
     }
 

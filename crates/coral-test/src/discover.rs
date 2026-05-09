@@ -57,7 +57,9 @@ pub struct DiscoveredCase {
 /// `swagger.{yaml,yml,json}`. Skips `.git/`, `.coral/`, `node_modules/`,
 /// `target/` for performance — the repo we walk is typically a
 /// multi-repo project root with checked-out service repos.
-fn find_openapi_specs(project_root: &Path) -> TestResult<Vec<PathBuf>> {
+///
+/// Public-to-the-crate so `property_runner` can reuse the walker.
+pub(crate) fn find_openapi_specs(project_root: &Path) -> TestResult<Vec<PathBuf>> {
     use std::collections::VecDeque;
     let mut out = Vec::new();
     let mut stack = VecDeque::new();
@@ -120,9 +122,10 @@ fn is_openapi_filename(name: &str) -> bool {
     )
 }
 
-/// Parse a single OpenAPI file. Returns one (TestCase, YamlSuite) pair
-/// per (path, method) operation that has at least one declared
-/// success response (2xx).
+/// Read + parse an OpenAPI YAML/JSON file into a `serde_json::Value`,
+/// applying the 32 MiB DoS cap. Reused by `property_runner` so the
+/// two OpenAPI consumers share one parser implementation (and one
+/// audit gate). Public-to-the-crate.
 ///
 /// v0.19.8 #29 audit-gap conversion: enforce a 32 MiB file-size cap on
 /// the spec, matching the cap `coral_core::walk::read_pages` applied
@@ -131,7 +134,7 @@ fn is_openapi_filename(name: &str) -> bool {
 /// loaded into RAM by `read_to_string` and parsed by the YAML deserializer
 /// — DoS vector that's reachable from a downstream repo's `coral test
 /// discover` invocation.
-fn parse_spec_file(path: &Path) -> TestResult<Vec<(TestCase, YamlSuite)>> {
+pub(crate) fn parse_openapi_value(path: &Path) -> TestResult<serde_json::Value> {
     /// Same value as `coral_core::walk::read_pages`'s cap. Kept inline
     /// to avoid a cross-crate API surface for a single constant.
     const MAX_SPEC_BYTES: u64 = 32 * 1024 * 1024;
@@ -157,7 +160,7 @@ fn parse_spec_file(path: &Path) -> TestResult<Vec<(TestCase, YamlSuite)>> {
         path: path.to_path_buf(),
         source,
     })?;
-    let value: serde_json::Value = if path
+    if path
         .extension()
         .and_then(|s| s.to_str())
         .map(str::to_lowercase)
@@ -167,13 +170,20 @@ fn parse_spec_file(path: &Path) -> TestResult<Vec<(TestCase, YamlSuite)>> {
         serde_json::from_str(&raw).map_err(|e| TestError::InvalidSpec {
             path: path.to_path_buf(),
             reason: e.to_string(),
-        })?
+        })
     } else {
         serde_yaml_ng::from_str(&raw).map_err(|e| TestError::InvalidSpec {
             path: path.to_path_buf(),
             reason: e.to_string(),
-        })?
-    };
+        })
+    }
+}
+
+/// Parse a single OpenAPI file. Returns one (TestCase, YamlSuite) pair
+/// per (path, method) operation that has at least one declared
+/// success response (2xx).
+fn parse_spec_file(path: &Path) -> TestResult<Vec<(TestCase, YamlSuite)>> {
+    let value = parse_openapi_value(path)?;
 
     let paths = match value.get("paths").and_then(|v| v.as_object()) {
         Some(p) => p,
