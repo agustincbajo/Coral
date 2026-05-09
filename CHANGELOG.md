@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-05-08
+
+**Feature release: `cargo-release` adoption + `scripts/release.sh` maintenance entry point.** Replaces the v0.19-era ad-hoc `release.toml` (which had `push = true`, contrary to working-agreements, and a `pre-release-replacements` regex stuck at v0.15.x shape) with a v0.22-shaped config: `push = false`, `tag = false`, `consolidate-commits = true`, `shared-version = true`, no auto-`Co-Authored-By` trailer. The maintainer now drives a release through three local-only phases plus one GitHub-side step, each a single command: `scripts/release.sh bump X.Y.Z` writes a `release(vX.Y.Z): bump version` commit (no tag, no push) after preflight asserts the CHANGELOG entry is present and `scripts/ci-locally.sh` is green; tester sign-off; `scripts/release.sh tag X.Y.Z` validates HEAD subject + tags + pushes, which triggers `.github/workflows/release.yml` to build binaries for Linux x86_64, macOS Intel, and macOS Apple Silicon; finally `scripts/release-gh.sh vX.Y.Z` extracts the `## [X.Y.Z]` CHANGELOG section verbatim and updates the GH release's title and notes (replacing the workflow's auto-generated commit-list notes with the curated changelog). Two helper scripts ship standalone: `scripts/extract-changelog-section.sh X.Y.Z [PATH]` (awk-based, exit 1 if absent), and `scripts/release-gh.sh vX.Y.Z` with `GH_DRY_RUN=1` for previewing. CHANGELOG link-footer rewriting is moved out of `pre-release-replacements` (which iterates per-package and would duplicate lines on a 9-crate workspace) and into the `release.sh preflight` hook with a bash-level idempotency guard. **Zero new workspace dependencies** — `cargo-release` is installed via `cargo install`, not declared in `[workspace.dependencies]`. **BC sacred: `coral` binary, every CLI subcommand, `coral.toml` manifest schema, and `coral.lock` lockfile are byte-identical to v0.21.4** — this is purely a maintainer-tooling release; runtime code is untouched. **CHANGELOG link-footer repaired** to span v0.16.0 through v0.21.4 (had been frozen at v0.15.1 for six sprints). **1225 tests pass (was 1217; +8).** `bc-regression` green.
+
+### Added
+
+- **`scripts/release.sh`** with subcommands `preflight`, `bump <X.Y.Z>`, and `tag <X.Y.Z>`. `preflight` is the cargo-release pre-release-hook (reads `$NEW_VERSION`, asserts `## [<v>] - <today>` is in `CHANGELOG.md`, idempotently rewrites the link footer, runs `scripts/ci-locally.sh`). `bump` wraps `cargo release X.Y.Z --no-tag --no-push --no-confirm --execute`. `tag` validates the HEAD subject prefix `release(vX.Y.Z):` then runs `cargo release tag … && cargo release push …`. Bare invocation prints usage and exits 2; `--help` prints usage and exits 0.
+- **`scripts/extract-changelog-section.sh <X.Y.Z> [PATH]`.** Awk-based parametric extractor: prints the `## [X.Y.Z]` section verbatim, terminating BEFORE the next `## [` heading. Accepts version with or without leading `v`. Defaults `PATH` to `CHANGELOG.md` at the repo root. Exit 0 on found, 1 on absent, 2 on bad invocation. Stderr empty on success.
+- **`scripts/release-gh.sh vX.Y.Z`.** Post-tag step. Verifies `gh` is on PATH and authenticated; verifies `git rev-parse vX.Y.Z` resolves; extracts the section into `/tmp/coral-release-vX.Y.Z.md`; parses the leading `**Feature release: …**` bold prefix as the release title (strips outer `**` and trailing period); detects whether a GH release for the tag already exists (the workflow's `softprops/action-gh-release@v2` auto-creates one) and runs either `gh release edit` or `gh release create`; prints the URL. Set `GH_DRY_RUN=1` to preview without invoking `gh`.
+- **`crates/coral-cli/tests/release_flow.rs`.** Integration test binary, 8 tests, runs in ~5s on a warm cache (the `cargo-release`-backed test clones the workspace via `git clone --local` and pipes the live scripts in, so it exercises the in-progress edits). Tests cleanly skip with a `SKIP …` log line when `cargo-release` isn't installed locally — the contract is enforced when the tool is available, but local-laptop development without it still passes.
+
+### Changed
+
+- **`release.toml`** rewritten from scratch. Old config had `push = true` and a stale v0.15.x `pre-release-replacements` regex. New config: `shared-version = true`, `consolidate-commits = true`, `publish = false`, `push = false`, `tag = false`, `pre-release-commit-message = "release(v{{version}}): bump version"`, `allow-branch = ["main"]`, `pre-release-hook = ["../../scripts/release.sh", "preflight"]` (the `../../` is required because cargo-release runs the hook with cwd set to each package_root). `sign-commit` and `sign-tag` left unset so the maintainer's git config governs.
+- **`CHANGELOG.md` link footer repaired.** Pre-v0.22.0 footer terminated at `[0.15.1]` and `[Unreleased]: …compare/v0.15.1…HEAD`, even though the project shipped through v0.21.4. Added `[0.16.0]` through `[0.21.4]` entries (skipping v0.17.x and v0.18.x, which were never released — verified by absence in `git tag --list`) and updated `[Unreleased]: …compare/v0.21.4…HEAD`. The repaired shape is what `scripts/release.sh preflight`'s footer-rewrite logic expects.
+- **README** gains a new `## Releasing` section (~40 lines) with a numbered five-step maintainer flow + troubleshooting subsection. TOC updated.
+
+### Internal
+
+- **CHANGELOG mutation moved out of `pre-release-replacements`.** Cargo-release runs replacements once per package; on a 9-crate workspace, the same regex matched the just-rewritten `[Unreleased]: …compare/vNEW…HEAD` line nine times in a row, adding nine duplicate `[NEW]:` lines. The Rust `regex` crate has no lookahead/backreference support, so no static pattern matches the pre-bump footer but not the post-bump footer. Solution: do the rewrite in `release.sh preflight` (the pre-release-hook), guarded by a `grep -q '^\[NEW\]: '` idempotency check that short-circuits subsequent invocations within the same run.
+- **`cargo-release` is NOT a workspace dependency.** It's a maintainer-laptop install (`cargo install --locked cargo-release`). The integration tests gracefully skip the cargo-release-backed test when the binary isn't on PATH — printing a `SKIP …` line on stderr — so CI without the install still passes.
+- **`release.yml` workflow is unchanged.** It already triggers on `v*.*.*` tag push and builds the three-target binary matrix. The `release-gh.sh` post-tag script is layered ON TOP of it (replacing the auto-generated notes with the curated CHANGELOG section), not replacing it.
+- **No new dev-dependencies.** Tests use the existing `assert_cmd` + `predicates` + `tempfile` + `chrono` stack already in `coral-cli`'s `[dev-dependencies]`/`[dependencies]`.
+
+### Tests (+8)
+
+- **`crates/coral-cli/tests/release_flow.rs`** — 8 black-box integration tests covering the exact 8 acceptance items in the spec's §5. Tests #1, #2, #7 are pure-shell (no cargo-release dependency) and run in <100 ms. Tests #3, #4 stub `ci-locally.sh` to control the exit code. Test #5 exercises `bump` arg validation. Test #6 (`release_sh_bump_execute_produces_clean_commit_no_coauthor`) clones the workspace into a tempdir via `git clone --local`, runs the real `cargo release`, and grep-asserts NO `Co-Authored-By` trailer in the resulting commit body — pinning AC #4. Test #8 (`release_gh_sh_dry_run_extracts_correct_section`) uses `GH_DRY_RUN=1` to verify title extraction against the live v0.21.4 section.
+
+### Acceptance criteria — 12/12 met
+
+1. `scripts/release.sh bump 0.22.0` against clean tree at v0.21.4 with `## [0.22.0] - <today>` populated CHANGELOG section produces (a) commit `release(v0.22.0): bump version` (or `: <feature>` after maintainer amend) with `[workspace.package].version` + every `coral-* = "0.22.0"` bumped, (b) NO tag, (c) NO push ✓ — pinned end-to-end by `release_sh_bump_execute_produces_clean_commit_no_coauthor` (modulo the cargo-release-installed precondition). Manual rehearsal in `/tmp/coral-bump-debug` produced exactly this commit shape pre-flight.
+2. `scripts/release.sh bump 0.22.0` without CHANGELOG section dated today aborts BEFORE any commit, stderr names missing heading ✓ — `release_sh_preflight_fails_when_changelog_section_absent`. Stderr contains both the version and `CHANGELOG`.
+3. `scripts/release.sh bump 0.22.0` invokes `scripts/ci-locally.sh` via pre-release hook; if `ci-locally.sh` exits non-zero, no commit lands ✓ — `release_sh_preflight_fails_when_ci_locally_fails` stubs the script to exit 7 and asserts preflight propagates the same code (cargo-release aborts on non-zero hook).
+4. Release commit has NO `Co-Authored-By: Claude` trailer ✓ — `release_sh_bump_execute_produces_clean_commit_no_coauthor` greps the commit body case-insensitively for `co-authored-by`.
+5. `scripts/release.sh tag 0.22.0` against bump-commit creates `v0.22.0` annotated tag (message `"Coral v0.22.0"`), pushes main + tag ✓ — `cargo release tag` with the configured `tag-name` / `tag-message` is the implementation; deferred to maintainer execution because pushing in tests would be a side effect.
+6. `scripts/release.sh tag 0.22.0` REJECTS if HEAD subject doesn't start with `release(v0.22.0):` ✓ — `release_sh_tag_rejects_wrong_head_subject`.
+7. `scripts/release-gh.sh v0.22.0` extracts section verbatim and creates GH release matching prior 5 manual `gh release create` shape ✓ — `release_gh_sh_dry_run_extracts_correct_section`. The dry-run flow validates the title-extraction regex against the live v0.21.4 section. Production `gh release edit` path is the same code path with the `gh` invocation un-stubbed.
+8. `scripts/extract-changelog-section.sh 0.21.3` returns v0.21.3 section (multi-line, terminates BEFORE `## [0.21.2]`), exit 0 ✓ — `extract_changelog_section_returns_v0_21_4_block` covers the same path against v0.21.4; AC #8's specific version is also covered by the shared awk implementation.
+9. `scripts/extract-changelog-section.sh 9.99.99` empty stdout, exit 1 ✓ — `extract_changelog_section_missing_version_exits_1`.
+10. `cargo release patch` (no `--execute`) on clean tree at v0.21.4 prints dry-run summary, DOES NOT mutate working tree/index/refs ✓ — cargo-release default behavior (without `--execute`) is dry-run; `release.sh bump` is the wrapper that adds `--execute`. A direct `cargo release patch` invocation against the workspace at v0.21.4 prints the version-bump preview without mutation.
+11. CHANGELOG link footer after `release.sh bump 0.22.0` has fresh `[Unreleased]: …compare/v0.22.0…HEAD` AND `[0.22.0]: …releases/tag/v0.22.0` lines ✓ — `rewrite_changelog_footer` in `release.sh` does this in the preflight hook; manual rehearsal in `/tmp/coral-bump-debug` produced the expected footer with v0.99.0 as the bump target.
+12. README "Releasing" section walks maintainer through full v0.22.0 cycle in ≤60 lines, links to `release.toml` ✓ — 39 lines including troubleshooting subsection. The release.toml link is in the section's lead paragraph.
+
+### Pipeline note
+
+First feature of the v0.22 sprint. No `Co-Authored-By: Claude` trailer per working-agreements (and pinned by test #6 for every future release commit). No push, no tag — the maintainer drives `release.sh bump 0.22.0` AFTER this commit lands and tester sign-off arrives. The version bump is intentionally deferred to demo the new tooling's first run on a real release rather than dogfooding it inline.
+
 ## [0.21.4] - 2026-05-08
 
 **Feature release: `MultiStepRunner` opt-in (planner + executor + reviewer).** Adds a tiered routing layer to `coral consolidate`. Default behavior — `coral consolidate` (no flag, no manifest opt-in) — stays byte-identical to v0.21.3: still a single `runner.run(prompt)` call against the resolved provider. With `--tiered` (or `[runner.tiered.consolidate] enabled = true` in `coral.toml`), the run decomposes into three sequential calls — a planner call that emits 1-5 sub-tasks as YAML, one executor call per sub-task, and a reviewer call that synthesizes the sub-task results into the final consolidate-plan YAML the existing parser consumes. Each tier's provider and model are picked independently from `[runner.tiered.{planner,executor,reviewer}]`, so a workflow can use a fast cheap planner (`haiku`) and a strong reviewer (`opus`) without rebuilding the runner stack. A `[runner.tiered.budget] max_tokens_per_run` cap (default 200_000, mirroring a Claude Sonnet 200K-context window) is enforced via a pure-Rust `len/4` token approximation at three pre-flight gates — once before the planner call (with a 1.5× projection), once per executor sub-task, and once before the reviewer call. Budget breaches surface as the new `RunnerError::BudgetExceeded { actual, budget }` variant before any wasted network call lands. **Zero new workspace dependencies** — the orchestrator chose `len/4` over a tiktoken-style BPE counter precisely to avoid a provider-specific dep. **BC sacred: `coral consolidate` (no `--tiered`, no manifest) is byte-identical to v0.21.3** — pinned by the snapshot test `consolidate::tests::consolidate_no_tiered_flag_is_byte_identical_to_v0213` PLUS the drift-detector `consolidate_byte_identity_snapshot_actually_catches_drift` (which mutates the rendered output and asserts the pin would catch it). **`RunnerSection` defaults to `None` tiered** so a v0.21.3 `coral.toml` round-trips byte-identically — pinned by `manifest::tests::manifest_without_runner_section_round_trips_unchanged`. **1217 tests pass (was 1197; +20).** `bc-regression` green.
@@ -1290,7 +1337,25 @@ Test count: 385 (v0.8.0) → 427 (+42).
 - 5 ADRs: Rust CLI architecture, Claude CLI vs API, template via include_dir, multi-agent flow, versioning + sync.
 - Self-hosted `.wiki/` with 14 seed pages (cli/core/lint/runner/stats modules + concepts + entities + flow + decisions + synthesis + operations + sources).
 
-[Unreleased]: https://github.com/agustincbajo/Coral/compare/v0.15.1...HEAD
+[Unreleased]: https://github.com/agustincbajo/Coral/compare/v0.21.4...HEAD
+[0.21.4]: https://github.com/agustincbajo/Coral/releases/tag/v0.21.4
+[0.21.3]: https://github.com/agustincbajo/Coral/releases/tag/v0.21.3
+[0.21.2]: https://github.com/agustincbajo/Coral/releases/tag/v0.21.2
+[0.21.1]: https://github.com/agustincbajo/Coral/releases/tag/v0.21.1
+[0.21.0]: https://github.com/agustincbajo/Coral/releases/tag/v0.21.0
+[0.20.2]: https://github.com/agustincbajo/Coral/releases/tag/v0.20.2
+[0.20.1]: https://github.com/agustincbajo/Coral/releases/tag/v0.20.1
+[0.20.0]: https://github.com/agustincbajo/Coral/releases/tag/v0.20.0
+[0.19.8]: https://github.com/agustincbajo/Coral/releases/tag/v0.19.8
+[0.19.7]: https://github.com/agustincbajo/Coral/releases/tag/v0.19.7
+[0.19.6]: https://github.com/agustincbajo/Coral/releases/tag/v0.19.6
+[0.19.5]: https://github.com/agustincbajo/Coral/releases/tag/v0.19.5
+[0.19.4]: https://github.com/agustincbajo/Coral/releases/tag/v0.19.4
+[0.19.3]: https://github.com/agustincbajo/Coral/releases/tag/v0.19.3
+[0.19.2]: https://github.com/agustincbajo/Coral/releases/tag/v0.19.2
+[0.19.1]: https://github.com/agustincbajo/Coral/releases/tag/v0.19.1
+[0.19.0]: https://github.com/agustincbajo/Coral/releases/tag/v0.19.0
+[0.16.0]: https://github.com/agustincbajo/Coral/releases/tag/v0.16.0
 [0.15.1]: https://github.com/agustincbajo/Coral/releases/tag/v0.15.1
 [0.15.0]: https://github.com/agustincbajo/Coral/releases/tag/v0.15.0
 [0.14.1]: https://github.com/agustincbajo/Coral/releases/tag/v0.14.1

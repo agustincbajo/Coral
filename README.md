@@ -51,6 +51,7 @@ Coral started as a [Karpathy-style LLM Wiki](https://gist.github.com/karpathy/44
 - [Glossary](#glossary)
 - [Roadmap](#roadmap)
 - [How Coral itself was built](#how-coral-itself-was-built)
+- [Releasing](#releasing)
 - [Contributing](#contributing)
 - [References & related work](#references--related-work)
 - [License](#license)
@@ -2089,6 +2090,44 @@ This pipeline is reproducible — the agent prompts live in the `.claude/` direc
 ### `scripts/ci-locally.sh`
 
 CI on GitHub Actions has been blocked by a billing issue throughout the v0.19.x sprint, so `scripts/ci-locally.sh` mirrors the four blocking jobs (fmt, clippy `-D warnings`, test --workspace, bc-regression) for local verification — runs in ~100s including warm cache. Used as the gate before every release tag.
+
+---
+
+## Releasing
+
+Coral uses [`cargo-release`](https://github.com/crate-ci/cargo-release) for version bumps, wrapped by `scripts/release.sh` so the maintainer flow stays a one-liner per phase. See [`release.toml`](release.toml) for the wire-level config; the wrapper enforces working agreements (`push = false` and `tag = false` by default, no `Co-Authored-By` trailer, single author).
+
+The flow has three local-only phases plus one GitHub-side step. Run them in order:
+
+1. **Hand-write the changelog entry.** Open `CHANGELOG.md`, add a `## [X.Y.Z] - <YYYY-MM-DD>` heading directly under `## [Unreleased]`, and write the body. Preflight will refuse to proceed without this.
+2. **Bump.**
+   ```bash
+   cargo install --locked cargo-release      # one-time, if not already installed
+   scripts/release.sh bump X.Y.Z
+   ```
+   This invokes `release.sh preflight` (asserts the changelog heading + runs `scripts/ci-locally.sh`), then `cargo release X.Y.Z --no-tag --no-push --no-confirm --execute`. The result is a single local commit `release(vX.Y.Z): bump version` that bumps `[workspace.package].version` and every `coral-* = "X.Y.Z"` line. **No tag, no push.** Inspect with `git log -1 --stat`. If the message needs more than `: bump version` you can `git commit --amend` to swap in a feature subject.
+3. **Tester sign-off.** Hand the bump commit to the tester agent (or run your own validation). Past testers in this repo have caught real partial-fixes pre-tag — don't skip.
+4. **Tag and push.**
+   ```bash
+   scripts/release.sh tag X.Y.Z
+   ```
+   Validates the HEAD subject starts with `release(vX.Y.Z):`, then `cargo release tag X.Y.Z --execute && cargo release push --execute` — the tag push triggers `.github/workflows/release.yml`, which builds release binaries for Linux x86_64, macOS Intel, and macOS Apple Silicon.
+5. **Wait for binaries**, then **finalize the GitHub release.** Run `gh run list --workflow release.yml` until the build is green, then:
+   ```bash
+   scripts/release-gh.sh vX.Y.Z
+   ```
+   This extracts the `## [X.Y.Z]` changelog section verbatim into `/tmp/coral-release-vX.Y.Z.md`, parses the `**Feature release: …**` bold prefix as the release title, and either updates the auto-created GH release (the workflow runs `softprops/action-gh-release@v2` with auto-notes — we replace those with the curated changelog) or creates a new one if absent.
+
+The two helper scripts are standalone-useful:
+
+- `scripts/extract-changelog-section.sh X.Y.Z [PATH]` — prints a changelog section verbatim. Exits 1 if the version isn't present. Useful for ad-hoc grepping or driving other release-note tooling.
+- `scripts/release-gh.sh vX.Y.Z` — supports `GH_DRY_RUN=1` to preview the title and notes file without invoking `gh`.
+
+If something goes wrong:
+
+- **Preflight fails on `ci-locally.sh`.** Fix the failing check, then re-run `release.sh bump X.Y.Z`. Nothing has been committed yet.
+- **Tag step rejects wrong subject.** The HEAD commit must start with `release(vX.Y.Z):`. If you forgot to bump first, run `scripts/release.sh bump X.Y.Z`. If you amended the subject to something the validator doesn't accept, amend it again to start with that prefix.
+- **`release-gh.sh` runs before binaries are built.** Harmless — the script only updates the release's title and notes; the workflow uploads the binaries asynchronously and they appear in the release once complete.
 
 ---
 

@@ -1,25 +1,63 @@
-# release.toml — config for cargo-release
-# Run: cargo release X.Y.Z
+# release.toml — config for cargo-release (Coral v0.22.0+)
+#
+# Run via: scripts/release.sh bump X.Y.Z   (then later: scripts/release.sh tag X.Y.Z)
+# DO NOT run `cargo release ...` directly — the wrapper enforces preflight + ordering.
+#
+# Working-agreements pinned in this config:
+#   - push       = false   (commit lands locally only; tag/push is a separate, opt-in step)
+#   - tag        = false   (`bump` does NOT tag; `tag` subcommand does)
+#   - publish    = false   (Coral is binary-only on GitHub; nothing goes to crates.io)
+#   - sign-*     unset     (inherit user's git signing config; do NOT override)
+#   - no Co-Authored-By trailer in the resulting commit message (see below)
 
-# Version each workspace member to the same X.Y.Z
+# Lockstep version model — every workspace member moves together.
 shared-version = true
 
-# Update CHANGELOG.md when releasing
-pre-release-replacements = [
-  { file = "CHANGELOG.md", search = "## \\[Unreleased\\]", replace = "## [Unreleased]\n\n## [{{version}}] - {{date}}" },
-  { file = "CHANGELOG.md", search = "\\[Unreleased\\]: https://github.com/agustincbajo/Coral/compare/v.*\\.\\.\\.HEAD", replace = "[Unreleased]: https://github.com/agustincbajo/Coral/compare/v{{version}}...HEAD\n[{{version}}]: https://github.com/agustincbajo/Coral/releases/tag/v{{version}}", exactly = 1 },
-]
+# Single commit, single tag — never N commits for N crates.
+consolidate-commits = true
 
-# Don't publish to crates.io automatically (yet)
+# Don't publish to crates.io. Coral ships pre-built binaries via GH releases.
 publish = false
 
-# Push the tag and commit
-push = true
-push-options = ["--tags"]
+# Don't tag during `bump`. The `tag` subcommand of release.sh does that AFTER tester sign-off.
+tag = false
 
-# Tag format
+# Don't push during `bump`. Same reason — `tag` subcommand pushes both branch and tag together.
+push = false
+
+# Tag shape (used when `tag = true` is overridden on the `cargo release tag` invocation).
 tag-name = "v{{version}}"
 tag-message = "Coral v{{version}}"
 
-# Don't allow releasing a dirty working tree
+# The release commit subject — keeps the existing `release(vX.Y.Z): …` convention.
+# The `: bump version` suffix is a placeholder; the maintainer may `git commit --amend`
+# to swap in the feature description (e.g. `release(v0.22.0): cargo-release adoption +
+# maintenance scripts`) once tester sign-off lands. AC #6's `release(vX.Y.Z):` prefix
+# check accepts either shape.
+# IMPORTANT: no `Co-Authored-By:` trailer here. AC #4 pins this.
+pre-release-commit-message = "release(v{{version}}): bump version"
+
+# Only main is releasable.
 allow-branch = ["main"]
+
+# Pre-release hook — runs the local CI gate AND asserts the CHANGELOG entry
+# is in place. cargo-release exports $NEW_VERSION (and others) as env vars
+# to the hook subprocess. NOTE: cargo-release runs the hook with cwd set to
+# each package_root (crates/<name>/), so the script path must walk up.
+# The script itself uses its own dirname-based logic to find the repo root,
+# so once invoked it cd's correctly.
+pre-release-hook = ["../../scripts/release.sh", "preflight"]
+
+# CHANGELOG mutations — moved into `pre-release-hook` (scripts/release.sh
+# preflight) instead of `pre-release-replacements`, because:
+#   - cargo-release runs replacements once per package; with 9 workspace
+#     members the same regex ran 9 times, each iteration adding a duplicate
+#     `[X.Y.Z]:` link line.
+#   - the regex crate has no lookahead/backreference, so we can't write a
+#     pattern that matches the pre-bump footer but not the post-bump footer.
+#   - bash-level idempotency in the hook is straightforward (`grep -q`).
+#
+# The version heading itself (## [X.Y.Z] - <date>) MUST be written by the
+# maintainer BEFORE invoking bump (preflight asserts this). The hook ONLY
+# mutates the link footer, which is mechanical.
+pre-release-replacements = []
