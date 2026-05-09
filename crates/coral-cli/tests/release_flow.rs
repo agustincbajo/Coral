@@ -610,11 +610,13 @@ fn release_sh_tag_invokes_cargo_release_without_positional_version() {
          body in scripts/release.sh."
     );
 
-    // Sanity: the canonical line MUST be present (otherwise the test is
-    // a no-op tautology).
+    // Sanity: the canonical post-v0.22.4 shape MUST be present —
+    // `cargo release tag` is a no-op for manual-bump flows (v0.22.3
+    // dogfood finding), so we use `git tag -a` directly.
     assert!(
-        release_sh.contains("cargo release tag --no-confirm --execute"),
-        "release.sh must contain the canonical `cargo release tag --no-confirm --execute` line"
+        active_lines.contains("git tag -a"),
+        "release.sh must use `git tag -a` directly (not `cargo release tag`); \
+         see v0.22.4 fix"
     );
 }
 

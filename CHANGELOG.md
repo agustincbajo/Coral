@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.4] - 2026-05-08
+
+**Patch release: simplify `release.sh tag` to use `git tag -a` directly.** The v0.22.3 dogfood revealed that `cargo release tag --execute` is a NO-OP when the version bump came from a manual Cargo.toml edit (instead of `cargo release X.Y.Z`). cargo-release tracks "we just released X.Y.Z" as in-memory state from the bump step; without that state, `cargo release tag --execute` exits silently and creates nothing. Real-world Coral releases mix manual bumps (when the dev applies a tester finding inline, like v0.21.3 → v0.21.4) with cargo-release-driven bumps, so depending on cargo-release's state-tracking is fragile. v0.22.4 ditches `cargo release tag` entirely and uses plain `git tag -a "v$version" -m "Coral v$version"` + `git push origin main` + `git push origin "v$version"`. The annotated tag matches the conventions previously declared in `release.toml` (`tag-name = "v{{version}}"`, `tag-message = "Coral v{{version}}"`). Net effect: `release.sh tag X.Y.Z` now works regardless of whether the prior bump came from `release.sh bump` or a manual edit. The regression test #7b is updated to assert `git tag -a` is the canonical line (replacing the prior assertion that `cargo release tag --no-confirm --execute` appears).
+
+### Fixed (in-cycle, before tag)
+
+- **`scripts/release.sh::cmd_tag` no longer relies on cargo-release state.** Switched to `git tag -a` + `git push` directly. Adds an idempotency guard: if `refs/tags/v$version` already exists locally, the script aborts with exit 6 instead of producing a duplicate-tag error from git.
+
+### Pipeline note
+
+Patch release within v0.22 sprint. The dogfood loop continues to harden the new tooling. v0.22.{5,6} cover MCP registry publish + coral skill build/publish (originally v0.22.{4,5} pre-fix).
+
 ## [0.22.3] - 2026-05-08
 
 **Patch release: fix `cargo release tag` positional-version argument bug.** The first dogfood run of `scripts/release.sh tag 0.22.2` (the second real use of the new release tooling, after `release.sh bump` was validated by the v0.22.1 cache fix) revealed another shape-bug the v0.22.0 tester didn't catch: `cmd_tag` was invoking `cargo release tag $version --no-confirm --execute`, but `cargo release tag` does NOT accept a positional version argument — it derives the tag name from the workspace's `[workspace.package].version` (already written by the prior `release.sh bump $version` step). The stray positional crashed cargo-release with `unexpected argument '0.22.2' found` immediately after the HEAD-subject validation passed. Pre-fix, no automated test exercised the post-validation path because all flows that would invoke `cargo release tag` would push to the live remote, so the test suite stopped short. Post-fix: invocation is `cargo release tag --no-confirm --execute` (no positional). v0.22.2 itself was tagged via the manual fallback (`git tag -a v0.22.2 -m "Coral v0.22.2"` + `git push origin v0.22.2`) because the bug was caught at tag-time. The new tooling is now validated end-to-end through `bump → tag → release-gh`; the `release.sh tag 0.22.3` invocation will be the first to fully run cargo-release's tag pipeline. **1258 tests pass (was 1257; +1 regression test).**

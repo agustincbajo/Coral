@@ -306,18 +306,28 @@ cmd_tag() {
         return 5
     fi
 
-    # `cargo release tag` does NOT take a positional version argument —
-    # it derives the tag name from the workspace's `[workspace.package]
-    # version` (which the prior `release.sh bump $version` already wrote
-    # into Cargo.toml). The earlier shape `cargo release tag $version`
-    # crashed with `unexpected argument '$version' found`. v0.22.2
-    # dogfood revealed this; pre-fix, the v0.22.0 tester didn't catch
-    # it because the test suite stash-validated `cargo release` only
-    # against tempdir clones that never reached the tag step.
-    note "running: cargo release tag --no-confirm --execute"
-    cargo release tag --no-confirm --execute
-    note "running: cargo release push --no-confirm --execute"
-    cargo release push --no-confirm --execute
+    # v0.22.3 dogfood revealed `cargo release tag` is a no-op when the
+    # version bump came from a manual Cargo.toml edit (instead of a
+    # `cargo release X.Y.Z` step). cargo-release tracks "we just
+    # released X.Y.Z" as in-memory state from the bump step; without
+    # that state, `cargo release tag --execute` exits silently and
+    # creates nothing. Since real-world releases mix manual bumps
+    # (when the dev fixes a tester finding inline) with cargo-release
+    # bumps, we ditch `cargo release tag` here and use plain
+    # `git tag -a` directly. The annotated tag matches `release.toml`'s
+    # `tag-name = "v{{version}}"` / `tag-message = "Coral v{{version}}"`
+    # convention. Push goes via plain `git push` for the same reason.
+    local tag="v$version"
+    if git rev-parse "refs/tags/$tag" > /dev/null 2>&1; then
+        err "tag: '$tag' already exists locally; skipping creation"
+        return 6
+    fi
+    note "running: git tag -a $tag -m 'Coral $tag'"
+    git tag -a "$tag" -m "Coral $tag"
+    note "running: git push origin main"
+    git push origin main
+    note "running: git push origin $tag"
+    git push origin "$tag"
 
     ok "tagged v$version and pushed branch + tag"
     cat <<EOF
