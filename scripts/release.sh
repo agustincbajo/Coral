@@ -118,9 +118,29 @@ cmd_preflight() {
         err "preflight: ci-locally script not executable: $ci_script"
         return 4
     fi
+
+    # Cache ci-locally results across cargo-release's per-package hook
+    # iterations. cargo-release fires this hook ONCE PER WORKSPACE PACKAGE,
+    # but we only need to run the test suite once — the workspace test run
+    # covers every crate. Key the marker on HEAD's sha so the cache is
+    # automatically invalidated if HEAD moves between bump attempts.
+    #
+    # v0.22.0.1: pre-fix, the bump on Coral's 9-crate workspace fired the
+    # hook 9 times = 9 × ~50s ci-locally = ~7-9 min wall-time. The dogfood
+    # of `release.sh bump 0.22.0` exposed this — the bug was real, the
+    # fix lets the bump complete in ~50s + N × ~0.1s short-circuits.
+    # Honor $CORAL_PREFLIGHT_FORCE=1 to bypass the cache (debugging only).
+    local head_sha
+    head_sha="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || printf 'unknown')"
+    local marker="${TMPDIR:-/tmp}/coral-preflight-${version}-${head_sha}.pass"
+    if [[ -z "${CORAL_PREFLIGHT_FORCE:-}" && -f "$marker" ]]; then
+        ok "ci-locally.sh already passed in this cargo-release run (HEAD=${head_sha:0:8}); skipping"
+        return 0
+    fi
     note "running $ci_script"
     "$ci_script"
-    ok "ci-locally.sh passed"
+    : > "$marker"
+    ok "ci-locally.sh passed (cache marker: $marker)"
 }
 
 # Derive `<owner>/<repo>` from `git remote get-url origin`. Strips trailing

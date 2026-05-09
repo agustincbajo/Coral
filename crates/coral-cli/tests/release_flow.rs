@@ -269,6 +269,108 @@ fn release_sh_preflight_fails_when_ci_locally_fails() {
 }
 
 // ----------------------------------------------------------------------------
+// Test #4b: release_sh_preflight_caches_ci_locally_across_per_package_calls
+// ----------------------------------------------------------------------------
+// v0.22.0.1 fix: cargo-release fires the pre-release-hook ONCE PER WORKSPACE
+// PACKAGE. With Coral's 9 internal crates, a naive preflight would run
+// ci-locally.sh 9 times (~9 × ~50s = ~7-9 min wall-time). This test pins
+// the marker-file caching: a counter-bumping ci-locally stub should fire
+// ONCE across two consecutive preflight invocations with the same
+// $NEW_VERSION + same git HEAD. Honors the $CORAL_PREFLIGHT_FORCE=1
+// bypass so the test can also assert force-rerun works.
+
+#[test]
+fn release_sh_preflight_caches_ci_locally_across_per_package_calls() {
+    let tmp = TempDir::new().unwrap();
+    let work = tmp.path();
+
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let cl = format!("# Changelog\n\n## [Unreleased]\n\n## [9.9.9] - {today}\n\nbody.\n");
+    fs::write(work.join("CHANGELOG.md"), cl).unwrap();
+
+    let scripts_dir = work.join("scripts");
+    fs::create_dir(&scripts_dir).unwrap();
+    fs::copy(script("release.sh"), scripts_dir.join("release.sh")).unwrap();
+
+    // ci-locally stub increments a counter file each invocation.
+    let counter = work.join("ci-counter.txt");
+    let stub_ci = scripts_dir.join("ci-locally.sh");
+    fs::write(
+        &stub_ci,
+        format!(
+            "#!/usr/bin/env bash\nset -euo pipefail\necho run >> {}\nexit 0\n",
+            counter.display()
+        ),
+    )
+    .unwrap();
+    set_exec(&stub_ci);
+    set_exec(&scripts_dir.join("release.sh"));
+
+    // Use a per-test TMPDIR so marker files don't leak across runs.
+    let marker_dir = work.join("marker-dir");
+    fs::create_dir(&marker_dir).unwrap();
+
+    // First call: ci-locally MUST run.
+    let out1 = StdCommand::new(scripts_dir.join("release.sh"))
+        .arg("preflight")
+        .env("NEW_VERSION", "9.9.9")
+        .env("CI_LOCALLY", &stub_ci)
+        .env("TMPDIR", &marker_dir)
+        .current_dir(work)
+        .output()
+        .unwrap();
+    assert!(
+        out1.status.success(),
+        "first preflight should succeed: stderr={}",
+        String::from_utf8_lossy(&out1.stderr)
+    );
+
+    // Second call: same version, same HEAD (no commits). ci-locally
+    // MUST be cached (not re-run).
+    let out2 = StdCommand::new(scripts_dir.join("release.sh"))
+        .arg("preflight")
+        .env("NEW_VERSION", "9.9.9")
+        .env("CI_LOCALLY", &stub_ci)
+        .env("TMPDIR", &marker_dir)
+        .current_dir(work)
+        .output()
+        .unwrap();
+    assert!(out2.status.success(), "second preflight should succeed");
+
+    let runs = fs::read_to_string(&counter).unwrap_or_default();
+    let n_runs = runs.lines().filter(|l| !l.is_empty()).count();
+    assert_eq!(
+        n_runs, 1,
+        "ci-locally should be invoked ONCE across two consecutive \
+         per-package preflight calls (got {n_runs} invocations); \
+         counter content was: {runs:?}"
+    );
+
+    // Third call with $CORAL_PREFLIGHT_FORCE=1: cache MUST be bypassed.
+    let out3 = StdCommand::new(scripts_dir.join("release.sh"))
+        .arg("preflight")
+        .env("NEW_VERSION", "9.9.9")
+        .env("CI_LOCALLY", &stub_ci)
+        .env("TMPDIR", &marker_dir)
+        .env("CORAL_PREFLIGHT_FORCE", "1")
+        .current_dir(work)
+        .output()
+        .unwrap();
+    assert!(
+        out3.status.success(),
+        "force-bypass preflight should succeed"
+    );
+
+    let runs2 = fs::read_to_string(&counter).unwrap_or_default();
+    let n_runs2 = runs2.lines().filter(|l| !l.is_empty()).count();
+    assert_eq!(
+        n_runs2, 2,
+        "$CORAL_PREFLIGHT_FORCE=1 should bypass cache; expected 2 ci-locally \
+         invocations after force run, got {n_runs2}"
+    );
+}
+
+// ----------------------------------------------------------------------------
 // Test #5: release_sh_bump_dry_run_no_changes
 // ----------------------------------------------------------------------------
 // `cargo release X.Y.Z` (no `--execute`) is itself a dry-run; the wrapper's

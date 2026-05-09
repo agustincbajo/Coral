@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.1] - 2026-05-08
+
+**Patch release: fix `release.sh preflight` per-package iteration cost.** The first dogfood run of the v0.22.0 tooling — `scripts/release.sh bump 0.22.0` against Coral's actual 9-crate workspace — exposed a real performance bug the v0.22.0 tester didn't catch: cargo-release fires the `pre-release-hook` ONCE PER WORKSPACE PACKAGE, so `release.sh preflight` was running `scripts/ci-locally.sh` 9 times back-to-back (~9 × ~50s = ~7-9 min wall-time per bump). Tests had only exercised the hook in standalone tempdirs, never in the real workspace. v0.22.1 caches the ci-locally result via a marker file under `$TMPDIR` keyed on `(version, HEAD sha)`. Subsequent invocations within the same cargo-release run short-circuit with `ok "ci-locally.sh already passed in this cargo-release run"`. Honors `$CORAL_PREFLIGHT_FORCE=1` for debugging. Without this fix, v0.22.0 bumps in production would have been unusably slow; v0.22.1 brings the bump back down to ~50s. **1228 tests pass (+1: `release_sh_preflight_caches_ci_locally_across_per_package_calls`), all green.** v0.22.0 was shipped via the manual flow as a result of this bug — v0.22.1 onwards uses the new tooling end-to-end.
+
+### Fixed
+
+- **`release.sh preflight` ci-locally caching.** `cmd_preflight` now writes `${TMPDIR:-/tmp}/coral-preflight-${version}-${head_sha}.pass` after the first ci-locally pass and short-circuits subsequent calls within the same cargo-release run. The marker is automatically invalidated when HEAD moves (sha-keyed). `$CORAL_PREFLIGHT_FORCE=1` bypasses for debugging.
+
+### Tests
+
+- **#13 `release_sh_preflight_caches_ci_locally_across_per_package_calls`** — runs preflight twice with a counter-bumping ci-locally stub, asserts ci-locally fires exactly once. Then asserts `$CORAL_PREFLIGHT_FORCE=1` bypasses cleanly.
+
+### Pipeline note
+
+Patch release within v0.22 sprint. Slides the rest of v0.22 sprint by one: v0.22.{2,3,4,5} for `coral env import` / `coral test --emit k6` / MCP registry publish / `coral skill build/publish` respectively.
+
 ## [0.22.0] - 2026-05-08
 
 **Feature release: `cargo-release` adoption + `scripts/release.sh` maintenance entry point.** Replaces the v0.19-era ad-hoc `release.toml` (which had `push = true`, contrary to working-agreements, and a `pre-release-replacements` regex stuck at v0.15.x shape) with a v0.22-shaped config: `push = false`, `tag = false`, `consolidate-commits = true`, `shared-version = true`, no auto-`Co-Authored-By` trailer. The maintainer now drives a release through three local-only phases plus one GitHub-side step, each a single command: `scripts/release.sh bump X.Y.Z` writes a `release(vX.Y.Z): bump version` commit (no tag, no push) after preflight asserts the CHANGELOG entry is present and `scripts/ci-locally.sh` is green; tester sign-off; `scripts/release.sh tag X.Y.Z` validates HEAD subject + tags + pushes, which triggers `.github/workflows/release.yml` to build binaries for Linux x86_64, macOS Intel, and macOS Apple Silicon; finally `scripts/release-gh.sh vX.Y.Z` extracts the `## [X.Y.Z]` CHANGELOG section verbatim and updates the GH release's title and notes (replacing the workflow's auto-generated commit-list notes with the curated changelog). Two helper scripts ship standalone: `scripts/extract-changelog-section.sh X.Y.Z [PATH]` (awk-based, exit 1 if absent), and `scripts/release-gh.sh vX.Y.Z` with `GH_DRY_RUN=1` for previewing. CHANGELOG link-footer rewriting is moved out of `pre-release-replacements` (which iterates per-package and would duplicate lines on a 9-crate workspace) and into the `release.sh preflight` hook with a bash-level idempotency guard. **Zero new workspace dependencies** — `cargo-release` is installed via `cargo install`, not declared in `[workspace.dependencies]`. **BC sacred: `coral` binary, every CLI subcommand, `coral.toml` manifest schema, and `coral.lock` lockfile are byte-identical to v0.21.4** — this is purely a maintainer-tooling release; runtime code is untouched. **CHANGELOG link-footer repaired** to span v0.16.0 through v0.21.4 (had been frozen at v0.15.1 for six sprints). **1227 tests pass (was 1217; +10), all green.** `bc-regression` green.
