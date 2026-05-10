@@ -17,6 +17,7 @@ name = "coral"
 path = "src/main.rs"
 
 [dependencies]
+mimalloc = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }

@@ -70,6 +70,12 @@ signal-hook = "0.3"
 # proptest itself when the dev-deps compiled. Justified per
 # orchestrator's spec working-agreement #2.
 proptest = "1"
+# v0.24.0: global allocator for the CLI binary. mimalloc replaces the
+# system allocator for 10-20% throughput on allocation-heavy workloads
+# (TF-IDF scoring, wiki parsing, large OpenAPI property-test generation).
+# Single-purpose, ~40 KB, pure-C with a thin Rust wrapper; no new Rust
+# transitives beyond the `libmimalloc-sys` build-script.
+mimalloc = { version = "0.1", default-features = false }
 coral-core = { path = "crates/coral-core", version = "0.23.3" }
 coral-env = { path = "crates/coral-env", version = "0.23.3" }
 coral-lint = { path = "crates/coral-lint", version = "0.23.3" }
