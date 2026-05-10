@@ -133,6 +133,12 @@ enum Cmd {
     /// `stop` is a v0.23.1 stub that points at Ctrl-C. Requires
     /// `[[environments.<env>.monitors]]` in `coral.toml`.
     Monitor(commands::monitor::MonitorArgs),
+    /// View the wiki at a historical git ref (time-travel access).
+    /// `coral wiki at <ref>` extracts `.wiki/` at that ref into a temp
+    /// directory, reads pages, and outputs a summary. Optional flags
+    /// let you search (`--search`) or filter (`--filter`) individual
+    /// pages from that historical snapshot.
+    Wiki(commands::wiki::WikiArgs),
     /// **Hidden** test-only helper: acquires `with_exclusive_lock(path)`,
     /// reads the file as a u64 counter, increments by 1, writes back.
     /// Used by `tests/cross_process_lock.rs` to verify the v0.15
@@ -215,6 +221,7 @@ fn main() -> ExitCode {
         },
         Cmd::Chaos(args) => commands::chaos::run(args, cli.wiki_root.as_deref()),
         Cmd::Monitor(args) => commands::monitor::run(args, cli.wiki_root.as_deref()),
+        Cmd::Wiki(args) => commands::wiki::run(args, cli.wiki_root.as_deref()),
         Cmd::TestLockIncr { path } => run_test_lock_incr(&path),
     };
 

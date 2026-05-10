@@ -27,6 +27,7 @@ pub mod test_discover;
 pub mod up;
 pub mod validate_pin;
 pub mod verify;
+pub mod wiki;
 
 pub mod bootstrap;
 pub mod consolidate;
