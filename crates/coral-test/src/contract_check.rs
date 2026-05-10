@@ -79,6 +79,12 @@ pub enum FindingKind {
         provider_repo: String,
         reason: String,
     },
+    /// Consumer sends a request body but provider doesn't declare one
+    /// (or vice versa).
+    RequestBodyDrift {
+        method: String,
+        path: String,
+    },
 }
 
 impl ContractReport {
@@ -101,6 +107,10 @@ pub struct ProviderInterface {
     /// Treated as a wildcard for status drift — any consumer-expected
     /// code matches.
     pub has_default_response: BTreeSet<(String, String)>,
+    /// v0.24: endpoints that declare a `requestBody` in the provider's
+    /// OpenAPI spec. Key: (method, path). Presence means the provider
+    /// expects a request body.
+    pub has_request_body: BTreeSet<(String, String)>,
 }
 
 /// Consumer-side: every (method, path, expected status) referenced by
@@ -117,6 +127,9 @@ pub struct EndpointReference {
     pub method: String,
     pub path: String,
     pub expected_status: Option<u16>,
+    /// v0.24: true when the test step sends a request body (`body` or
+    /// `json` field in the YAML step).
+    pub sends_body: bool,
     /// Test file that produced this reference (for actionable error
     /// messages).
     pub source: PathBuf,
@@ -302,6 +315,7 @@ fn parse_provider_for_repo(
         repo_name: repo_name.to_string(),
         endpoints: BTreeMap::new(),
         has_default_response: BTreeSet::new(),
+        has_request_body: BTreeSet::new(),
     };
     if let Some(paths) = value.get("paths").and_then(|v| v.as_object()) {
         for (path_str, ops_value) in paths {
@@ -340,6 +354,12 @@ fn parse_provider_for_repo(
                 if has_default {
                     iface
                         .has_default_response
+                        .insert((method.clone(), path_str.clone()));
+                }
+                // v0.24: track whether the operation declares a requestBody.
+                if op_value.get("requestBody").is_some() {
+                    iface
+                        .has_request_body
                         .insert((method.clone(), path_str.clone()));
                 }
                 iface
@@ -432,10 +452,14 @@ fn extract_from_yaml(path: &Path, refs: &mut Vec<EndpointReference>) -> TestResu
                     .and_then(|e| e.get("status"))
                     .and_then(|s| s.as_u64())
                     .map(|s| s as u16);
+                // v0.24: detect whether the step sends a request body.
+                let sends_body =
+                    step.get("body").is_some() || step.get("json").is_some();
                 refs.push(EndpointReference {
                     method,
                     path: path_str,
                     expected_status,
+                    sends_body,
                     source: path.to_path_buf(),
                 });
             }
@@ -470,6 +494,7 @@ fn extract_from_hurl(path: &Path, refs: &mut Vec<EndpointReference>) -> TestResu
                     method: m,
                     path: p,
                     expected_status: None,
+                    sends_body: false,
                     source: path.to_path_buf(),
                 });
             }
@@ -484,6 +509,7 @@ fn extract_from_hurl(path: &Path, refs: &mut Vec<EndpointReference>) -> TestResu
                     method: m,
                     path: p,
                     expected_status,
+                    sends_body: false,
                     source: path.to_path_buf(),
                 });
             }
@@ -495,6 +521,7 @@ fn extract_from_hurl(path: &Path, refs: &mut Vec<EndpointReference>) -> TestResu
             method: m,
             path: p,
             expected_status: None,
+            sends_body: false,
             source: path.to_path_buf(),
         });
     }
@@ -639,6 +666,38 @@ pub fn diff_consumer_against_provider(
                         r.method,
                         r.path,
                         documented_vec,
+                        r.source.display()
+                    ),
+                });
+            }
+        }
+        // v0.24: warn if consumer sends a body to an endpoint without requestBody.
+        if r.sends_body {
+            let provider_expects_body = if let Some(by_path) = provider.endpoints.get(&r.method) {
+                by_path.keys().any(|spec_path| {
+                    openapi_path_matches(spec_path, &r.path)
+                        && provider
+                            .has_request_body
+                            .contains(&(r.method.clone(), spec_path.clone()))
+                })
+            } else {
+                false
+            };
+            if !provider_expects_body {
+                findings.push(Finding {
+                    severity: Severity::Warning,
+                    kind: FindingKind::RequestBodyDrift {
+                        method: r.method.clone(),
+                        path: r.path.clone(),
+                    },
+                    consumer: consumer.repo_name.clone(),
+                    provider: provider.repo_name.clone(),
+                    message: format!(
+                        "consumer '{}' sends request body to {} {} but provider '{}' does not declare requestBody (in {})",
+                        consumer.repo_name,
+                        r.method,
+                        r.path,
+                        provider.repo_name,
                         r.source.display()
                     ),
                 });
@@ -840,6 +899,7 @@ mod tests {
     fn detects_unknown_endpoint() {
         let provider = ProviderInterface {
             has_default_response: BTreeSet::new(),
+            has_request_body: BTreeSet::new(),
             repo_name: "api".into(),
             endpoints: {
                 let mut m = BTreeMap::new();
@@ -855,6 +915,7 @@ mod tests {
                 method: "GET".into(),
                 path: "/orders".into(), // not declared!
                 expected_status: Some(200),
+                sends_body: false,
                 source: PathBuf::from("/x/.coral/tests/api.yaml"),
             }],
         };
@@ -871,6 +932,7 @@ mod tests {
     fn detects_unknown_method() {
         let provider = ProviderInterface {
             has_default_response: BTreeSet::new(),
+            has_request_body: BTreeSet::new(),
             repo_name: "api".into(),
             endpoints: {
                 let mut m = BTreeMap::new();
@@ -886,6 +948,7 @@ mod tests {
                 method: "POST".into(),
                 path: "/users".into(),
                 expected_status: Some(201),
+                sends_body: false,
                 source: PathBuf::from("/x/.coral/tests/api.yaml"),
             }],
         };
@@ -901,6 +964,7 @@ mod tests {
     fn detects_status_drift() {
         let provider = ProviderInterface {
             has_default_response: BTreeSet::new(),
+            has_request_body: BTreeSet::new(),
             repo_name: "api".into(),
             endpoints: {
                 let mut m = BTreeMap::new();
@@ -916,6 +980,7 @@ mod tests {
                 method: "POST".into(),
                 path: "/users".into(),
                 expected_status: Some(200), // not in {201, 400}
+                sends_body: false,
                 source: PathBuf::from("/x/.coral/tests/api.yaml"),
             }],
         };
@@ -932,6 +997,7 @@ mod tests {
     fn happy_path_no_drift() {
         let provider = ProviderInterface {
             has_default_response: BTreeSet::new(),
+            has_request_body: BTreeSet::new(),
             repo_name: "api".into(),
             endpoints: {
                 let mut m = BTreeMap::new();
@@ -949,12 +1015,14 @@ mod tests {
                     method: "GET".into(),
                     path: "/users".into(),
                     expected_status: Some(200),
+                    sends_body: false,
                     source: PathBuf::from("/x/.coral/tests/api.yaml"),
                 },
                 EndpointReference {
                     method: "GET".into(),
                     path: "/users/42".into(), // matches /users/{id}
                     expected_status: Some(200),
+                    sends_body: false,
                     source: PathBuf::from("/x/.coral/tests/api.yaml"),
                 },
             ],
@@ -1189,6 +1257,7 @@ steps:
         let provider = ProviderInterface {
             repo_name: "api".into(),
             has_default_response: BTreeSet::new(),
+            has_request_body: BTreeSet::new(),
             endpoints: {
                 let mut m = BTreeMap::new();
                 let mut by_path = BTreeMap::new();
@@ -1214,6 +1283,7 @@ steps:
                 s.insert(("GET".to_string(), "/errors".to_string()));
                 s
             },
+            has_request_body: BTreeSet::new(),
             endpoints: {
                 let mut m = BTreeMap::new();
                 let mut by_path = BTreeMap::new();
@@ -1228,6 +1298,7 @@ steps:
                 method: "GET".into(),
                 path: "/errors".into(),
                 expected_status: Some(503),
+                sends_body: false,
                 source: PathBuf::from("/x/.coral/tests/api.yaml"),
             }],
         };
