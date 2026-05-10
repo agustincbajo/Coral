@@ -11,7 +11,8 @@
 //! see [`search_bm25`].
 
 use crate::page::Page;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::OnceLock;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SearchResult {
@@ -222,18 +223,27 @@ pub fn search_bm25(pages: &[Page], query: &str, limit: usize) -> Vec<SearchResul
     results
 }
 
-const STOPWORDS: &[&str] = &[
-    "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "has", "he", "in", "is", "it",
-    "its", "of", "on", "that", "the", "to", "was", "were", "will", "with", // Spanish
-    "el", "la", "los", "las", "de", "y", "en", "que", "es", "se", "un", "una", "para", "por",
-    "con", "del", "al",
-];
+fn stopwords() -> &'static HashSet<&'static str> {
+    static INSTANCE: OnceLock<HashSet<&'static str>> = OnceLock::new();
+    INSTANCE.get_or_init(|| {
+        [
+            "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "has", "he", "in",
+            "is", "it", "its", "of", "on", "that", "the", "to", "was", "were", "will", "with",
+            // Spanish
+            "el", "la", "los", "las", "de", "y", "en", "que", "es", "se", "un", "una", "para",
+            "por", "con", "del", "al",
+        ]
+        .into_iter()
+        .collect()
+    })
+}
 
 fn tokenize(text: &str) -> Vec<String> {
+    let sw = stopwords();
     text.to_lowercase()
         .split(|c: char| !c.is_alphanumeric())
         .filter(|t| t.len() > 1)
-        .filter(|t| !STOPWORDS.contains(t))
+        .filter(|t| !sw.contains(t))
         .map(String::from)
         .collect()
 }
