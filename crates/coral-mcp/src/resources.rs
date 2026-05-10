@@ -11,6 +11,9 @@
 //! - `coral://lock` — coral.lock as JSON
 //! - `coral://stats` — `coral stats --format json`
 
+use std::sync::OnceLock;
+
+use coral_core::page::Page;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -62,6 +65,11 @@ pub struct WikiResourceProvider {
     /// Set to `true` only via `coral mcp serve --include-unreviewed`,
     /// which is intended for users debugging distill flows.
     pub include_unreviewed: bool,
+    /// v0.24: in-memory page cache. The MCP server is long-lived, so
+    /// we load pages from disk once and serve from memory on all
+    /// subsequent requests. Avoids ~200ms filesystem walks per request
+    /// for large wikis.
+    pages_cache: OnceLock<Vec<Page>>,
 }
 
 impl WikiResourceProvider {
@@ -73,6 +81,7 @@ impl WikiResourceProvider {
         Self {
             project_root,
             include_unreviewed: false,
+            pages_cache: OnceLock::new(),
         }
     }
 
@@ -135,8 +144,13 @@ impl WikiResourceProvider {
         self.project_root.join(".wiki")
     }
 
-    /// Read pages from the wiki root, returning an empty vec if the
+    /// Read pages from the wiki root, returning an empty slice if the
     /// root doesn't exist (a freshly-initialized project).
+    ///
+    /// v0.24: pages are loaded once on first access and cached in
+    /// `self.pages_cache` for the lifetime of the provider. This
+    /// eliminates repeated filesystem walks (~200ms each for large
+    /// wikis) on every MCP request.
     ///
     /// v0.20.2 audit-followup #37: when `include_unreviewed` is
     /// false, pages flagged by [`is_unreviewed_distilled`] are
@@ -144,19 +158,21 @@ impl WikiResourceProvider {
     /// renderer (`render_page`, `render_aggregate_index`,
     /// `render_repo_index`, the per-page enumeration in `list`)
     /// inherits the same qualifier with no extra filter calls.
-    fn read_pages(&self) -> Vec<coral_core::page::Page> {
-        let root = self.wiki_root();
-        if !root.exists() {
-            return Vec::new();
-        }
-        let pages = coral_core::walk::read_pages(&root).unwrap_or_default();
-        if self.include_unreviewed {
-            return pages;
-        }
-        pages
-            .into_iter()
-            .filter(|p| !p.is_unreviewed_distilled())
-            .collect()
+    fn read_pages(&self) -> &[Page] {
+        self.pages_cache.get_or_init(|| {
+            let root = self.wiki_root();
+            if !root.exists() {
+                return Vec::new();
+            }
+            let pages = coral_core::walk::read_pages(&root).unwrap_or_default();
+            if self.include_unreviewed {
+                return pages;
+            }
+            pages
+                .into_iter()
+                .filter(|p| !p.is_unreviewed_distilled())
+                .collect()
+        })
     }
 
     /// Render `coral://manifest` as JSON.
@@ -203,7 +219,7 @@ impl WikiResourceProvider {
 
     fn render_stats(&self) -> Option<String> {
         let pages = self.read_pages();
-        let report = coral_stats::StatsReport::new(&pages);
+        let report = coral_stats::StatsReport::new(pages);
         report.as_json().ok()
     }
 
@@ -305,7 +321,7 @@ impl ResourceProvider for WikiResourceProvider {
         // hint was inconsistent with the JSON-encoded payload and
         // confused clients trying to parse the response.
         let pages = self.read_pages();
-        for p in &pages {
+        for p in pages {
             out.push(Resource {
                 uri: format!("coral://wiki/{}", p.frontmatter.slug),
                 name: p.frontmatter.slug.clone(),
