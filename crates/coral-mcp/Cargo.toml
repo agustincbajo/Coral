@@ -9,6 +9,7 @@ repository.workspace = true
 description = "Coral MCP server: exposes the wiki + manifest as Model Context Protocol resources/tools/prompts."
 
 [dependencies]
+ahash = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

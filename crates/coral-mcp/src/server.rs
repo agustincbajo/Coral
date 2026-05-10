@@ -369,10 +369,17 @@ impl McpHandler {
 }
 
 fn lookup_tool_kind(name: &str) -> Option<ToolKind> {
-    ToolCatalog::all()
-        .into_iter()
-        .find(|t| t.name == name)
-        .map(|t| t.kind)
+    use std::sync::OnceLock;
+    use ahash::AHashMap;
+
+    static TOOL_KIND_MAP: OnceLock<AHashMap<String, ToolKind>> = OnceLock::new();
+    let map = TOOL_KIND_MAP.get_or_init(|| {
+        ToolCatalog::all()
+            .into_iter()
+            .map(|t| (t.name, t.kind))
+            .collect()
+    });
+    map.get(name).copied()
 }
 
 fn ok_response(id: Option<serde_json::Value>, result: serde_json::Value) -> serde_json::Value {
