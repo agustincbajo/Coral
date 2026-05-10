@@ -1,10 +1,10 @@
 //! Common repo filters for the multi-repo era.
 //!
-//! Every command that operates over a `Project` accepts the same four
-//! flags: `--repo`, `--tag`, `--affected`, and `--exclude`. Implementing
-//! them once in this module — rather than having each command duplicate
-//! the clap parsing and the filter logic — keeps the UX consistent and
-//! the bug surface tiny.
+//! Every command that operates over a `Project` accepts the same five
+//! flags: `--repo`, `--tag`, `--affected`, `--since`, and `--exclude`.
+//! Implementing them once in this module — rather than having each
+//! command duplicate the clap parsing and the filter logic — keeps the
+//! UX consistent and the bug surface tiny.
 //!
 //! In v0.15 (legacy / single-repo) every filter resolves to "the only
 //! repo is included", so the same code paths work without callers having
@@ -14,7 +14,7 @@ use clap::Args;
 use coral_core::project::{Project, RepoEntry};
 use std::collections::BTreeSet;
 
-/// The four filter flags. Embed in any command's `Args` struct via
+/// The five filter flags. Embed in any command's `Args` struct via
 /// `#[command(flatten)]`.
 #[derive(Args, Debug, Clone, Default)]
 pub struct RepoFilters {
@@ -29,6 +29,15 @@ pub struct RepoFilters {
     /// Skip the named repos. Applied **after** `--repo`/`--tag`.
     #[arg(long = "exclude", value_name = "NAME", num_args = 1..)]
     pub exclude: Vec<String>,
+
+    /// Only operate on repos with files changed since this git ref.
+    /// Must be used together with `--affected`.
+    #[arg(long = "since", value_name = "REF", requires = "affected")]
+    pub since: Option<String>,
+
+    /// Enable affected-repo detection. Requires `--since`.
+    #[arg(long = "affected", requires = "since")]
+    pub affected: bool,
 }
 
 impl RepoFilters {
@@ -46,7 +55,7 @@ impl RepoFilters {
         let want_tags: BTreeSet<&str> = self.tag.iter().map(String::as_str).collect();
         let exclude_names: BTreeSet<&str> = self.exclude.iter().map(String::as_str).collect();
 
-        project
+        let mut result: Vec<&'p RepoEntry> = project
             .repos
             .iter()
             .filter(|r| r.enabled)
@@ -62,14 +71,104 @@ impl RepoFilters {
                 }
                 true
             })
-            .collect()
+            .collect();
+
+        // Affected-repo filter: only keep repos with changes since `--since`.
+        if self.affected {
+            if let Some(ref since_ref) = self.since {
+                result.retain(|repo| repo_has_changes(repo, project, since_ref));
+            }
+        }
+
+        result
     }
 
     /// `true` when none of the flags is set. Useful for short-circuit
     /// "select all" behavior in callers that want to log "operating on
     /// N repos" with extra context when filters were applied.
     pub fn is_empty(&self) -> bool {
-        self.repo.is_empty() && self.tag.is_empty() && self.exclude.is_empty()
+        self.repo.is_empty() && self.tag.is_empty() && self.exclude.is_empty() && !self.affected
+    }
+}
+
+/// Returns true if the repo has any file changes between `since_ref` and HEAD.
+///
+/// For repos that live as a subdirectory within a larger git repository (the
+/// mono-repo / meta-repo pattern), we run
+///   `git diff --name-only <since_ref>..HEAD -- <repo_path>`
+/// from the project root so only changes within that subtree are considered.
+///
+/// If the repo is not cloned locally or git fails, we conservatively include it.
+fn repo_has_changes(repo: &RepoEntry, project: &Project, since_ref: &str) -> bool {
+    use std::process::Command;
+
+    let repo_path = repo
+        .path
+        .as_ref()
+        .map(|p| project.root.join(p))
+        .unwrap_or_else(|| project.root.clone());
+
+    if !repo_path.exists() {
+        // Repo not cloned locally — conservatively include it.
+        return true;
+    }
+
+    // Determine whether this repo is its own git root or a subdirectory of
+    // a parent git repo. We always run `git diff` from the git toplevel and
+    // use `-- <relative_path>` to scope the diff to the repo's subtree.
+    let toplevel = Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(&repo_path)
+        .output();
+
+    let (work_dir, pathspec) = match toplevel {
+        Ok(ref o) if o.status.success() => {
+            let tl = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            let tl_path = std::path::PathBuf::from(&tl);
+            // Canonicalize both paths to handle symlinks (e.g. /tmp -> /private/tmp on macOS).
+            let canonical_tl = tl_path.canonicalize().unwrap_or_else(|_| tl_path.clone());
+            let canonical_repo = repo_path.canonicalize().unwrap_or(repo_path.clone());
+            // Compute the relative path from the git root to the repo dir.
+            let rel = canonical_repo
+                .strip_prefix(&canonical_tl)
+                .unwrap_or(std::path::Path::new("."));
+            if rel == std::path::Path::new("") || rel == std::path::Path::new(".") {
+                // The repo IS the git root — no pathspec needed.
+                (canonical_tl, None)
+            } else {
+                (canonical_tl, Some(rel.to_path_buf()))
+            }
+        }
+        _ => {
+            // Can't determine toplevel — just run from repo_path with no pathspec.
+            (repo_path, None)
+        }
+    };
+
+    let mut args = vec![
+        "diff".to_string(),
+        "--name-only".to_string(),
+        format!("{since_ref}..HEAD"),
+    ];
+    if let Some(ref ps) = pathspec {
+        args.push("--".to_string());
+        args.push(ps.display().to_string());
+    }
+
+    let output = Command::new("git")
+        .args(&args)
+        .current_dir(&work_dir)
+        .output();
+
+    match output {
+        Ok(o) if o.status.success() => {
+            // If there's any output, files changed.
+            !o.stdout.is_empty()
+        }
+        _ => {
+            // Git failed — conservatively include.
+            true
+        }
     }
 }
 
@@ -207,5 +306,111 @@ tags = ["service"]
             1,
             "legacy project always selects its only repo"
         );
+    }
+
+    #[test]
+    fn is_empty_returns_false_when_affected_is_set() {
+        let f = RepoFilters {
+            affected: true,
+            since: Some("main".into()),
+            ..Default::default()
+        };
+        assert!(!f.is_empty());
+    }
+
+    #[test]
+    fn default_filters_have_affected_disabled() {
+        let f = RepoFilters::default();
+        assert!(!f.affected);
+        assert!(f.since.is_none());
+    }
+
+    #[test]
+    fn affected_filter_excludes_repos_without_changes() {
+        // This test uses a real git repo in a tempdir to verify the
+        // affected filter actually shells out to git and excludes repos
+        // that have no diff.
+        use std::process::Command;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path();
+
+        // Initialize a git repo with one commit on main.
+        Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.email", "test@test.com"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+
+        // Create sub-directories for two repos.
+        std::fs::create_dir_all(root.join("api")).unwrap();
+        std::fs::create_dir_all(root.join("worker")).unwrap();
+        std::fs::write(root.join("api/main.rs"), "fn main() {}").unwrap();
+        std::fs::write(root.join("worker/main.rs"), "fn main() {}").unwrap();
+
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "initial"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+
+        // Now only touch a file in `api/`.
+        std::fs::write(root.join("api/main.rs"), "fn main() { /* changed */ }").unwrap();
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "change api"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+
+        // Build a project that maps those directories.
+        let toml_str = format!(
+            r#"apiVersion = "coral.dev/v1"
+[project]
+name = "test"
+
+[[repos]]
+name = "api"
+url  = "git@example.com:acme/api.git"
+path = "api"
+
+[[repos]]
+name = "worker"
+url  = "git@example.com:acme/worker.git"
+path = "worker"
+"#
+        );
+        let manifest_path = root.join("coral.toml");
+        std::fs::write(&manifest_path, &toml_str).unwrap();
+        let mut p = manifest::parse_toml(&toml_str, &manifest_path).unwrap();
+        p.root = root.to_path_buf();
+
+        // With `--affected --since HEAD~1`, only `api` should be selected.
+        let f = RepoFilters {
+            affected: true,
+            since: Some("HEAD~1".into()),
+            ..Default::default()
+        };
+        let selected: Vec<&str> = f.select(&p).iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(selected, vec!["api"]);
     }
 }
