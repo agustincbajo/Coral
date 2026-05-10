@@ -13,6 +13,10 @@ use std::path::Path;
 /// graph.
 type StructuralCheck = fn(&[Page]) -> Vec<LintIssue>;
 
+/// Function signature for a structural check that also receives pre-computed
+/// outbound links (one `Vec<String>` per page, parallel to `&[Page]`).
+type StructuralCheckWithLinks = fn(&[Page], &[Vec<String>]) -> Vec<LintIssue>;
+
 /// Function signature for a structural check that also needs to know the
 /// repo root (for git / filesystem lookups).
 type StructuralCheckWithRoot = fn(&[Page], &Path) -> Vec<LintIssue>;
@@ -39,18 +43,24 @@ pub fn run_structural(pages: &[Page]) -> LintReport {
 pub fn run_structural_with_root(pages: &[Page], repo_root: &Path) -> LintReport {
     use rayon::prelude::*;
 
+    // Pre-compute outbound_links once to avoid redundant regex extraction.
+    // Each entry `precomputed_links[i]` corresponds to `pages[i]`.
+    let precomputed_links: Vec<Vec<String>> = pages.iter().map(|p| p.outbound_links()).collect();
+
     let pure_checks: Vec<StructuralCheck> = vec![
-        structural::check_broken_wikilinks,
-        structural::check_orphan_pages,
         structural::check_low_confidence,
         structural::check_high_confidence_without_sources,
         structural::check_stale_status,
-        structural::check_archived_linked_from_head,
         structural::check_unknown_extra_field,
         // v0.20.0: trust-by-curation gate for `coral session distill`
         // output. Critical so the pre-commit hook blocks any
         // `reviewed: false` page from being committed.
         structural::check_unreviewed_distilled,
+    ];
+    let link_checks: Vec<StructuralCheckWithLinks> = vec![
+        structural::check_broken_wikilinks,
+        structural::check_orphan_pages,
+        structural::check_archived_linked_from_head,
     ];
     let context_checks: Vec<StructuralCheckWithRoot> = vec![
         structural::check_commit_in_git,
@@ -61,12 +71,17 @@ pub fn run_structural_with_root(pages: &[Page], repo_root: &Path) -> LintReport 
         .par_iter()
         .flat_map_iter(|check| check(pages))
         .collect();
+    let link_issues: Vec<LintIssue> = link_checks
+        .par_iter()
+        .flat_map_iter(|check| check(pages, &precomputed_links))
+        .collect();
     let context_issues: Vec<LintIssue> = context_checks
         .par_iter()
         .flat_map_iter(|check| check(pages, repo_root))
         .collect();
 
     let mut issues = pure_issues;
+    issues.extend(link_issues);
     issues.extend(context_issues);
     LintReport::from_issues(issues)
 }

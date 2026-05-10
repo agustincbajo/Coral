@@ -14,12 +14,16 @@ use std::process::Command;
 
 /// Reports a `BrokenWikilink` Critical for any outbound wikilink whose target
 /// is not the slug of any page in the workspace.
-pub fn check_broken_wikilinks(pages: &[Page]) -> Vec<LintIssue> {
+///
+/// `links` is a pre-computed slice parallel to `pages` — `links[i]` holds the
+/// outbound wikilinks for `pages[i]`. This avoids redundant regex extraction
+/// when multiple checks need the same link data.
+pub fn check_broken_wikilinks(pages: &[Page], links: &[Vec<String>]) -> Vec<LintIssue> {
     let slugs: HashSet<&str> = pages.iter().map(|p| p.frontmatter.slug.as_str()).collect();
 
     let mut issues = Vec::new();
-    for page in pages {
-        for link in page.outbound_links() {
+    for (i, page) in pages.iter().enumerate() {
+        for link in &links[i] {
             if !slugs.contains(link.as_str()) {
                 issues.push(LintIssue {
                     code: LintCode::BrokenWikilink,
@@ -37,11 +41,14 @@ pub fn check_broken_wikilinks(pages: &[Page]) -> Vec<LintIssue> {
 /// Reports an `OrphanPage` Warning for any page that has zero incoming backlinks
 /// AND zero references in any other page's body. Skips system pages
 /// (PageType::Index, Log, Schema, Readme) — those are roots by design.
-pub fn check_orphan_pages(pages: &[Page]) -> Vec<LintIssue> {
+///
+/// `links` is a pre-computed slice parallel to `pages` — `links[i]` holds the
+/// outbound wikilinks for `pages[i]`.
+pub fn check_orphan_pages(pages: &[Page], links: &[Vec<String>]) -> Vec<LintIssue> {
     let mut inbound: HashMap<String, usize> = HashMap::new();
-    for page in pages {
-        for link in page.outbound_links() {
-            *inbound.entry(link).or_insert(0) += 1;
+    for page_links in links {
+        for link in page_links {
+            *inbound.entry(link.clone()).or_insert(0) += 1;
         }
     }
 
@@ -353,7 +360,10 @@ pub fn check_source_exists(pages: &[Page], repo_root: &Path) -> Vec<LintIssue> {
 /// gets flagged so the maintainer can either update the link or lift the
 /// archive note. The issue's `page` field is the LINKER (the page with the
 /// stale link), `context` is the archived target's slug.
-pub fn check_archived_linked_from_head(pages: &[Page]) -> Vec<LintIssue> {
+///
+/// `links` is a pre-computed slice parallel to `pages` — `links[i]` holds the
+/// outbound wikilinks for `pages[i]`.
+pub fn check_archived_linked_from_head(pages: &[Page], links: &[Vec<String>]) -> Vec<LintIssue> {
     let archived: HashSet<&str> = pages
         .iter()
         .filter(|p| p.frontmatter.status == Status::Archived)
@@ -364,13 +374,13 @@ pub fn check_archived_linked_from_head(pages: &[Page]) -> Vec<LintIssue> {
     }
 
     let mut issues = Vec::new();
-    for page in pages {
+    for (i, page) in pages.iter().enumerate() {
         // Skip self-links from archived pages — those are fine, and we don't
         // want archived → archived chatter.
         if page.frontmatter.status == Status::Archived {
             continue;
         }
-        for link in page.outbound_links() {
+        for link in &links[i] {
             if archived.contains(link.as_str()) {
                 issues.push(LintIssue {
                     code: LintCode::ArchivedPageLinked,
@@ -574,7 +584,8 @@ mod tests {
                 vec!["src/b.rs"],
             ),
         ];
-        let issues = check_broken_wikilinks(&pages);
+        let links: Vec<Vec<String>> = pages.iter().map(|p| p.outbound_links()).collect();
+        let issues = check_broken_wikilinks(&pages, &links);
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].code, LintCode::BrokenWikilink);
         assert_eq!(issues[0].severity, LintSeverity::Critical);
@@ -601,7 +612,8 @@ mod tests {
                 vec!["src/b.rs"],
             ),
         ];
-        let issues = check_broken_wikilinks(&pages);
+        let links: Vec<Vec<String>> = pages.iter().map(|p| p.outbound_links()).collect();
+        let issues = check_broken_wikilinks(&pages, &links);
         assert!(issues.is_empty(), "got: {issues:?}");
     }
 
@@ -625,7 +637,8 @@ mod tests {
                 vec!["src/b.rs"],
             ),
         ];
-        let issues = check_broken_wikilinks(&pages);
+        let links: Vec<Vec<String>> = pages.iter().map(|p| p.outbound_links()).collect();
+        let issues = check_broken_wikilinks(&pages, &links);
         assert!(issues.is_empty(), "got: {issues:?}");
     }
 
@@ -661,7 +674,8 @@ mod tests {
                 vec!["src/c.rs"],
             ),
         ];
-        let issues = check_orphan_pages(&pages);
+        let links: Vec<Vec<String>> = pages.iter().map(|p| p.outbound_links()).collect();
+        let issues = check_orphan_pages(&pages, &links);
         let orphan_slugs: Vec<&str> = issues
             .iter()
             .filter_map(|i| {
@@ -696,7 +710,8 @@ mod tests {
             Status::Draft,
             vec!["src/i.rs"],
         )];
-        let issues = check_orphan_pages(&pages);
+        let links: Vec<Vec<String>> = pages.iter().map(|p| p.outbound_links()).collect();
+        let issues = check_orphan_pages(&pages, &links);
         assert!(issues.is_empty(), "got: {issues:?}");
     }
 
@@ -728,7 +743,8 @@ mod tests {
                 vec!["src/r.rs"],
             ),
         ];
-        let issues = check_orphan_pages(&pages);
+        let links: Vec<Vec<String>> = pages.iter().map(|p| p.outbound_links()).collect();
+        let issues = check_orphan_pages(&pages, &links);
         assert!(issues.is_empty(), "got: {issues:?}");
     }
 
@@ -1263,7 +1279,8 @@ mod tests {
                 vec!["src/live.rs"],
             ),
         ];
-        let issues = check_archived_linked_from_head(&pages);
+        let links: Vec<Vec<String>> = pages.iter().map(|p| p.outbound_links()).collect();
+        let issues = check_archived_linked_from_head(&pages, &links);
         assert_eq!(issues.len(), 1, "expected 1 issue, got {issues:?}");
         assert_eq!(issues[0].code, LintCode::ArchivedPageLinked);
         assert_eq!(issues[0].severity, LintSeverity::Warning);
@@ -1303,7 +1320,8 @@ mod tests {
                 vec!["src/live2.rs"],
             ),
         ];
-        let issues = check_archived_linked_from_head(&pages);
+        let links: Vec<Vec<String>> = pages.iter().map(|p| p.outbound_links()).collect();
+        let issues = check_archived_linked_from_head(&pages, &links);
         assert_eq!(issues.len(), 2, "expected 2 issues, got {issues:?}");
         let pages_with_issue: Vec<String> = issues
             .iter()
@@ -1334,7 +1352,8 @@ mod tests {
                 vec!["src/old2.rs"],
             ),
         ];
-        let issues = check_archived_linked_from_head(&pages);
+        let links: Vec<Vec<String>> = pages.iter().map(|p| p.outbound_links()).collect();
+        let issues = check_archived_linked_from_head(&pages, &links);
         assert!(
             issues.is_empty(),
             "archived → archived must be silenced, got {issues:?}"
@@ -1361,7 +1380,8 @@ mod tests {
                 vec!["src/live.rs"],
             ),
         ];
-        let issues = check_archived_linked_from_head(&pages);
+        let links: Vec<Vec<String>> = pages.iter().map(|p| p.outbound_links()).collect();
+        let issues = check_archived_linked_from_head(&pages, &links);
         assert!(
             issues.is_empty(),
             "no linkers means no issue, got {issues:?}"
