@@ -1,0 +1,28 @@
+{
+  "name": "coral",
+  "description": "Coral wiki + multi-repo manifest + MCP server for Claude Code. Bundles three skills (bootstrap, query, onboard) and registers the `coral mcp serve` MCP server so Claude can read your repo's wiki, manifest, lockfile, and test results.",
+  "version": "0.30.0",
+  "author": {
+    "name": "Agustin Bajo",
+    "url": "https://github.com/agustincbajo"
+  },
+  "homepage": "https://github.com/agustincbajo/Coral",
+  "repository": "https://github.com/agustincbajo/Coral",
+  "license": "MIT",
+  "keywords": [
+    "mcp",
+    "wiki",
+    "multi-repo",
+    "context-engineering",
+    "rust"
+  ],
+  "mcpServers": {
+    "coral": {
+      "command": "coral",
+      "args": ["mcp", "serve", "--transport", "stdio"],
+      "env": {
+        "RUST_LOG": "coral_mcp=info"
+      }
+    }
+  }
+}

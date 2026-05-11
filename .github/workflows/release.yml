@@ -21,6 +21,8 @@ jobs:
             target: x86_64-apple-darwin
           - os: macos-latest
             target: aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
     steps:
       - uses: actions/checkout@v4
       - name: Set up Rust
@@ -33,7 +35,10 @@ jobs:
           key: ${{ matrix.target }}
       - name: Build release
         run: cargo build --release --workspace --target ${{ matrix.target }}
+
+      # ----- Linux / macOS only: strip + codesign + tar.gz -----
       - name: Strip binary (Linux/macOS)
+        if: runner.os != 'Windows'
         run: strip target/${{ matrix.target }}/release/coral || true
       - name: Ad-hoc codesign (macOS)
         # Without this, Gatekeeper rejects the binary on first launch even
@@ -48,8 +53,8 @@ jobs:
           codesign --force --sign - --timestamp=none --options=runtime \
             target/${{ matrix.target }}/release/coral
           codesign --verify --verbose target/${{ matrix.target }}/release/coral
-      - name: Package
-        id: package
+      - name: Package (Linux/macOS)
+        if: runner.os != 'Windows'
         run: |
           set -euo pipefail
           NAME="coral-${{ github.ref_name }}-${{ matrix.target }}"
@@ -59,17 +64,111 @@ jobs:
           cd dist
           tar -czf "$NAME.tar.gz" "$NAME"
           shasum -a 256 "$NAME.tar.gz" > "$NAME.tar.gz.sha256"
-          echo "asset=$NAME.tar.gz" >> $GITHUB_OUTPUT
+
+      # ----- Windows only: package as .zip via PowerShell -----
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $Name = "coral-${{ github.ref_name }}-${{ matrix.target }}"
+          New-Item -ItemType Directory -Path "dist/$Name" -Force | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/coral.exe" "dist/$Name/"
+          Copy-Item "README.md" "dist/$Name/"
+          Copy-Item "LICENSE"   "dist/$Name/"
+          Push-Location dist
+          Compress-Archive -Path "$Name" -DestinationPath "$Name.zip" -Force
+          $hash = (Get-FileHash -Algorithm SHA256 -Path "$Name.zip").Hash.ToLower()
+          # Match the `shasum -a 256` output shape: "<hex>  <filename>\n".
+          Set-Content -Path "$Name.zip.sha256" -Value "$hash  $Name.zip" -NoNewline
+          Add-Content -Path "$Name.zip.sha256" -Value ""
+          Pop-Location
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: coral-${{ matrix.target }}
-          path: dist/coral-*.tar.gz*
+          # Match either packaging shape; whichever step ran will have populated
+          # the right files. `if-no-files-found: error` still catches breakage.
+          path: |
+            dist/coral-*.tar.gz
+            dist/coral-*.tar.gz.sha256
+            dist/coral-*.zip
+            dist/coral-*.zip.sha256
+          if-no-files-found: error
+
+  dxt-bundle:
+    name: Build .mcpb (Claude Desktop)
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Download release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      # The DXT/MCPB packer is the official `@anthropic-ai/mcpb` CLI (the
+      # former `@anthropic-ai/dxt` package). We invoke it via `npx -y` so we
+      # don't pull a new dev dependency into the repo. If the official packer
+      # ever fails or isn't available, the fallback is straightforward: an
+      # .mcpb is just a zip of the manifest + server/ dir, so a `zip -r`
+      # would also work.
+      #
+      # TODO(v0.31): expand to all 4 platforms (linux x64, darwin x64, darwin
+      # arm64, windows x64) — DXT format supports per-platform binaries via
+      # platform-suffixed entry points. For v0.30 we ship a single Linux x64
+      # bundle to keep scope tight; macOS users currently install via cargo
+      # or the install.sh script.
+      - name: Assemble bundle directory (linux x64)
+        run: |
+          set -euo pipefail
+          BUNDLE="bundle"
+          mkdir -p "$BUNDLE/server" "$BUNDLE/tmp"
+          # Extract the linux x64 tarball; it expands as
+          # coral-<tag>-<target>/coral. We just need the binary inside server/.
+          TAR=$(ls artifacts/coral-${{ github.ref_name }}-x86_64-unknown-linux-gnu.tar.gz)
+          tar -xzf "$TAR" -C "$BUNDLE/tmp"
+          find "$BUNDLE/tmp" -maxdepth 3 -type f -name coral -print -exec cp {} "$BUNDLE/server/coral" \;
+          chmod +x "$BUNDLE/server/coral"
+          rm -rf "$BUNDLE/tmp"
+          # Copy the manifest. Patch the version field to match the tag so the
+          # bundle's declared version always matches the release tag, even if
+          # someone forgot to bump .dxt/manifest.json before tagging.
+          TAG="${{ github.ref_name }}"
+          VERSION="${TAG#v}" \
+            node -e "const fs=require('fs'); const m=JSON.parse(fs.readFileSync('.dxt/manifest.json')); m.version=process.env.VERSION; fs.writeFileSync('$BUNDLE/manifest.json', JSON.stringify(m, null, 2));"
+          ls -la "$BUNDLE" "$BUNDLE/server"
+      - name: Pack .mcpb
+        run: |
+          set -euo pipefail
+          # `npx -y @anthropic-ai/mcpb pack <dir> <output>` is the documented
+          # invocation. If the CLI changes name back to @anthropic-ai/dxt, swap
+          # the package name; the format is identical.
+          OUT="coral-${{ github.ref_name }}.mcpb"
+          if ! npx -y @anthropic-ai/mcpb pack bundle "$OUT"; then
+            echo "Official packer failed or unavailable; falling back to manual zip."
+            (cd bundle && zip -r "../$OUT" .)
+          fi
+          # Sidecar hash for parity with the tarball sidecars.
+          sha256sum "$OUT" > "$OUT.sha256"
+          ls -la "$OUT" "$OUT.sha256"
+      - name: Upload .mcpb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coral-mcpb
+          path: |
+            coral-*.mcpb
+            coral-*.mcpb.sha256
           if-no-files-found: error
 
   release:
     name: Create GitHub release
-    needs: build
+    needs: [build, dxt-bundle]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -83,6 +182,8 @@ jobs:
         with:
           files: |
             dist/*.tar.gz
+            dist/*.zip
+            dist/*.mcpb
             dist/*.sha256
           generate_release_notes: true
           fail_on_unmatched_files: true
