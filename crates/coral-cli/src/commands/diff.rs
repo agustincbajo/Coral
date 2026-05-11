@@ -27,8 +27,13 @@ use std::process::ExitCode;
 pub struct DiffArgs {
     /// Slug of the first page.
     pub slug_a: String,
-    /// Slug of the second page.
-    pub slug_b: String,
+    /// Slug of the second page (required unless --ref is set).
+    pub slug_b: Option<String>,
+    /// Compare the current version of a single slug against its version
+    /// at a given git ref (tag, branch, or SHA). Mutually exclusive with
+    /// `slug_b` — if `--ref` is set, only `slug_a` is required.
+    #[arg(long = "ref")]
+    pub git_ref: Option<String>,
     /// Output format: markdown (default) or json.
     #[arg(long, default_value = "markdown")]
     pub format: String,
@@ -51,6 +56,10 @@ pub struct DiffArgs {
 /// structural diff, and (when `--semantic` is set) builds a runner and
 /// invokes the LLM. Without `--semantic`, no runner is constructed —
 /// `--model` and `--provider` are quietly ignored.
+///
+/// When `--ref <gitref>` is set, the command compares the current version
+/// of `slug_a` against its version at the given git ref (tag, branch, or
+/// SHA). `slug_b` is not required in that mode.
 pub fn run(args: DiffArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
     let root: PathBuf = wiki_root
         .map(Path::to_path_buf)
@@ -63,10 +72,44 @@ pub fn run(args: DiffArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
     }
     let pages = walk::read_pages(&root)
         .with_context(|| format!("reading pages from {}", root.display()))?;
+
+    // --ref mode: compare current slug_a against its version at the ref.
+    if let Some(ref git_ref) = args.git_ref {
+        if args.slug_b.is_some() {
+            anyhow::bail!("--ref and slug_b are mutually exclusive; use only one");
+        }
+        let page_b = find_page(&pages, &args.slug_a)
+            .with_context(|| format!("page `{}` not found in {}", args.slug_a, root.display()))?;
+        let page_a = read_page_at_ref(&root, &args.slug_a, git_ref, &pages)?;
+
+        let report = compute_diff(&page_a, page_b);
+
+        let semantic_analysis: Option<String> = if args.semantic {
+            let provider = super::runner_helper::resolve_provider(args.provider.as_deref())
+                .map_err(|e| anyhow::anyhow!(e))?;
+            let runner = super::runner_helper::make_runner(provider);
+            Some(run_semantic_analysis(
+                &page_a,
+                page_b,
+                runner.as_ref(),
+                args.model.as_deref(),
+            )?)
+        } else {
+            None
+        };
+
+        return render_output(&args, &report, semantic_analysis);
+    }
+
+    // Normal two-slug mode.
+    let slug_b = args
+        .slug_b
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("slug_b is required when --ref is not set"))?;
     let a = find_page(&pages, &args.slug_a)
         .with_context(|| format!("page `{}` not found in {}", args.slug_a, root.display()))?;
-    let b = find_page(&pages, &args.slug_b)
-        .with_context(|| format!("page `{}` not found in {}", args.slug_b, root.display()))?;
+    let b = find_page(&pages, slug_b)
+        .with_context(|| format!("page `{}` not found in {}", slug_b, root.display()))?;
 
     let report = compute_diff(a, b);
 
@@ -84,6 +127,15 @@ pub fn run(args: DiffArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
         None
     };
 
+    render_output(&args, &report, semantic_analysis)
+}
+
+/// Shared output renderer for both two-slug and `--ref` modes.
+fn render_output(
+    args: &DiffArgs,
+    report: &DiffReport,
+    semantic_analysis: Option<String>,
+) -> Result<ExitCode> {
     let model_label = args.model.as_deref().unwrap_or("default");
     match args.format.as_str() {
         "json" => {
@@ -101,6 +153,43 @@ pub fn run(args: DiffArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
         ),
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Retrieve the content of a wiki page at a historical git ref.
+///
+/// Finds the page in the current wiki to determine its relative path,
+/// then shells out to `git show <ref>:<path>` to extract the content
+/// at that ref. Returns the parsed `Page` with its path set to the
+/// current-version path (so downstream diff display is consistent).
+fn read_page_at_ref(wiki_root: &Path, slug: &str, git_ref: &str, pages: &[Page]) -> Result<Page> {
+    let current = pages
+        .iter()
+        .find(|p| p.frontmatter.slug == slug)
+        .ok_or_else(|| anyhow::anyhow!("page '{slug}' not found in wiki"))?;
+
+    // Get the relative path from the repo root.
+    let repo_root = wiki_root.parent().unwrap_or(wiki_root);
+    let rel_path = current
+        .path
+        .strip_prefix(repo_root)
+        .unwrap_or(&current.path);
+
+    let output = std::process::Command::new("git")
+        .args(["show", &format!("{git_ref}:{}", rel_path.display())])
+        .current_dir(repo_root)
+        .output()
+        .context("running git show")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("git show failed for {slug} at {git_ref}: {stderr}");
+    }
+
+    let content =
+        String::from_utf8(output.stdout).context("git show output is not valid UTF-8")?;
+
+    Page::from_content(&content, &current.path)
+        .map_err(|e| anyhow::anyhow!("parsing page at ref {git_ref}: {e}"))
 }
 
 fn find_page<'a>(pages: &'a [Page], slug: &str) -> Result<&'a Page> {
@@ -746,6 +835,94 @@ mod tests {
         assert!(
             msg.contains("semantic diff runner failed"),
             "error must be wrapped with diff context; got: {msg}"
+        );
+    }
+
+    // ---- --ref flag: read_page_at_ref + argument validation -------------
+
+    #[test]
+    fn read_page_at_ref_returns_error_for_unknown_slug() {
+        let pages = vec![page("alpha", PageType::Module, Status::Reviewed, 0.7, "x", &[])];
+        let wiki_root = Path::new(".wiki");
+        let r = read_page_at_ref(wiki_root, "nonexistent", "HEAD", &pages);
+        assert!(r.is_err(), "must error when slug is not in wiki");
+        let msg = format!("{}", r.unwrap_err());
+        assert!(
+            msg.contains("nonexistent"),
+            "error must name the missing slug; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn read_page_at_ref_returns_error_for_bad_ref() {
+        // Use a real git repo (the workspace itself) so `git show` can
+        // run but will fail on a nonsensical ref.
+        let wiki_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let pages = vec![{
+            let mut p = page("fake", PageType::Module, Status::Reviewed, 0.7, "x", &[]);
+            p.path = PathBuf::from(format!("{}/nonexistent.md", env!("CARGO_MANIFEST_DIR")));
+            p
+        }];
+        let r = read_page_at_ref(wiki_root, "fake", "NO_SUCH_REF_12345", &pages);
+        assert!(r.is_err(), "must error when git ref is invalid");
+        let msg = format!("{}", r.unwrap_err());
+        assert!(
+            msg.contains("git show failed"),
+            "error must mention git show failure; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn run_rejects_ref_with_slug_b() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wiki = tmp.path().join(".wiki");
+        std::fs::create_dir_all(wiki.join("x")).unwrap();
+        std::fs::write(
+            wiki.join("x/alpha.md"),
+            "---\nslug: alpha\ntype: module\nstatus: reviewed\nconfidence: 0.7\nlast_updated_commit: abc\nsources: []\nbacklinks: []\n---\nbody\n",
+        ).unwrap();
+        let args = DiffArgs {
+            slug_a: "alpha".into(),
+            slug_b: Some("beta".into()),
+            git_ref: Some("HEAD".into()),
+            format: "markdown".into(),
+            semantic: false,
+            model: None,
+            provider: None,
+        };
+        let r = run(args, Some(&wiki));
+        assert!(r.is_err(), "must reject --ref combined with slug_b");
+        let msg = format!("{}", r.unwrap_err());
+        assert!(
+            msg.contains("mutually exclusive"),
+            "error must mention mutual exclusivity; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn run_requires_slug_b_without_ref() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wiki = tmp.path().join(".wiki");
+        std::fs::create_dir_all(wiki.join("x")).unwrap();
+        std::fs::write(
+            wiki.join("x/alpha.md"),
+            "---\nslug: alpha\ntype: module\nstatus: reviewed\nconfidence: 0.7\nlast_updated_commit: abc\nsources: []\nbacklinks: []\n---\nbody\n",
+        ).unwrap();
+        let args = DiffArgs {
+            slug_a: "alpha".into(),
+            slug_b: None,
+            git_ref: None,
+            format: "markdown".into(),
+            semantic: false,
+            model: None,
+            provider: None,
+        };
+        let r = run(args, Some(&wiki));
+        assert!(r.is_err(), "must error when slug_b is missing and --ref is not set");
+        let msg = format!("{}", r.unwrap_err());
+        assert!(
+            msg.contains("slug_b is required"),
+            "error must tell user slug_b is required; got: {msg}"
         );
     }
 }
