@@ -42,6 +42,7 @@ pub mod prompt_loader;
 pub mod prompts;
 pub mod query;
 
+pub mod mutants;
 pub mod runner_helper;
 
 /// Shared cwd mutex for tests across all command modules.

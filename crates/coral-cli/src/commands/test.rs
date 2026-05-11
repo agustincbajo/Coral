@@ -63,6 +63,10 @@ pub enum TestSubcommand {
     /// p95 regressions. Reads timing data from `.coral/test-history.jsonl`
     /// and baseline from `.coral/perf-baseline.json`.
     Perf(PerfArgs),
+    /// Run mutation testing via `cargo-mutants`. Reports survivor
+    /// mutants (weak tests) and exits non-zero when the mutation
+    /// score falls below the configured threshold.
+    Mutants(super::mutants::MutantsArgs),
 }
 
 #[derive(Args, Debug)]
@@ -235,6 +239,7 @@ pub fn run(args: TestArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
         Some(TestSubcommand::Coverage(cov)) => run_coverage(cov, wiki_root),
         Some(TestSubcommand::Flakes(flk)) => run_flakes(flk, wiki_root),
         Some(TestSubcommand::Perf(perf)) => run_perf(perf, wiki_root),
+        Some(TestSubcommand::Mutants(m)) => super::mutants::run(m),
         None => run_inner(args.run, wiki_root),
     }
 }
