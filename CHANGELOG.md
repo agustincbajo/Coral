@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.31.0] - 2026-05-11
+
 **Plug-and-play Claude Code integration + post-v0.30.0 audit cycle 5 fixes (11 findings).** Two unrelated tracks landed on `main` after the `v0.30.0` tag and before the next release ships. The headline change is **plug-and-play install**: the repo now doubles as a Claude Code plugin marketplace (`.claude-plugin/`), ships a Claude Desktop `.mcpb` bundle (Linux x64 in this iteration; the other three targets follow in v0.31), one-line installers (`scripts/install.sh` / `scripts/install.ps1`), and an `x86_64-pc-windows-msvc` artifact in `release.yml`. The three-step install (`cargo install` → hand-edit `settings.json` → learn subcommands) collapses to two lines typed inside Claude Code: `/plugin marketplace add agustincbajo/Coral` then `/plugin install coral@coral`. The plugin registers the stdio MCP server automatically and bundles three skills (`coral-bootstrap`, `coral-query`, `coral-onboard`) plus two slash commands so Claude knows when to drive Coral on the user's behalf. The second track is the **5th multi-agent audit cycle on `v0.30.0`** — five parallel domain-specialist agents (security, concurrency, MCP server, CLI UX, test quality) produced 11 findings (4 High, 4 Medium, 3 Low / batch), each cross-referenced as `audit/findings/NNN-*.md` and counter-validated by 4 independent reviewer agents on the High-severity items before fix commits landed. Issues will be filed as GitHub `#52`–`#62` when the next release publishes. See `audit/SUMMARY.md` for the full catalog.
 
 ### Added
@@ -2010,7 +2012,15 @@ Test count: 385 (v0.8.0) → 427 (+42).
 - 5 ADRs: Rust CLI architecture, Claude CLI vs API, template via include_dir, multi-agent flow, versioning + sync.
 - Self-hosted `.wiki/` with 14 seed pages (cli/core/lint/runner/stats modules + concepts + entities + flow + decisions + synthesis + operations + sources).
 
-[Unreleased]: https://github.com/agustincbajo/Coral/compare/v0.23.1...HEAD
+[Unreleased]: https://github.com/agustincbajo/Coral/compare/v0.31.0...HEAD
+[0.31.0]: https://github.com/agustincbajo/Coral/releases/tag/v0.31.0
+[0.30.0]: https://github.com/agustincbajo/Coral/releases/tag/v0.30.0
+[0.25.0]: https://github.com/agustincbajo/Coral/releases/tag/v0.25.0
+[0.24.2]: https://github.com/agustincbajo/Coral/releases/tag/v0.24.2
+[0.24.1]: https://github.com/agustincbajo/Coral/releases/tag/v0.24.1
+[0.24.0]: https://github.com/agustincbajo/Coral/releases/tag/v0.24.0
+[0.23.3]: https://github.com/agustincbajo/Coral/releases/tag/v0.23.3
+[0.23.2]: https://github.com/agustincbajo/Coral/releases/tag/v0.23.2
 [0.23.1]: https://github.com/agustincbajo/Coral/releases/tag/v0.23.1
 [0.23.0]: https://github.com/agustincbajo/Coral/releases/tag/v0.23.0
 [0.22.6]: https://github.com/agustincbajo/Coral/releases/tag/v0.22.6
