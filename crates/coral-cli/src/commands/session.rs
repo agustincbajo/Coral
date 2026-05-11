@@ -55,6 +55,9 @@ pub enum SessionCmd {
     Distill(DistillArgs),
     /// Print metadata + first messages of a captured session.
     Show(ShowArgs),
+    /// Auto-capture the most recent agent transcript if it's new.
+    /// Designed for git hook integration (post-commit).
+    AutoCapture(AutoCaptureArgs),
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -182,6 +185,17 @@ pub struct ShowArgs {
     pub n: usize,
 }
 
+#[derive(Args, Debug)]
+pub struct AutoCaptureArgs {
+    /// Only capture if the transcript is newer than this many minutes.
+    #[arg(long, default_value_t = 30)]
+    pub max_age_minutes: u64,
+
+    /// Dry-run: report what would be captured without doing it.
+    #[arg(long)]
+    pub dry_run: bool,
+}
+
 pub fn run(args: SessionArgs, _wiki_root: Option<&Path>) -> Result<ExitCode> {
     // The session feature lives at the project root, not under
     // `.wiki/`. We use the cwd as the project root — same convention
@@ -193,6 +207,7 @@ pub fn run(args: SessionArgs, _wiki_root: Option<&Path>) -> Result<ExitCode> {
         SessionCmd::Forget(a) => run_forget(a, &project_root),
         SessionCmd::Distill(a) => run_distill(a, &project_root, None),
         SessionCmd::Show(a) => run_show(a, &project_root),
+        SessionCmd::AutoCapture(a) => run_auto_capture(a, &project_root),
     }
 }
 
@@ -427,6 +442,106 @@ fn run_distill_as_patch(
         "\nNOTE: every applied page is `reviewed: false`. Flip to `true` after human review;\n\
          `coral lint` blocks any commit that contains an unreviewed page."
     );
+    Ok(ExitCode::SUCCESS)
+}
+
+fn run_auto_capture(args: AutoCaptureArgs, project_root: &Path) -> Result<ExitCode> {
+    let home = match home_dir() {
+        Some(h) => h,
+        None => {
+            tracing::debug!("could not determine $HOME; skipping auto-capture");
+            return Ok(ExitCode::SUCCESS);
+        }
+    };
+
+    // Find the most recent Claude Code transcript for this project.
+    let transcript_path = match find_latest_for_cwd(&home, project_root) {
+        Ok(Some(p)) => p,
+        Ok(None) => {
+            tracing::debug!("no Claude Code transcript found for this project");
+            return Ok(ExitCode::SUCCESS);
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to find Claude Code transcript");
+            return Ok(ExitCode::SUCCESS);
+        }
+    };
+
+    // Check if it's recent enough by inspecting file mtime.
+    let metadata = match std::fs::metadata(&transcript_path) {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!(error = %e, path = %transcript_path.display(), "failed to stat transcript");
+            return Ok(ExitCode::SUCCESS);
+        }
+    };
+    let mtime = metadata.modified().unwrap_or(std::time::UNIX_EPOCH);
+    let age = mtime.elapsed().unwrap_or_default();
+    let max_age = std::time::Duration::from_secs(args.max_age_minutes * 60);
+    if age > max_age {
+        tracing::debug!(
+            age_minutes = age.as_secs() / 60,
+            max = args.max_age_minutes,
+            "transcript too old, skipping"
+        );
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    // Check if already captured by looking for an index entry whose
+    // source_path matches. We parse the transcript to get its session_id
+    // and check the index.
+    let sessions_dir = project_root.join(".coral").join("sessions");
+    let index_path = sessions_dir.join("index.json");
+    if index_path.exists() {
+        if let Ok(index) = coral_session::capture::read_index(&index_path) {
+            // Parse just enough of the transcript to get its session_id.
+            if let Ok(parsed) = parse_transcript(&transcript_path) {
+                if index
+                    .sessions
+                    .iter()
+                    .any(|e| e.session_id == parsed.session_id)
+                {
+                    tracing::debug!(
+                        session_id = %parsed.session_id,
+                        "transcript already captured"
+                    );
+                    return Ok(ExitCode::SUCCESS);
+                }
+            }
+        }
+    }
+
+    if args.dry_run {
+        eprintln!(
+            "would capture: {} (age: {}m)",
+            transcript_path.display(),
+            age.as_secs() / 60
+        );
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    // Capture it.
+    let opts = CaptureOptions {
+        source_path: transcript_path.clone(),
+        source: CaptureSource::ClaudeCode,
+        project_root: project_root.to_path_buf(),
+        scrub_secrets: true,
+    };
+    match capture_from_path(&opts) {
+        Ok(outcome) => {
+            eprintln!(
+                "auto-captured session {} ({} messages, {} redactions) from {}",
+                outcome.session_id,
+                outcome.message_count,
+                outcome.redaction_count,
+                transcript_path.display()
+            );
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "auto-capture failed");
+        }
+    }
+
     Ok(ExitCode::SUCCESS)
 }
 
