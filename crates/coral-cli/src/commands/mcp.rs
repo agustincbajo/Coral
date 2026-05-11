@@ -18,6 +18,7 @@ use coral_core::{search, walk};
 use coral_mcp::{
     McpHandler, PromptCatalog, ResourceProvider, ServerConfig, ToolCallResult, ToolCatalog,
     ToolDispatcher, Transport, WikiResourceProvider, server_card, transport::HttpSseTransport,
+    watcher::{WatcherConfig, start_watcher},
 };
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
@@ -92,6 +93,11 @@ pub struct ServeArgs {
     /// flow where you intentionally want the un-vetted draft visible.
     #[arg(long, default_value_t = false)]
     pub include_unreviewed: bool,
+
+    /// Watch the wiki directory for changes and push MCP notifications.
+    /// Enabled by default; use `--no-watch` to disable.
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    pub watch: bool,
 }
 
 #[derive(clap::ValueEnum, Clone, Debug)]
@@ -151,7 +157,7 @@ fn serve(args: ServeArgs) -> Result<ExitCode> {
     let resources: Arc<dyn ResourceProvider> = Arc::new(
         WikiResourceProvider::new(cwd.clone()).with_include_unreviewed(args.include_unreviewed),
     );
-    let tools: Arc<dyn ToolDispatcher> = Arc::new(CoralToolDispatcher::new(cwd));
+    let tools: Arc<dyn ToolDispatcher> = Arc::new(CoralToolDispatcher::new(cwd.clone()));
     // v0.20.2 audit-followup #38: surface BOTH `read_only` and
     // `allow_write_tools` to the server config. The handler uses
     // `allow_write_tools` as the single source of truth for both
@@ -167,6 +173,7 @@ fn serve(args: ServeArgs) -> Result<ExitCode> {
     };
     let bind_addr = args.bind;
     let port = args.port;
+    let watch = args.watch;
     let config = ServerConfig {
         transport,
         read_only,
@@ -174,7 +181,7 @@ fn serve(args: ServeArgs) -> Result<ExitCode> {
         port,
         bind_addr,
     };
-    let handler = McpHandler::new(config, resources, tools);
+    let handler = Arc::new(McpHandler::new(config, resources, tools));
     let transport_label = match args.transport {
         TransportArg::Stdio => "stdio",
         TransportArg::Http => "http",
@@ -183,6 +190,21 @@ fn serve(args: ServeArgs) -> Result<ExitCode> {
         "coral mcp serve — transport={}, read_only={}, allow_write_tools={}",
         transport_label, read_only, args.allow_write_tools
     );
+    // Optionally start the wiki file watcher. The `_watcher` handle
+    // must stay alive for the duration of the serve loop — dropping it
+    // signals the background thread to stop.
+    let _watcher = if watch {
+        eprintln!("  watcher: polling .wiki/ every 2s for change notifications");
+        Some(start_watcher(
+            WatcherConfig {
+                wiki_root: cwd.join(".wiki"),
+                ..Default::default()
+            },
+            Arc::clone(&handler),
+        ))
+    } else {
+        None
+    };
     match args.transport {
         TransportArg::Stdio => {
             handler
@@ -218,8 +240,7 @@ fn serve(args: ServeArgs) -> Result<ExitCode> {
             // banner needs to show the actual port (so smoke tests
             // and humans both know where to connect). The blocking
             // serve loop runs after the banner.
-            let handler = Arc::new(handler);
-            let transport = HttpSseTransport::bind(socket, handler)
+            let transport = HttpSseTransport::bind(socket, Arc::clone(&handler))
                 .map_err(|e| anyhow::anyhow!("MCP HTTP/SSE bind failed: {e}"))?;
             let resolved = transport
                 .local_addr()
