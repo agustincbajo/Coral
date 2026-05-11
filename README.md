@@ -82,7 +82,7 @@ Plus:
 - **5 export formats** for the wiki (`markdown-bundle`, `json`, `notion-json`, `jsonl`, `html`).
 - **5 export formats** for AI agent instructions (`agents-md`, `claude-md`, `cursor-rules`, `copilot`, `llms-txt`) — manifest-driven, NOT LLM-driven.
 - **3 user-reachable test kinds today** (`Healthcheck`, `UserDefined`, `MockTestRunner` for tests) **+ 6 reserved variants** (`LlmGenerated`, `Contract`, `PropertyBased`, `Recorded`, `Event`, `Trace`, `E2eBrowser`) on the `TestKind` enum for forward-compat. Only the first three are wired to a `TestRunner` impl; the reserved variants exist on the data type so the wire format stays stable when their runners ship.
-- **6 MCP resources + 5 read-only tools (3 more behind `--allow-write-tools`) + 3 prompts** exposed via JSON-RPC 2.0 stdio. MCP `mimeType` matches actual payload per resource (catalog-driven). `.coral/audit.log` rotates at 16 MiB. Notification methods (no `id`) silently no-op per JSON-RPC 2.0 §4.1.
+- **8 MCP resources + 7 read-only tools (3 more behind `--allow-write-tools`) + 3 prompts** exposed via JSON-RPC 2.0 stdio. MCP `mimeType` matches actual payload per resource (catalog-driven). `.coral/audit.log` rotates at 16 MiB. Notification methods (no `id`) silently no-op per JSON-RPC 2.0 §4.1.
 - **End-to-end concurrency safety**: atomic writes (`tmp + rename`), cross-process `flock(2)` locking, race-free parallel `coral ingest` AND `coral project sync`. `WikiLog::append_atomic` is race-free under contending writers (header+entry sequence cannot be reordered).
 - **Hardened against adversarial inputs**: slug allowlist (`is_safe_filename_slug` + `is_safe_repo_name`) at every interpolation site; `--` separator before user-controlled positionals in every `git` invocation (CVE-2017-1000117 / CVE-2024-32004 family); 32 MiB cap on every `read_to_string` of user-supplied content; secret scrubbing in every `RunnerError` Display.
 - **Backward-compat guarantee**: every v0.15 single-repo workflow keeps working — pinned by a dedicated `bc-regression` test job (6 fixtures) that runs on every PR.
@@ -154,6 +154,15 @@ cd Coral
 cargo build --release
 ./target/release/coral --version
 ```
+
+#### Windows — extra prereqs before `cargo build`
+
+The default `rustup` host on Windows is `stable-x86_64-pc-windows-gnu`, which depends on `dlltool.exe` from MinGW-w64 binutils — and `dlltool.exe` is **not** shipped with the rustup toolchain. A fresh `cargo build` will fail with `error: error calling dlltool 'dlltool.exe': program not found`. Pick one of:
+
+- **MSVC (recommended):** `rustup default stable-x86_64-pc-windows-msvc`, then install ["Build Tools for Visual Studio"](https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2022) and tick the **Desktop development with C++** workload.
+- **GNU:** install MinGW-w64 (e.g. `winget install MartinStorsjo.LLVM-MinGW`) so `dlltool.exe` lands on `PATH`.
+
+Common gotcha: Git Bash's `C:\Program Files\Git\usr\bin\link.exe` (a coreutils tool) shadows MSVC's `link.exe` on `PATH` and breaks the MSVC linker with `link: extra operand …rcgu.o`. Reorder `PATH` so the MSVC `link.exe` wins, or run the build from a "x64 Native Tools Command Prompt for VS" shell.
 
 ### Pre-built binaries
 
@@ -776,7 +785,7 @@ Edit `~/.claude/settings.json` (or `.claude/settings.json` in the project root):
 }
 ```
 
-After restart, Claude Code can read `coral://manifest`, `coral://lock`, `coral://wiki/<repo>/<slug>`, `coral://wiki/_index`, `coral://stats`, and call the read-only tools (`query`, `search`, `find_backlinks`, `affected_repos`, `verify`).
+After restart, Claude Code can read all 8 resources — `coral://manifest`, `coral://lock`, `coral://graph`, `coral://wiki/<repo>/<slug>`, `coral://wiki/_index`, `coral://stats`, `coral://test-report/latest`, `coral://contracts`, `coral://coverage` — and call the 7 read-only tools (`query`, `search`, `find_backlinks`, `affected_repos`, `verify`, `list_interfaces`, `contract_status`).
 
 To enable write tools (`run_test` plus 2 more, gated):
 

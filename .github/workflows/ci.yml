@@ -94,7 +94,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -103,8 +103,18 @@ jobs:
           key: smoke-${{ matrix.os }}
       - name: cargo build --release
         run: cargo build --release --bin coral
-      - name: smoke `coral --version`
+      - name: smoke `coral --version` (unix)
+        if: runner.os != 'Windows'
         run: ./target/release/coral --version
+      - name: smoke `coral --version` (windows)
+        if: runner.os == 'Windows'
+        run: ./target/release/coral.exe --version
+      # GitHub Actions ships `bash` on every runner (Git Bash on Windows),
+      # so `mktemp -d` + `test -f` work uniformly across the matrix as
+      # long as we use forward slashes in paths. Windows accepts forward
+      # slashes for `coral --wiki-root` (Rust normalises internally) and
+      # the `target/release/coral` binary name resolves to `coral.exe`
+      # via PATHEXT under Git Bash.
       - name: smoke `coral init` in tempdir
         shell: bash
         run: |
