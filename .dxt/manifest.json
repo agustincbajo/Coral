@@ -1,0 +1,42 @@
+{
+  "manifest_version": "0.3",
+  "name": "coral",
+  "display_name": "Coral",
+  "version": "0.30.0",
+  "description": "Karpathy-style LLM wiki + multi-repo manifest + MCP server for git repos. Lets Claude Desktop read your repo's wiki, manifest, lockfile, and test results via Model Context Protocol.",
+  "long_description": "Coral is a single Rust binary that scaffolds and maintains an LLM-curated wiki for one or many git repos, declares them in a coral.toml manifest, brings up dev environments via docker compose, runs functional tests, and exposes everything to MCP-speaking agents. This bundle ships the precompiled binary and registers it as a stdio MCP server with Claude Desktop. See https://github.com/agustincbajo/Coral for full docs.",
+  "author": {
+    "name": "Agustin Bajo",
+    "url": "https://github.com/agustincbajo"
+  },
+  "homepage": "https://github.com/agustincbajo/Coral",
+  "documentation": "https://github.com/agustincbajo/Coral#readme",
+  "support": "https://github.com/agustincbajo/Coral/issues",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agustincbajo/Coral"
+  },
+  "license": "MIT",
+  "keywords": [
+    "mcp",
+    "wiki",
+    "multi-repo",
+    "context-engineering",
+    "rust"
+  ],
+  "server": {
+    "type": "binary",
+    "entry_point": "server/coral",
+    "mcp_config": {
+      "command": "${__dirname}/server/coral",
+      "args": ["mcp", "serve", "--transport", "stdio"],
+      "env": {
+        "RUST_LOG": "coral_mcp=info"
+      }
+    }
+  },
+  "compatibility": {
+    "claude_desktop": ">=0.10.0",
+    "platforms": ["linux"]
+  }
+}

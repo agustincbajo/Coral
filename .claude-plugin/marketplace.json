@@ -1,0 +1,26 @@
+{
+  "name": "coral",
+  "owner": {
+    "name": "Agustin Bajo",
+    "url": "https://github.com/agustincbajo"
+  },
+  "description": "Coral marketplace — single plugin that bundles the Coral MCP server, three auto-invoked skills, and two slash commands for setting up and querying a Karpathy-style LLM wiki in any git repo.",
+  "plugins": [
+    {
+      "name": "coral",
+      "source": "./",
+      "description": "Coral wiki + multi-repo manifest + MCP server. Auto-invoked skills for bootstrap, query, and onboarding; slash commands for explicit control. Requires the `coral` binary on PATH (see https://github.com/agustincbajo/Coral#install).",
+      "version": "0.30.0",
+      "category": "developer-tools",
+      "keywords": [
+        "mcp",
+        "wiki",
+        "multi-repo",
+        "context-engineering",
+        "rust"
+      ],
+      "homepage": "https://github.com/agustincbajo/Coral",
+      "license": "MIT"
+    }
+  ]
+}

@@ -28,6 +28,19 @@ coral query "how does authentication work?"
 
 That's the single-repo flow. Multi-repo, environments, tests, MCP, and session-distill all build on the same `coral` binary — see the [Quickstart](#quickstart) section below.
 
+### Use it from Claude Code in one command
+
+If you already have [Claude Code](https://claude.com/code), you can skip the manual MCP wiring and let a plugin handle it. Inside Claude Code:
+
+```
+/plugin marketplace add agustincbajo/Coral
+/plugin install coral@coral
+```
+
+That's it. Ask Claude: *"set up Coral for this repo"* — the plugin's `coral-bootstrap` skill takes over, confirms before the paid `bootstrap --apply` step, and gets you to a working wiki. Conceptual questions ("how does auth work?", "I'm new here, where do I start?") auto-route through the bundled `coral-query` and `coral-onboard` skills, which read the wiki via MCP before grepping source.
+
+Prereq: you still need the `coral` binary on `$PATH` first — install it via the [one-line installer](#one-line-installer-linuxmacoswindows) or any of the methods under [Install](#install). The plugin assumes `coral` is reachable; if it isn't, `/plugin` → Errors will say so.
+
 ---
 
 ## Table of contents
@@ -130,6 +143,22 @@ Unit tests don't tell you if your microservices actually work together. End-to-e
 - **Optional:** `docker compose` v2.22+ (for `coral up` / `coral down` / `coral env *` and `coral verify`). `podman compose` and `docker-compose` v1 are also detected.
 - **Optional:** [Claude Code CLI](https://claude.com/code) (`claude` in `$PATH`) for LLM-backed subcommands.
 
+### One-line installer (Linux/macOS/Windows)
+
+Fetches the latest release tarball matching your platform/arch, verifies the SHA-256, drops `coral` on `$PATH`, and prints the two-line snippet to install the Claude Code plugin afterwards. Idempotent — re-running over the same release is a no-op.
+
+```bash
+# Linux / macOS  (writes to /usr/local/bin or ~/.local/bin)
+curl -fsSL https://raw.githubusercontent.com/agustincbajo/Coral/main/scripts/install.sh | bash
+```
+
+```powershell
+# Windows  (writes to %LOCALAPPDATA%\Coral\bin and prepends it to user PATH)
+iwr -useb https://raw.githubusercontent.com/agustincbajo/Coral/main/scripts/install.ps1 | iex
+```
+
+Pin a version with `bash -s -- --version v0.30.0` (Linux/macOS) or `... | iex; & coral --version` (Windows, after install). For a manual download with full control, see [Pre-built binaries](#pre-built-binaries) below.
+
 ### From a tagged release (recommended)
 
 ```bash
@@ -164,7 +193,7 @@ Common gotcha: Git Bash's `C:\Program Files\Git\usr\bin\link.exe` (a coreutils t
 
 ### Pre-built binaries
 
-Each tagged release ships pre-built binaries for x86_64 Linux, x86_64 macOS, and aarch64 macOS (Apple Silicon) on the [Releases page](https://github.com/agustincbajo/Coral/releases). Download `coral-vX.Y.Z-<target>.tar.gz`, verify the SHA-256, extract the `coral` binary, place it on your `$PATH`.
+Each tagged release ships pre-built binaries for x86_64 Linux, x86_64 macOS, aarch64 macOS (Apple Silicon), and x86_64 Windows (MSVC) on the [Releases page](https://github.com/agustincbajo/Coral/releases). Linux/macOS ship as `.tar.gz`, Windows as `.zip`. Each has a `.sha256` sidecar. Download, verify, extract `coral` (or `coral.exe`), place it on your `$PATH`. For one-liner automation see [One-line installer](#one-line-installer-linuxmacoswindows) above.
 
 ```bash
 # Replace VERSION and TARGET with the values for the release you want; e.g.
@@ -786,7 +815,16 @@ Coral speaks Model Context Protocol 2025-11-25. Below are copy-paste configs for
 
 ### Claude Code (`claude` CLI)
 
-Edit `~/.claude/settings.json` (or `.claude/settings.json` in the project root):
+**Preferred — install the Coral plugin.** Inside Claude Code:
+
+```
+/plugin marketplace add agustincbajo/Coral
+/plugin install coral@coral
+```
+
+The plugin (defined in [`.claude-plugin/`](.claude-plugin/) in this repo) bundles three auto-invoked skills (`coral-bootstrap`, `coral-query`, `coral-onboard`), two slash commands (`/coral:coral-bootstrap`, `/coral:coral-status`), and registers the Coral MCP server automatically. After install, ask Claude *"set up Coral for this repo"* or any conceptual question about your code — the skills route it through the wiki. Plugin docs: [`.claude-plugin/README.md`](.claude-plugin/README.md).
+
+**Manual fallback** — edit `~/.claude/settings.json` (or `.claude/settings.json` in the project root) yourself:
 
 ```json
 {
@@ -802,7 +840,7 @@ Edit `~/.claude/settings.json` (or `.claude/settings.json` in the project root):
 }
 ```
 
-After restart, Claude Code can read all 8 resources — `coral://manifest`, `coral://lock`, `coral://graph`, `coral://wiki/<repo>/<slug>`, `coral://wiki/_index`, `coral://stats`, `coral://test-report/latest`, `coral://contracts`, `coral://coverage` — and call the 7 read-only tools (`query`, `search`, `find_backlinks`, `affected_repos`, `verify`, `list_interfaces`, `contract_status`).
+Either way, Claude Code can then read all 8 resources — `coral://manifest`, `coral://lock`, `coral://graph`, `coral://wiki/<repo>/<slug>`, `coral://wiki/_index`, `coral://stats`, `coral://test-report/latest`, `coral://contracts`, `coral://coverage` — and call the 7 read-only tools (`query`, `search`, `find_backlinks`, `affected_repos`, `verify`, `list_interfaces`, `contract_status`).
 
 To enable write tools (`run_test` plus 2 more, gated):
 
