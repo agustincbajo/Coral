@@ -130,6 +130,9 @@ enum Cmd {
     /// `[[chaos_scenarios]]`. Requires `[environments.<env>.chaos]`
     /// in `coral.toml` and `coral up --env <name>` first.
     Chaos(commands::chaos::ChaosArgs),
+    /// Generate CI workflow templates. Currently supports GitHub Actions.
+    /// Usage: `coral ci generate [--stdout] [--output PATH]`
+    Ci(commands::ci::CiArgs),
     /// **v0.23.1**: scheduled TestCase loops against a long-lived
     /// environment. `up` runs a foreground monitor (Ctrl-C exits
     /// cleanly), `list` enumerates declared monitors with best-effort
@@ -225,6 +228,7 @@ fn main() -> ExitCode {
             SkillCmd::Publish => commands::skill::publish(),
         },
         Cmd::Chaos(args) => commands::chaos::run(args, cli.wiki_root.as_deref()),
+        Cmd::Ci(args) => commands::ci::run(args),
         Cmd::Monitor(args) => commands::monitor::run(args, cli.wiki_root.as_deref()),
         Cmd::Wiki(args) => commands::wiki::run(args, cli.wiki_root.as_deref()),
         Cmd::TestLockIncr { path } => run_test_lock_incr(&path),
