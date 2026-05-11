@@ -23,6 +23,7 @@ pub mod search_index;
 pub mod slug;
 pub mod storage;
 pub mod symbols;
+pub mod vocab;
 pub mod walk;
 pub mod wikilinks;
 
