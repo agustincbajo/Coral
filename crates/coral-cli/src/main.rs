@@ -150,6 +150,16 @@ enum Cmd {
     /// pages and emit structured notifications. Daemon command for
     /// real-time interface contract drift detection.
     Interface(commands::interface::InterfaceArgs),
+    /// **v0.25 M3.6**: Draft migration PRs for consumer repos when a
+    /// breaking change is introduced. Writes draft PR specs to
+    /// `.coral/migrations/<timestamp>/` (opt-in, does not create
+    /// actual GitHub PRs in this version).
+    #[command(name = "migrate-consumers")]
+    MigrateConsumers(commands::migrate::MigrateArgs),
+    /// **v0.25 M3.6**: Wiki-driven scaffolding. Reads an existing
+    /// wiki page's structure and generates a new page with the same
+    /// headings but placeholder content.
+    Scaffold(commands::scaffold::ScaffoldArgs),
     /// **Hidden** test-only helper: acquires `with_exclusive_lock(path)`,
     /// reads the file as a u64 counter, increments by 1, writes back.
     /// Used by `tests/cross_process_lock.rs` to verify the v0.15
@@ -236,6 +246,8 @@ fn main() -> ExitCode {
         Cmd::Monitor(args) => commands::monitor::run(args, cli.wiki_root.as_deref()),
         Cmd::Wiki(args) => commands::wiki::run(args, cli.wiki_root.as_deref()),
         Cmd::Interface(args) => commands::interface::run(args, cli.wiki_root.as_deref()),
+        Cmd::MigrateConsumers(args) => commands::migrate::run(args, cli.wiki_root.as_deref()),
+        Cmd::Scaffold(args) => commands::scaffold::run(args, cli.wiki_root.as_deref()),
         Cmd::TestLockIncr { path } => run_test_lock_incr(&path),
     };
 
