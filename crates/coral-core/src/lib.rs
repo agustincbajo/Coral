@@ -25,6 +25,9 @@ pub mod symbols;
 pub mod walk;
 pub mod wikilinks;
 
+#[cfg(feature = "pgvector")]
+pub mod pgvector;
+
 /// Returns the crate version (CARGO_PKG_VERSION).
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")

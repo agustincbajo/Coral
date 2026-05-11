@@ -8,6 +8,10 @@ authors.workspace = true
 repository.workspace = true
 description = "Coral core types: frontmatter, wikilinks, pages, index, log."
 
+[features]
+default = []
+pgvector = []
+
 [dependencies]
 serde = { workspace = true }
 serde_yaml_ng = { workspace = true }
