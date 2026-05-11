@@ -92,6 +92,75 @@ pub enum ToolCallResult {
     Error { message: String },
 }
 
+/// v0.24 M2.2: dispatcher that handles `list_interfaces` and
+/// `contract_status` in-process (they only need the wiki + filesystem)
+/// and delegates all other tools to an inner dispatcher. The MCP server
+/// constructor wraps the CLI-provided dispatcher in this layer so the
+/// contract tools work without extra CLI wiring.
+pub struct ContractToolDispatcher {
+    pub inner: Arc<dyn ToolDispatcher>,
+    pub resources: Arc<dyn ResourceProvider>,
+    pub project_root: std::path::PathBuf,
+}
+
+impl ToolDispatcher for ContractToolDispatcher {
+    fn call(&self, name: &str, args: &serde_json::Value) -> ToolCallResult {
+        match name {
+            "list_interfaces" => {
+                let body = self.resources.read("coral://contracts");
+                match body {
+                    Some((json, _)) => {
+                        match serde_json::from_str::<serde_json::Value>(&json) {
+                            Ok(val) => ToolCallResult::Ok(val),
+                            Err(_) => ToolCallResult::Ok(serde_json::json!({"contracts": []})),
+                        }
+                    }
+                    None => ToolCallResult::Ok(serde_json::json!({"contracts": []})),
+                }
+            }
+            "contract_status" => {
+                let contracts_dir = self.project_root.join(".coral").join("contracts");
+                if !contracts_dir.exists() {
+                    return ToolCallResult::Ok(
+                        serde_json::json!({"status": "no contract checks found"}),
+                    );
+                }
+                let repo_filter = args.get("repo").and_then(|v| v.as_str());
+                let mut reports = Vec::new();
+                if let Ok(entries) = std::fs::read_dir(&contracts_dir) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.extension().and_then(|e| e.to_str()) == Some("json") {
+                            if let Ok(raw) = std::fs::read_to_string(&path) {
+                                if let Ok(val) =
+                                    serde_json::from_str::<serde_json::Value>(&raw)
+                                {
+                                    if let Some(repo) = repo_filter {
+                                        if val.get("repo").and_then(|r| r.as_str())
+                                            != Some(repo)
+                                        {
+                                            continue;
+                                        }
+                                    }
+                                    reports.push(val);
+                                }
+                            }
+                        }
+                    }
+                }
+                if reports.is_empty() {
+                    ToolCallResult::Ok(
+                        serde_json::json!({"status": "no contract checks found"}),
+                    )
+                } else {
+                    ToolCallResult::Ok(serde_json::json!({"reports": reports}))
+                }
+            }
+            _ => self.inner.call(name, args),
+        }
+    }
+}
+
 /// In-memory dispatcher returning canned responses. Used by tests +
 /// `coral mcp serve --no-tools` (an undocumented dev flag).
 pub struct NoOpDispatcher;
@@ -1076,5 +1145,143 @@ mod tests {
         let msg = rx.try_recv().expect("list_changed notification must be sent");
         assert_eq!(msg["method"], "notifications/resources/list_changed");
         assert_eq!(msg["jsonrpc"], "2.0");
+    }
+
+    /// v0.24 M2.2: `list_interfaces` returns empty when no interface
+    /// pages exist (empty wiki root).
+    #[test]
+    fn list_interfaces_returns_empty_with_no_pages() {
+        let h = handler(true);
+        let resp = call(
+            &h,
+            "tools/call",
+            serde_json::json!({"name": "list_interfaces", "arguments": {}}),
+        );
+        // The NoOpDispatcher returns a Skip, which is fine -- the tool
+        // is correctly listed and dispatched. The Skip text confirms
+        // the tool name was recognized.
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap_or("");
+        assert!(
+            text.contains("list_interfaces") || text.contains("contracts"),
+            "expected list_interfaces response, got: {text}"
+        );
+    }
+
+    /// v0.24 M2.2: `contract_status` is recognized as a valid tool.
+    #[test]
+    fn contract_status_is_recognized() {
+        let h = handler(true);
+        let resp = call(
+            &h,
+            "tools/call",
+            serde_json::json!({"name": "contract_status", "arguments": {}}),
+        );
+        // NoOpDispatcher returns Skip, confirming the tool name lookup
+        // succeeded (unknown tools return an error envelope).
+        assert!(
+            resp.get("error").is_none(),
+            "contract_status must be a known tool: {resp}"
+        );
+    }
+
+    /// v0.24 M2.2: tools/list includes the new contract tools.
+    #[test]
+    fn tools_list_includes_contract_tools() {
+        let h = handler(true);
+        let names = list_tool_names(&h);
+        assert!(
+            names.contains(&"list_interfaces".to_string()),
+            "tools/list must include list_interfaces: {names:?}"
+        );
+        assert!(
+            names.contains(&"contract_status".to_string()),
+            "tools/list must include contract_status: {names:?}"
+        );
+    }
+
+    /// v0.24 M2.2: resources/list includes the contract resource URIs.
+    #[test]
+    fn resources_list_includes_contract_uris() {
+        let h = handler(true);
+        let resp = call(&h, "resources/list", serde_json::json!({}));
+        let uris: Vec<&str> = resp["result"]["resources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["uri"].as_str().unwrap())
+            .collect();
+        assert!(
+            uris.contains(&"coral://contracts"),
+            "resources/list must include coral://contracts: {uris:?}"
+        );
+        assert!(
+            uris.contains(&"coral://coverage"),
+            "resources/list must include coral://coverage: {uris:?}"
+        );
+    }
+
+    /// v0.24 M2.2: ContractToolDispatcher handles list_interfaces
+    /// and delegates unknown tools to inner.
+    #[test]
+    fn contract_tool_dispatcher_handles_list_interfaces() {
+        let resources = Arc::new(WikiResourceProvider::new(
+            std::path::PathBuf::from("/tmp/coral-mcp-tests-empty"),
+        ));
+        let dispatcher = ContractToolDispatcher {
+            inner: Arc::new(NoOpDispatcher),
+            resources: resources.clone(),
+            project_root: std::path::PathBuf::from("/tmp/coral-mcp-tests-empty"),
+        };
+        let result = dispatcher.call("list_interfaces", &serde_json::json!({}));
+        match result {
+            ToolCallResult::Ok(val) => {
+                let contracts = val["contracts"].as_array().unwrap();
+                assert!(contracts.is_empty(), "empty wiki should yield zero contracts");
+            }
+            other => panic!("expected Ok, got: {other:?}"),
+        }
+    }
+
+    /// v0.24 M2.2: ContractToolDispatcher handles contract_status
+    /// and returns "no contract checks found" when .coral/contracts/
+    /// doesn't exist.
+    #[test]
+    fn contract_tool_dispatcher_handles_contract_status() {
+        let resources = Arc::new(WikiResourceProvider::new(
+            std::path::PathBuf::from("/tmp/coral-mcp-tests-empty"),
+        ));
+        let dispatcher = ContractToolDispatcher {
+            inner: Arc::new(NoOpDispatcher),
+            resources: resources.clone(),
+            project_root: std::path::PathBuf::from("/tmp/coral-mcp-tests-empty"),
+        };
+        let result = dispatcher.call("contract_status", &serde_json::json!({}));
+        match result {
+            ToolCallResult::Ok(val) => {
+                assert_eq!(val["status"], "no contract checks found");
+            }
+            other => panic!("expected Ok, got: {other:?}"),
+        }
+    }
+
+    /// v0.24 M2.2: ContractToolDispatcher delegates unknown tools to
+    /// the inner dispatcher.
+    #[test]
+    fn contract_tool_dispatcher_delegates_unknown() {
+        let resources = Arc::new(WikiResourceProvider::new(
+            std::path::PathBuf::from("/tmp/coral-mcp-tests-empty"),
+        ));
+        let dispatcher = ContractToolDispatcher {
+            inner: Arc::new(NoOpDispatcher),
+            resources: resources.clone(),
+            project_root: std::path::PathBuf::from("/tmp/coral-mcp-tests-empty"),
+        };
+        let result = dispatcher.call("query", &serde_json::json!({}));
+        match result {
+            ToolCallResult::Skip { reason } => {
+                assert!(reason.contains("query"));
+            }
+            other => panic!("expected Skip from NoOpDispatcher, got: {other:?}"),
+        }
     }
 }

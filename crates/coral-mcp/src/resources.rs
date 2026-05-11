@@ -13,6 +13,7 @@
 
 use std::sync::OnceLock;
 
+use coral_core::frontmatter::PageType;
 use coral_core::page::Page;
 use serde::{Deserialize, Serialize};
 
@@ -133,6 +134,18 @@ impl WikiResourceProvider {
                 uri: "coral://test-report/latest".into(),
                 name: "Last test report".into(),
                 description: "Most recent `coral test` run (JUnit + JSON)".into(),
+                mime_type: "application/json".into(),
+            },
+            Resource {
+                uri: "coral://contracts".into(),
+                name: "Interface contracts".into(),
+                description: "All Interface-typed wiki pages (API contracts)".into(),
+                mime_type: "application/json".into(),
+            },
+            Resource {
+                uri: "coral://coverage".into(),
+                name: "Test coverage summary".into(),
+                description: "Test coverage data from `.coral/` if available".into(),
                 mime_type: "application/json".into(),
             },
         ]
@@ -267,6 +280,63 @@ impl WikiResourceProvider {
         Some(serde_json::json!({ "repo": repo, "pages": entries }).to_string())
     }
 
+    /// Render `coral://contracts` -- list all Interface-typed pages.
+    fn render_contracts(&self) -> Option<String> {
+        let pages = self.read_pages();
+        let entries: Vec<serde_json::Value> = pages
+            .iter()
+            .filter(|p| p.frontmatter.page_type == PageType::Interface)
+            .map(|p| {
+                serde_json::json!({
+                    "slug": p.frontmatter.slug,
+                    "confidence": p.frontmatter.confidence.as_f64(),
+                    "status": p.frontmatter.status,
+                    "sources": p.frontmatter.sources,
+                })
+            })
+            .collect();
+        Some(serde_json::json!({ "contracts": entries }).to_string())
+    }
+
+    /// Render `coral://contracts/<slug>` -- full body of a specific
+    /// Interface-typed page. Returns `None` if the slug doesn't exist
+    /// or is not an Interface page.
+    fn render_contract_page(&self, slug: &str) -> Option<String> {
+        if !slug_is_safe_segments(slug) {
+            return None;
+        }
+        let pages = self.read_pages();
+        let page = pages.iter().find(|p| {
+            p.frontmatter.slug == slug && p.frontmatter.page_type == PageType::Interface
+        })?;
+        let json = serde_json::json!({
+            "slug": page.frontmatter.slug,
+            "type": page.frontmatter.page_type,
+            "status": page.frontmatter.status,
+            "confidence": page.frontmatter.confidence.as_f64(),
+            "sources": page.frontmatter.sources,
+            "body": page.body,
+        });
+        Some(json.to_string())
+    }
+
+    /// Render `coral://coverage` -- test coverage summary from `.coral/`.
+    fn render_coverage(&self) -> Option<String> {
+        let coral_dir = self.project_root.join(".coral");
+        if !coral_dir.exists() {
+            return Some(
+                serde_json::json!({"status": "no .coral/ directory"}).to_string(),
+            );
+        }
+        let coverage_path = coral_dir.join("coverage.json");
+        if coverage_path.exists() {
+            if let Ok(raw) = std::fs::read_to_string(&coverage_path) {
+                return Some(raw);
+            }
+        }
+        Some(serde_json::json!({"status": "no coverage data found"}).to_string())
+    }
+
     fn render_page(&self, slug: &str) -> Option<String> {
         // v0.19.5 audit C4: validate the slug before any path
         // interpolation. The slug arrives over MCP from an untrusted
@@ -328,6 +398,15 @@ impl ResourceProvider for WikiResourceProvider {
                 description: format!("{:?} page", p.frontmatter.page_type),
                 mime_type: "application/json".into(),
             });
+            // v0.24 M2.2: per-contract resources for Interface pages.
+            if p.frontmatter.page_type == PageType::Interface {
+                out.push(Resource {
+                    uri: format!("coral://contracts/{}", p.frontmatter.slug),
+                    name: format!("contract:{}", p.frontmatter.slug),
+                    description: "Interface contract page".into(),
+                    mime_type: "application/json".into(),
+                });
+            }
         }
         out
     }
@@ -385,6 +464,15 @@ impl ResourceProvider for WikiResourceProvider {
                         serde_json::json!({"status": "no test report yet"}).to_string()
                     })
             }
+            "coral://contracts" => self.render_contracts()?,
+            "coral://coverage" => self.render_coverage()?,
+            other if other.starts_with("coral://contracts/") => {
+                let slug = other.strip_prefix("coral://contracts/")?;
+                return Some((
+                    self.render_contract_page(slug)?,
+                    "application/json".to_string(),
+                ));
+            }
             other => {
                 // `coral://wiki/<rest>` — rest may be `_index`, a
                 // bare slug, or `<repo>/<slug>` etc.
@@ -418,7 +506,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn static_catalog_includes_six_canonical_uris() {
+    fn static_catalog_includes_canonical_uris() {
         let cat = WikiResourceProvider::static_catalog();
         let uris: Vec<&str> = cat.iter().map(|r| r.uri.as_str()).collect();
         assert!(uris.contains(&"coral://manifest"));
@@ -427,6 +515,9 @@ mod tests {
         assert!(uris.contains(&"coral://wiki/_index"));
         assert!(uris.contains(&"coral://stats"));
         assert!(uris.contains(&"coral://test-report/latest"));
+        assert!(uris.contains(&"coral://contracts"));
+        assert!(uris.contains(&"coral://coverage"));
+        assert_eq!(cat.len(), 8);
     }
 
     #[test]

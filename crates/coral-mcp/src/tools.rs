@@ -19,14 +19,16 @@ pub struct Tool {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolKind {
-    Query,         // LLM-augmented (delegates to coral query)
-    Search,        // TF-IDF (delegates to coral search)
-    FindBacklinks, // pure
-    AffectedRepos, // delegates to filters --since
-    Verify,        // delegates to coral verify
-    RunTest,       // delegates to coral test (write tool)
-    Up,            // delegates to coral up (write tool)
-    Down,          // delegates to coral down (write tool)
+    Query,          // LLM-augmented (delegates to coral query)
+    Search,         // TF-IDF (delegates to coral search)
+    FindBacklinks,  // pure
+    AffectedRepos,  // delegates to filters --since
+    Verify,         // delegates to coral verify
+    ListInterfaces, // list Interface-typed pages (v0.24 M2.2)
+    ContractStatus, // latest contract drift check results (v0.24 M2.2)
+    RunTest,        // delegates to coral test (write tool)
+    Up,             // delegates to coral up (write tool)
+    Down,           // delegates to coral down (write tool)
 }
 
 pub struct ToolCatalog;
@@ -67,6 +69,20 @@ impl ToolCatalog {
                 description: "Run liveness healthchecks against the running environment.".into(),
                 kind: ToolKind::Verify,
                 input_schema_json: r#"{"type":"object","properties":{"env":{"type":"string"}}}"#.into(),
+                read_only: true,
+            },
+            Tool {
+                name: "list_interfaces".into(),
+                description: "List all interface/contract pages in the wiki.".into(),
+                kind: ToolKind::ListInterfaces,
+                input_schema_json: r#"{"type":"object","properties":{}}"#.into(),
+                read_only: true,
+            },
+            Tool {
+                name: "contract_status".into(),
+                description: "Return the latest contract drift check results.".into(),
+                kind: ToolKind::ContractStatus,
+                input_schema_json: r#"{"type":"object","properties":{"repo":{"type":"string"}}}"#.into(),
                 read_only: true,
             },
         ]
@@ -143,5 +159,30 @@ mod tests {
                 t.input_schema_json
             );
         }
+    }
+
+    /// v0.24 M2.2: `ListInterfaces` serializes to `list_interfaces`.
+    #[test]
+    fn list_interfaces_kind_serializes_correctly() {
+        let json = serde_json::to_string(&ToolKind::ListInterfaces).unwrap();
+        assert_eq!(json, r#""list_interfaces""#);
+    }
+
+    /// v0.24 M2.2: `ContractStatus` serializes to `contract_status`.
+    #[test]
+    fn contract_status_kind_serializes_correctly() {
+        let json = serde_json::to_string(&ToolKind::ContractStatus).unwrap();
+        assert_eq!(json, r#""contract_status""#);
+    }
+
+    /// v0.24 M2.2: read-only catalog includes the two contract tools.
+    #[test]
+    fn read_only_includes_contract_tools() {
+        let names: Vec<String> = ToolCatalog::read_only()
+            .into_iter()
+            .map(|t| t.name)
+            .collect();
+        assert!(names.contains(&"list_interfaces".to_string()));
+        assert!(names.contains(&"contract_status".to_string()));
     }
 }

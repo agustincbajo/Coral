@@ -43,7 +43,10 @@ pub mod watcher;
 pub use card::server_card;
 pub use prompts::{PromptCatalog, PromptDescriptor};
 pub use resources::{Resource, ResourceProvider, WikiResourceProvider};
-pub use server::{McpHandler, NoOpDispatcher, PROTOCOL_VERSION, ToolCallResult, ToolDispatcher};
+pub use server::{
+    ContractToolDispatcher, McpHandler, NoOpDispatcher, PROTOCOL_VERSION, ToolCallResult,
+    ToolDispatcher,
+};
 pub use tools::{Tool, ToolCatalog, ToolKind};
 
 use serde::{Deserialize, Serialize};
