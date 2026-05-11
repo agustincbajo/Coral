@@ -21,6 +21,7 @@ pub mod history;
 pub mod hurl_runner;
 pub mod mock;
 pub mod orchestrator;
+pub mod perf;
 pub mod probe;
 pub mod property_runner;
 pub mod recorded_runner;
@@ -43,6 +44,11 @@ pub use discover::{DiscoveredCase, discover_openapi_in_project};
 pub use history::{
     FlakeEntry, TestRecord, append_records, compute_flakes, read_history,
     render_json as render_flakes_json, render_markdown as render_flakes_markdown,
+};
+pub use perf::{
+    LatencyStats, PerfBaseline, PerfRegression, PerfReport, detect_regressions, load_baseline,
+    render_json as render_perf_json, render_markdown as render_perf_markdown, save_baseline,
+    update_baseline,
 };
 pub use emit_k6::{EmitOutput, SkipNote, SkipReason, emit_k6};
 pub use error::{TestError, TestResult};

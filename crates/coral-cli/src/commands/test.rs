@@ -59,6 +59,10 @@ pub enum TestSubcommand {
     /// `.coral/test-history.jsonl`. Shows tests that pass/fail
     /// inconsistently and flags those above the quarantine threshold.
     Flakes(FlakesArgs),
+    /// Compare test latencies against a stored baseline and report
+    /// p95 regressions. Reads timing data from `.coral/test-history.jsonl`
+    /// and baseline from `.coral/perf-baseline.json`.
+    Perf(PerfArgs),
 }
 
 #[derive(Args, Debug)]
@@ -109,6 +113,30 @@ pub struct FlakesArgs {
 
 #[derive(clap::ValueEnum, Clone, Debug)]
 pub enum FlakesFormat {
+    Markdown,
+    Json,
+}
+
+#[derive(Args, Debug)]
+pub struct PerfArgs {
+    /// Output format for the performance report.
+    #[arg(long, default_value = "markdown")]
+    pub format: PerfFormat,
+
+    /// Regression threshold as a percentage of the baseline p95.
+    /// A test whose current p95 exceeds the baseline by more than
+    /// this value is flagged as a regression (default: 20%).
+    #[arg(long, default_value_t = 20.0)]
+    pub threshold: f64,
+
+    /// Update the stored baseline with timings from the most recent
+    /// test history. Useful after intentionally landing a slower path.
+    #[arg(long)]
+    pub update_baseline: bool,
+}
+
+#[derive(clap::ValueEnum, Clone, Debug)]
+pub enum PerfFormat {
     Markdown,
     Json,
 }
@@ -206,6 +234,7 @@ pub fn run(args: TestArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
         Some(TestSubcommand::Record(rec)) => run_record(rec, wiki_root),
         Some(TestSubcommand::Coverage(cov)) => run_coverage(cov, wiki_root),
         Some(TestSubcommand::Flakes(flk)) => run_flakes(flk, wiki_root),
+        Some(TestSubcommand::Perf(perf)) => run_perf(perf, wiki_root),
         None => run_inner(args.run, wiki_root),
     }
 }
@@ -544,6 +573,68 @@ fn run_flakes(args: FlakesArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
     }
 
     Ok(ExitCode::SUCCESS)
+}
+
+// ----------------------------------------------------------------------
+// v0.24.2: `coral test perf` — latency baseline + regression detection (M2.8).
+// ----------------------------------------------------------------------
+
+fn run_perf(args: PerfArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
+    let project = resolve_project(wiki_root)?;
+    let records = coral_test::read_history(&project.root);
+
+    if records.is_empty() {
+        println!("No test history found. Run `coral test` to start building history.");
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    let mut baseline = coral_test::load_baseline(&project.root);
+
+    if args.update_baseline {
+        // Fold all history records into the baseline.
+        for rec in &records {
+            coral_test::update_baseline(&mut baseline, &rec.case_id, rec.duration_ms);
+        }
+        coral_test::save_baseline(&project.root, &baseline)
+            .context("saving perf baseline")?;
+        eprintln!(
+            "Baseline updated with {} records ({} cases)",
+            records.len(),
+            baseline.cases.len()
+        );
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    // Build "current" timings from the most recent run per case.
+    // Group by case_id and take the last recorded duration.
+    let mut latest: BTreeMap<String, u64> = BTreeMap::new();
+    for rec in &records {
+        latest.insert(rec.case_id.clone(), rec.duration_ms);
+    }
+
+    if baseline.cases.is_empty() {
+        println!(
+            "No baseline found. Run `coral test perf --update-baseline` to establish one."
+        );
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    let report = coral_test::detect_regressions(&baseline, &latest, args.threshold);
+
+    match args.format {
+        PerfFormat::Markdown => print!("{}", coral_test::render_perf_markdown(&report)),
+        PerfFormat::Json => println!(
+            "{}",
+            serde_json::to_string_pretty(&coral_test::render_perf_json(&report))
+                .context("serializing perf report")?
+        ),
+    }
+
+    if report.regressions.is_empty() {
+        Ok(ExitCode::SUCCESS)
+    } else {
+        Ok(ExitCode::FAILURE)
+    }
 }
 
 // ----------------------------------------------------------------------
