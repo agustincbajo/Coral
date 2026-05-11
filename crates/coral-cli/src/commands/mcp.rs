@@ -44,6 +44,13 @@ pub enum McpCmd {
     /// to learn what this Coral build advertises (capabilities, vendor,
     /// build provenance) before deciding to connect.
     Card,
+    /// Preview what MCP clients would see (resources, tools, prompts)
+    /// without starting the server. Useful for verifying the MCP surface.
+    ///
+    /// v0.24.3 M1.14: standalone introspection — no transport, no
+    /// watcher, no IO loop. Helps devs confirm the advertised surface
+    /// matches expectations before wiring up an IDE.
+    Preview(PreviewArgs),
 }
 
 #[derive(Args, Debug)]
@@ -111,6 +118,23 @@ pub enum TransportArg {
     Http,
 }
 
+#[derive(Args, Debug)]
+pub struct PreviewArgs {
+    /// Output format: human (default) or json.
+    #[arg(long, default_value = "human")]
+    pub format: PreviewFormat,
+
+    /// Include unreviewed distilled pages in the resource list.
+    #[arg(long, default_value_t = false)]
+    pub include_unreviewed: bool,
+}
+
+#[derive(clap::ValueEnum, Clone, Debug)]
+pub enum PreviewFormat {
+    Human,
+    Json,
+}
+
 /// Default port for the HTTP transport when `--port` is omitted.
 /// Picked to dodge the busy 3000-3100 React/Next and 8000-8100 Python
 /// dev-server clusters most projects already run.
@@ -120,6 +144,7 @@ pub fn run(args: McpArgs, _wiki_root: Option<&Path>) -> Result<ExitCode> {
     match args.command {
         McpCmd::Serve(a) => serve(a),
         McpCmd::Card => card(),
+        McpCmd::Preview(a) => preview(a),
     }
 }
 
@@ -146,6 +171,74 @@ fn card() -> Result<ExitCode> {
     // body uses the same pretty serialization, so stdout matches it
     // byte-for-byte plus exactly one trailing `\n`.
     println!("{}", serde_json::to_string_pretty(&card)?);
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `coral mcp preview` — print what MCP clients would see without
+/// starting the server.
+///
+/// v0.24.3 M1.14: standalone introspection — no transport, no watcher,
+/// no IO loop. Constructs the same providers `coral mcp serve` uses,
+/// queries them, and dumps the result to stdout in either human-
+/// readable or JSON format. Useful for debugging the MCP surface or
+/// for CI checks that assert the advertised catalog hasn't drifted.
+fn preview(args: PreviewArgs) -> Result<ExitCode> {
+    let cwd = std::env::current_dir()?;
+    let resources_provider =
+        WikiResourceProvider::new(cwd).with_include_unreviewed(args.include_unreviewed);
+
+    let resources = resources_provider.list();
+    let tools = ToolCatalog::all();
+    let prompts = PromptCatalog::list();
+
+    match args.format {
+        PreviewFormat::Human => {
+            println!("=== Coral MCP Preview ===\n");
+
+            println!("Resources ({}):", resources.len());
+            for r in &resources {
+                println!("  - {} -- {}", r.uri, r.name);
+            }
+
+            println!("\nTools ({}):", tools.len());
+            for t in &tools {
+                println!("  - {} -- {}", t.name, t.description);
+            }
+
+            println!("\nPrompts ({}):", prompts.len());
+            for p in &prompts {
+                println!("  - {} -- {}", p.name, p.description);
+            }
+
+            println!("\n---");
+            println!("Transport: stdio (default) | http (--transport http --port 3737)");
+            println!("Start: coral mcp serve");
+        }
+        PreviewFormat::Json => {
+            let json = serde_json::json!({
+                "resources": resources.iter().map(|r| serde_json::json!({
+                    "uri": r.uri,
+                    "name": r.name,
+                    "mimeType": r.mime_type,
+                })).collect::<Vec<_>>(),
+                "tools": tools.iter().map(|t| serde_json::json!({
+                    "name": t.name,
+                    "description": t.description,
+                    "read_only": t.read_only,
+                })).collect::<Vec<_>>(),
+                "prompts": prompts.iter().map(|p| serde_json::json!({
+                    "name": p.name,
+                    "description": p.description,
+                    "arguments": p.arguments.iter().map(|a| serde_json::json!({
+                        "name": a.name,
+                        "required": a.required,
+                    })).collect::<Vec<_>>(),
+                })).collect::<Vec<_>>(),
+            });
+            println!("{}", serde_json::to_string_pretty(&json)?);
+        }
+    }
+
     Ok(ExitCode::SUCCESS)
 }
 
@@ -579,5 +672,29 @@ mod tests {
             new_active.contains("\"tool\":\"search\""),
             "post-rotation entry should land in the active file: {new_active}"
         );
+    }
+
+    /// v0.24.3 M1.14: preview constructs providers without panicking
+    /// when no wiki exists (empty project / temp dir).
+    #[test]
+    fn preview_does_not_panic_on_empty_project() {
+        let dir = TempDir::new().unwrap();
+        // Set CWD to a temp dir with no wiki — preview must still work.
+        let prev_cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+
+        let result = preview(PreviewArgs {
+            format: PreviewFormat::Human,
+            include_unreviewed: false,
+        });
+        assert!(result.is_ok());
+
+        let result = preview(PreviewArgs {
+            format: PreviewFormat::Json,
+            include_unreviewed: false,
+        });
+        assert!(result.is_ok());
+
+        std::env::set_current_dir(prev_cwd).unwrap();
     }
 }
