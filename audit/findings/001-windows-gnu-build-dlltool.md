@@ -3,7 +3,37 @@ title: "build: stable-x86_64-pc-windows-gnu fails without `dlltool.exe` (no docs
 severity: Low
 labels: docs, build, windows
 confidence: 5
+status: PARTIALLY RESOLVED on branch audit/fixes-v0.30.0
 ---
+
+## Resolution status (2026-05-11)
+
+- **Docs**: README "Install / Build from source" now has a Windows
+  subsection with both toolchain paths (MSVC + VS Build Tools, OR MinGW
+  via MSYS2) and the Git Bash `link.exe` PATH-shadow gotcha.
+- **CI**: `windows-latest` added to the `cross-platform-smoke` matrix
+  in `.github/workflows/ci.yml`.
+- **Local repro on the audit machine**: resolved by adding
+  `C:\msys64\mingw64\bin` to the User PATH (MSYS2 was already
+  installed; the dlltool was just not on PATH). After that, the build
+  exposed two small portability nits in pre-existing code that the
+  audit branch also fixes (`#[cfg(unix)]` gating on
+  `tiny_http::ListenAddr::Unix` and on the `forever_yes_script`-using
+  contract tests). With those gates, all 29 new audit-fix regression
+  tests pass on stable-x86_64-pc-windows-gnu.
+
+## Open follow-up (out of scope of this branch)
+
+~30 pre-existing tests still fail on Windows because they invoke
+`/bin/echo`, `.sh` scripts, `pdftotext`, hard-coded `/usr/...` paths,
+or assume `Instant::now()` > 60 s of uptime. They were never reachable
+on Ubuntu+macOS CI. Track as a separate "Windows test portability"
+issue rather than expanding the audit branch.
+
+---
+
+# Original report
+
 
 ## Summary
 
