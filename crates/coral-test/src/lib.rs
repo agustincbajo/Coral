@@ -12,6 +12,7 @@
 //! tests.
 
 pub mod contract_check;
+pub mod coverage;
 pub mod discover;
 pub mod emit_k6;
 pub mod error;
@@ -32,6 +33,10 @@ pub use contract_check::{
     ContractReport, Finding as ContractFinding, FindingKind as ContractFindingKind,
     Severity as ContractSeverity, check_project as check_contracts,
     render_report_json as render_contract_json, render_report_markdown as render_contract_markdown,
+};
+pub use coverage::{
+    CoverageReport, Endpoint as CoverageEndpoint, compute_coverage,
+    render_json as render_coverage_json, render_markdown as render_coverage_markdown,
 };
 pub use discover::{DiscoveredCase, discover_openapi_in_project};
 pub use emit_k6::{EmitOutput, SkipNote, SkipReason, emit_k6};

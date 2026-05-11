@@ -51,6 +51,10 @@ pub enum TestSubcommand {
     /// later replay via `coral test --kind recorded`. Linux-only;
     /// requires the `recorded` Cargo feature.
     Record(RecordArgs),
+    /// Cross-reference discovered OpenAPI endpoints against existing
+    /// TestCases and report coverage gaps. Answers: "which endpoints
+    /// have tests, which don't?"
+    Coverage(CoverageArgs),
 }
 
 #[derive(Args, Debug)]
@@ -73,6 +77,19 @@ pub struct RecordArgs {
     /// directory is created if it doesn't exist.
     #[arg(long, value_name = "DIR")]
     pub output: Option<std::path::PathBuf>,
+}
+
+#[derive(Args, Debug)]
+pub struct CoverageArgs {
+    /// Output format for the coverage report.
+    #[arg(long, default_value = "markdown")]
+    pub format: CoverageFormat,
+}
+
+#[derive(clap::ValueEnum, Clone, Debug)]
+pub enum CoverageFormat {
+    Markdown,
+    Json,
 }
 
 #[derive(Args, Debug)]
@@ -166,6 +183,7 @@ pub fn run(args: TestArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
     // a separate handler below).
     match args.command {
         Some(TestSubcommand::Record(rec)) => run_record(rec, wiki_root),
+        Some(TestSubcommand::Coverage(cov)) => run_coverage(cov, wiki_root),
         None => run_inner(args.run, wiki_root),
     }
 }
@@ -451,6 +469,27 @@ fn apply_filters(cases: Vec<TestCase>, services: &[String], tags: &[String]) -> 
             true
         })
         .collect()
+}
+
+// ----------------------------------------------------------------------
+// v0.24.2: `coral test coverage` — endpoint gap analysis (M1.6).
+// ----------------------------------------------------------------------
+
+fn run_coverage(args: CoverageArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
+    let project = resolve_project(wiki_root)?;
+    let report = coral_test::compute_coverage(&project.root)
+        .context("computing test coverage")?;
+
+    match args.format {
+        CoverageFormat::Markdown => print!("{}", coral_test::render_coverage_markdown(&report)),
+        CoverageFormat::Json => println!(
+            "{}",
+            serde_json::to_string_pretty(&coral_test::render_coverage_json(&report))
+                .context("serializing coverage report")?
+        ),
+    }
+
+    Ok(ExitCode::SUCCESS)
 }
 
 // ----------------------------------------------------------------------
