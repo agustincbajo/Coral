@@ -11,6 +11,7 @@
 //! deliberately — same `Send + Sync`, `thiserror` errors, `Mock*` for
 //! tests.
 
+pub mod browser_runner;
 pub mod contract_check;
 pub mod contract_runner;
 pub mod coverage;
@@ -38,6 +39,7 @@ pub use contract_check::{
     Severity as ContractSeverity, check_project as check_contracts,
     render_report_json as render_contract_json, render_report_markdown as render_contract_markdown,
 };
+pub use browser_runner::BrowserRunner;
 pub use contract_runner::ContractRunner;
 pub use event_runner::EventRunner;
 pub use coverage::{
