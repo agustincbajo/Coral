@@ -23,6 +23,7 @@ pub mod probe;
 pub mod property_runner;
 pub mod recorded_runner;
 pub mod report;
+pub mod semantic_diff;
 pub mod spec;
 pub mod user_defined_runner;
 pub mod walk_tests;
@@ -45,6 +46,9 @@ pub use property_runner::{
 };
 pub use recorded_runner::{KeployTestCase, RecordedRunner, discover_recorded};
 pub use report::{Evidence, JunitOutput, TestReport, TestStatus};
+pub use semantic_diff::{
+    BreakingChange, DiffSeverity, SemanticDiffResult, diff_openapi, diff_protobuf, diff_schema,
+};
 pub use spec::{TestCase, TestKind, TestSource, TestSpec};
 pub use user_defined_runner::UserDefinedRunner;
 
