@@ -86,3 +86,20 @@ jobs:
             dist/*.sha256
           generate_release_notes: true
           fail_on_unmatched_files: true
+
+  provenance:
+    name: SLSA provenance
+    needs: release
+    permissions:
+      actions: read
+      id-token: write
+      contents: write
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
+    with:
+      base64-subjects-as-file: ""
+      # The SLSA generator attests to the artifacts already uploaded to the
+      # release. We reference them via the upload-artifact names produced by
+      # the build job. When the generator resolves subjects from uploaded
+      # artifacts it produces an in-toto provenance statement attached to
+      # the release automatically.
+      upload-assets: true

@@ -11,6 +11,7 @@
 [![MCP](https://img.shields.io/badge/MCP-2025--11--25-blue?logo=anthropic)](https://modelcontextprotocol.io/)
 [![BC](https://img.shields.io/badge/BC-v0.15%20single--repo-blue)](#backward-compatibility)
 [![Audit](https://img.shields.io/badge/multi--agent_audited-4_cycles-green)](#how-coral-itself-was-built)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/agustincbajo/Coral/badge)](https://scorecard.dev/viewer/?uri=github.com/agustincbajo/Coral)
 
 Coral started as a [Karpathy-style LLM Wiki](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) maintainer for a single repo. **As of v0.19** it's a full developer-experience platform for microservice-shaped projects: declare your repos in a `coral.toml`, bring up a multi-service environment, run functional tests, and expose the whole thing to coding agents (Claude Code, Cursor, Continue, Cline, Goose, Codex, Copilot) via Model Context Protocol — all from one binary, all open source, all locally runnable.
 
