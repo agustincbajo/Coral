@@ -103,8 +103,10 @@ fn stdio_transcript_response_shape_is_byte_identical_to_v0_21_0() {
         "server version is not SemVer-shaped: {server_version}"
     );
     // Capabilities surface stable across the refactor.
+    // v0.24 #11: resources now advertises listChanged: true + subscribe: true.
     let caps = &responses[0]["result"]["capabilities"];
-    assert_eq!(caps["resources"]["listChanged"], false);
+    assert_eq!(caps["resources"]["listChanged"], true);
+    assert_eq!(caps["resources"]["subscribe"], true);
     assert_eq!(caps["tools"]["listChanged"], false);
     assert_eq!(caps["prompts"]["listChanged"], false);
 

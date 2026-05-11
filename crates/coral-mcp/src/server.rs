@@ -17,7 +17,8 @@ use crate::prompts::PromptCatalog;
 use crate::resources::ResourceProvider;
 use crate::tools::{ToolCatalog, ToolKind};
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
 
 /// MCP protocol version. Coral pins to the 2025-11-25 spec freeze;
 /// future bumps are coordinated via the spec's negotiation flow.
@@ -66,6 +67,10 @@ pub struct McpHandler {
     /// argument object and returns a JSON result. The CLI populates
     /// this with thin adapters over `coral query` etc.
     pub tools: Arc<dyn ToolDispatcher>,
+    /// URIs the client has subscribed to for change notifications.
+    subscriptions: Mutex<HashSet<String>>,
+    /// Channel for pushing notifications to the transport layer.
+    notification_tx: Mutex<Option<std::sync::mpsc::Sender<serde_json::Value>>>,
 }
 
 /// Tools are dispatched through a trait so the catalog (data) and the
@@ -109,7 +114,14 @@ impl McpHandler {
             config,
             resources,
             tools,
+            subscriptions: Mutex::new(HashSet::new()),
+            notification_tx: Mutex::new(None),
         }
+    }
+
+    /// Wire a notification channel so push notifications can reach the transport.
+    pub fn set_notification_sender(&self, tx: std::sync::mpsc::Sender<serde_json::Value>) {
+        *self.notification_tx.lock().unwrap() = Some(tx);
     }
 
     /// Run the stdio loop. Reads one JSON-RPC message per line until
@@ -164,6 +176,8 @@ impl McpHandler {
             "initialize" => self.method_initialize(),
             "resources/list" => self.method_resources_list(&request.params),
             "resources/read" => self.method_resources_read(&request.params),
+            "resources/subscribe" => self.method_resources_subscribe(&request.params),
+            "resources/unsubscribe" => self.method_resources_unsubscribe(&request.params),
             "tools/list" => self.method_tools_list(&request.params),
             "tools/call" => self.method_tools_call(&request.params),
             "prompts/list" => self.method_prompts_list(),
@@ -184,7 +198,7 @@ impl McpHandler {
         Ok(serde_json::json!({
             "protocolVersion": PROTOCOL_VERSION,
             "capabilities": {
-                "resources": { "listChanged": false },
+                "resources": { "listChanged": true, "subscribe": true },
                 "tools": { "listChanged": false },
                 "prompts": { "listChanged": false }
             },
@@ -365,6 +379,60 @@ impl McpHandler {
                 }
             ]
         }))
+    }
+
+    fn method_resources_subscribe(
+        &self,
+        params: &serde_json::Value,
+    ) -> std::result::Result<serde_json::Value, String> {
+        let uri = params
+            .get("uri")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "missing required parameter `uri`".to_string())?;
+        self.subscriptions.lock().unwrap().insert(uri.to_string());
+        Ok(serde_json::json!({}))
+    }
+
+    fn method_resources_unsubscribe(
+        &self,
+        params: &serde_json::Value,
+    ) -> std::result::Result<serde_json::Value, String> {
+        let uri = params
+            .get("uri")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "missing required parameter `uri`".to_string())?;
+        self.subscriptions.lock().unwrap().remove(uri);
+        Ok(serde_json::json!({}))
+    }
+
+    /// Push a resource-updated notification for a specific URI.
+    /// Called externally when the wiki changes (e.g., after ingest/bootstrap).
+    /// Only sends if the URI is in the subscription set.
+    pub fn notify_resource_updated(&self, uri: &str) {
+        let subscribed = self.subscriptions.lock().unwrap().contains(uri);
+        if !subscribed {
+            return;
+        }
+        let notification = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/resources/updated",
+            "params": { "uri": uri }
+        });
+        if let Some(tx) = self.notification_tx.lock().unwrap().as_ref() {
+            let _ = tx.send(notification);
+        }
+    }
+
+    /// Push a list-changed notification (all resources may have changed).
+    /// Sends to ALL subscribers. Called after wiki modifications.
+    pub fn notify_resources_list_changed(&self) {
+        let notification = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/resources/list_changed"
+        });
+        if let Some(tx) = self.notification_tx.lock().unwrap().as_ref() {
+            let _ = tx.send(notification);
+        }
     }
 }
 
@@ -898,5 +966,115 @@ mod tests {
         let h = handler(true);
         let resp = call(&h, "tools/list", serde_json::json!({"cursor": "garbage"}));
         assert!(resp.get("error").is_some(), "expected error: {resp}");
+    }
+
+    /// v0.24 #11: initialize now advertises resource subscription
+    /// support (`listChanged: true`, `subscribe: true`).
+    #[test]
+    fn initialize_advertises_resource_subscriptions() {
+        let h = handler(true);
+        let resp = call(&h, "initialize", serde_json::json!({}));
+        let resources_cap = &resp["result"]["capabilities"]["resources"];
+        assert_eq!(
+            resources_cap["listChanged"], true,
+            "listChanged must be true: {resp}"
+        );
+        assert_eq!(
+            resources_cap["subscribe"], true,
+            "subscribe must be true: {resp}"
+        );
+    }
+
+    /// v0.24 #11: `resources/subscribe` records the URI and returns
+    /// an empty result.
+    #[test]
+    fn resources_subscribe_returns_empty_ok() {
+        let h = handler(true);
+        let resp = call(
+            &h,
+            "resources/subscribe",
+            serde_json::json!({"uri": "coral://manifest"}),
+        );
+        assert!(
+            resp.get("error").is_none(),
+            "subscribe must not error: {resp}"
+        );
+        assert_eq!(resp["result"], serde_json::json!({}));
+    }
+
+    /// v0.24 #11: `resources/unsubscribe` removes the URI and returns
+    /// an empty result.
+    #[test]
+    fn resources_unsubscribe_returns_empty_ok() {
+        let h = handler(true);
+        // Subscribe first, then unsubscribe.
+        call(
+            &h,
+            "resources/subscribe",
+            serde_json::json!({"uri": "coral://manifest"}),
+        );
+        let resp = call(
+            &h,
+            "resources/unsubscribe",
+            serde_json::json!({"uri": "coral://manifest"}),
+        );
+        assert!(
+            resp.get("error").is_none(),
+            "unsubscribe must not error: {resp}"
+        );
+        assert_eq!(resp["result"], serde_json::json!({}));
+    }
+
+    /// v0.24 #11: subscribe/unsubscribe reject calls missing the `uri`
+    /// parameter.
+    #[test]
+    fn resources_subscribe_rejects_missing_uri() {
+        let h = handler(true);
+        let resp = call(&h, "resources/subscribe", serde_json::json!({}));
+        assert!(
+            resp["error"]["message"]
+                .as_str()
+                .unwrap_or("")
+                .contains("missing required parameter `uri`"),
+            "expected uri error: {resp}"
+        );
+    }
+
+    /// v0.24 #11: `notify_resource_updated` only fires when the URI
+    /// is subscribed, and the notification reaches the channel.
+    #[test]
+    fn notify_resource_updated_sends_when_subscribed() {
+        let h = handler(true);
+        let (tx, rx) = std::sync::mpsc::channel();
+        h.set_notification_sender(tx);
+        // Not yet subscribed — should not send.
+        h.notify_resource_updated("coral://manifest");
+        assert!(
+            rx.try_recv().is_err(),
+            "must not send notification for unsubscribed URI"
+        );
+        // Subscribe, then notify.
+        call(
+            &h,
+            "resources/subscribe",
+            serde_json::json!({"uri": "coral://manifest"}),
+        );
+        h.notify_resource_updated("coral://manifest");
+        let msg = rx.try_recv().expect("notification must be sent");
+        assert_eq!(msg["method"], "notifications/resources/updated");
+        assert_eq!(msg["params"]["uri"], "coral://manifest");
+    }
+
+    /// v0.24 #11: `notify_resources_list_changed` always fires
+    /// (unconditionally) and emits the correct method name.
+    #[test]
+    fn notify_resources_list_changed_sends_unconditionally() {
+        let h = handler(true);
+        let (tx, rx) = std::sync::mpsc::channel();
+        h.set_notification_sender(tx);
+        h.notify_resources_list_changed();
+        let msg = rx.try_recv().expect("list_changed notification must be sent");
+        assert_eq!(msg["method"], "notifications/resources/list_changed");
+        assert_eq!(msg["jsonrpc"], "2.0");
     }
 }
