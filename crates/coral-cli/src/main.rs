@@ -81,6 +81,10 @@ enum Cmd {
     /// Run functional tests (healthcheck + user-defined YAML, with
     /// markdown / JSON / JUnit output for CI).
     Test(commands::test::TestArgs),
+    /// Deployment safety gate: aggregates lint + contracts into a
+    /// single green/yellow/red verdict for CI. Usage:
+    /// `coral guarantee --can-i-deploy [--strict] [--format json]`
+    Guarantee(commands::guarantee::GuaranteeArgs),
     /// Auto-generate TestCases from OpenAPI specs in the project's
     /// repos (no LLM). Print, emit YAML, or `--commit` to disk.
     #[command(name = "test-discover")]
@@ -209,6 +213,7 @@ fn main() -> ExitCode {
         Cmd::Env(args) => commands::env::run(args, cli.wiki_root.as_deref()),
         Cmd::Verify(args) => commands::verify::run(args, cli.wiki_root.as_deref()),
         Cmd::Test(args) => commands::test::run(args, cli.wiki_root.as_deref()),
+        Cmd::Guarantee(args) => commands::guarantee::run(args, cli.wiki_root.as_deref()),
         Cmd::TestDiscover(args) => commands::test_discover::run(args, cli.wiki_root.as_deref()),
         Cmd::Mcp(args) => commands::mcp::run(args, cli.wiki_root.as_deref()),
         Cmd::ExportAgents(args) => commands::export_agents::run(args, cli.wiki_root.as_deref()),
