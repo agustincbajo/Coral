@@ -1495,7 +1495,7 @@ Where Coral is **explicitly not trying to compete**:
 
 ## Security model
 
-Coral has been hardened across four audit cycles (v0.19.3 → v0.20.2) with explicit threat-model boundaries. **The threat surface is "a malicious commit / PR to a Coral-managed repo": adversary can supply arbitrary `coral.toml`, `openapi.yaml`, wiki page bodies, and test YAML.** Hardening below mitigates the high-impact vectors of that threat model.
+Coral has been hardened across five audit cycles (v0.19.3 → v0.20.2 → v0.30.0) with explicit threat-model boundaries. **The threat surface is "a malicious commit / PR to a Coral-managed repo": adversary can supply arbitrary `coral.toml`, `openapi.yaml`, wiki page bodies, and test YAML.** Hardening below mitigates the high-impact vectors of that threat model.
 
 ### Process-level secret hygiene
 
