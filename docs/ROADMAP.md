@@ -1,8 +1,10 @@
-# Roadmap
+# Roadmap (frozen — historical)
 
-Estado consolidado del backlog. Cada release tiene su sección con items resueltos.
+> **Frozen at v0.15.0 (2026-05-02).** For the live roadmap from v0.16 onward (M2.x, M3.x milestones, v0.31+ planning) see [README §Roadmap](../README.md#roadmap). Per-release narrative since v0.20 lives in [CHANGELOG.md](../CHANGELOG.md). This file is preserved as historical per-item detail for v0.1–v0.15 only.
 
-**Última actualización**: 2026-05-02 — v0.15.0 shipped. 15 releases this session (v0.3.2 → v0.15.0). 602 tests + 16 ignored. Todo lo implementable sin LLM access está en producción.
+Estado consolidado del backlog hasta v0.15.0. Cada release tiene su sección con items resueltos.
+
+**Última actualización (de este archivo)**: 2026-05-02 — v0.15.0 shipped. 15 releases this session (v0.3.2 → v0.15.0). 602 tests + 16 ignored. Todo lo implementable sin LLM access está en producción.
 
 ---
 
@@ -214,5 +216,5 @@ explícitamente, o hasta que un consumer real demuestre la necesidad.
 - [x] Concurrencia file-locking (v0.14 design item) shipped en v0.14 + v0.15.
 - [ ] Correr los 16 tests `--ignored` (smokes reales + stress + sync) al menos una vez por release; idealmente parte de `release.yml`. Necesita secrets management para `VOYAGE_API_KEY` / `OPENAI_API_KEY` / `LLAMA_MODEL` / `CLAUDE_CODE_OAUTH_TOKEN`.
 - [ ] Self-hosted dogfooding: maintainer corre `claude setup-token` localmente + `coral ingest --apply` para traer `.wiki/` desde commit `213ac99` hasta HEAD (15 releases worth of catch-up). Plan listo en `~/.claude/plans/tuve-que-cancelar-sesiones-rippling-cray.md`.
-- [ ] Publicar Codecov badge (CI ya genera `lcov.info`).
+- [x] Publicar Codecov badge — shipped in `ci.yml` lines 179–183.
 - [x] Fix `RunnerError` UX bug — error messages now provider-agnostic with per-runner hints (shipped in v0.15.1).

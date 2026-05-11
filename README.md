@@ -2085,16 +2085,7 @@ A 3-cycle multi-agent audit found and resolved ~50 bugs across reliability, secu
 
 Full per-release detail in [CHANGELOG](CHANGELOG.md).
 
-🚧 **v0.19.x patches still on the table** (filed as GitHub issues):
-
-- [#26](https://github.com/agustincbajo/Coral/issues/26) — MCP `resources/list` cursor pagination (currently unbounded).
-- [#27](https://github.com/agustincbajo/Coral/issues/27) — wikilink escaped pipe `[[a\|b]]` regex edge case.
-- [#28](https://github.com/agustincbajo/Coral/issues/28) — document the `_default` magic repo prefix in MCP URIs.
-- [#29](https://github.com/agustincbajo/Coral/issues/29) — OpenAPI adversarial-input audit ($ref cycles, giant inline examples, escaped paths).
-- [#30](https://github.com/agustincbajo/Coral/issues/30) — `coral export --format html` XSS surface audit.
-- [#31](https://github.com/agustincbajo/Coral/issues/31) — streaming HTTP runners stress test (mid-stream truncation, cancellation, recv_timeout).
-- [#32](https://github.com/agustincbajo/Coral/issues/32) — `*.lock.lock` zero-byte sentinel cleanup (TOCTOU deferred).
-- [#33](https://github.com/agustincbajo/Coral/issues/33) — `WikiLog` regex `op` shape (log v2 format eventually).
+✅ **v0.19.x audit follow-ups (#26–#33) closed in v0.19.8** (commit `6c2ee56`, 2026-05-08): MCP `resources/list` cursor pagination, wikilink escape edge case, `_default` magic repo prefix docs, OpenAPI adversarial-input audit, `coral export --format html` XSS audit, streaming HTTP runner stress tests, `*.lock.lock` sentinel cleanup, `WikiLog` regex `op` shape.
 
 ✅ **Shipped (v0.20.0 — `coral session`):**
 
