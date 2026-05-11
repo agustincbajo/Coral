@@ -12,7 +12,7 @@
 
 use anyhow::{Context, Result};
 use clap::Args;
-use coral_core::walk;
+use coral_core::{search, walk};
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -126,35 +126,11 @@ pub fn run(args: ContextBuildArgs, wiki_root: Option<&Path>) -> Result<ExitCode>
     Ok(ExitCode::SUCCESS)
 }
 
-/// TF-IDF-style ranking — minimal hand-rolled: each page scored by
-/// the count of query terms found in its body + slug. Identical to
-/// the heuristic `coral search` uses internally so the output is
-/// comparable across commands.
+/// Rank pages using RRF hybrid search (BM25 + TF-IDF fusion).
+/// Returns all pages ranked by relevance — the caller picks the top seeds.
 fn rank_pages(pages: &[coral_core::page::Page], query: &str) -> Vec<(String, f64)> {
-    let terms: Vec<String> = query
-        .split_whitespace()
-        .map(|t| t.to_lowercase())
-        .filter(|t| t.len() >= 2)
-        .collect();
-    let mut scored: Vec<(String, f64)> = pages
-        .iter()
-        .map(|p| {
-            let haystack = format!("{} {}", p.frontmatter.slug, p.body).to_lowercase();
-            let raw_score: usize = terms
-                .iter()
-                .map(|t| haystack.matches(t.as_str()).count())
-                .sum();
-            let length_norm = (p.body.len() as f64).sqrt().max(1.0);
-            let score = (raw_score as f64) / length_norm;
-            (p.frontmatter.slug.clone(), score)
-        })
-        .collect();
-    scored.sort_by(|a, b| {
-        b.1.partial_cmp(&a.1)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.0.cmp(&b.0))
-    });
-    scored
+    let results = search::search_hybrid(pages, query, pages.len());
+    results.into_iter().map(|r| (r.slug, r.score)).collect()
 }
 
 fn print_markdown(query: &str, pages: &[&coral_core::page::Page], budget: usize) {
