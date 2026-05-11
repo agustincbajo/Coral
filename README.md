@@ -2074,7 +2074,19 @@ Full per-release detail in [CHANGELOG](CHANGELOG.md).
 
 - **`coral consolidate --tiered` (planner + executor + reviewer).** New `MultiStepRunner` trait with a concrete `TieredRunner` impl that decomposes a single LLM run into three sequential calls — planner emits 1-5 sub-tasks as YAML, one executor call per sub-task, reviewer synthesizes results into the consolidate plan parser input. Per-tier `provider` + `model` configurable via `[runner.tiered.{planner,executor,reviewer}]` in `coral.toml`. Pure-Rust `len/4` token budget (default 200K) gates pre-flight at three points and surfaces the new additive `RunnerError::BudgetExceeded { actual, budget }` on overrun. CLI flag `--tiered` wins over manifest opt-in (`[runner.tiered.consolidate] enabled = true`). BC sacred: `coral consolidate` (no flag, no manifest opt-in) is byte-identical to v0.21.3 — pinned by snapshot test PLUS drift detector. Manifests without `[runner]` round-trip byte-identically. Zero new workspace deps. See [`docs/runner-tiered.md`](docs/runner-tiered.md). **1217 tests pass (was 1197; +20).**
 
-🔮 **v0.22+ feature roadmap:**
+✅ **Shipped (v0.22 → v0.30.0 — PRD-v0.24 evolution, 3-phase milestone):**
+
+- **Search & RAG layer (M3.x):** persisted BM25 index with content-hash invalidation and atomic save (SHA-256 framing); interned vocabulary with `Arc<str>` + `TokenId`; tantivy / pgvector / chunking / CRAG / HyDE / reranker as opt-in stubs behind feature flags.
+- **Wiki workflow (M2.x, M3.9):** `coral consolidate --gc` for orphan/broken link detection; `coral interface watch` daemon; stateful `WikiState` with watcher-driven dirty-flag refresh in MCP; diff narrative auto-summary post-merge; `superseded_by` frontmatter field; `coral wiki bootstrap --from-symbols`; `coral wiki serve` local HTTP browser.
+- **Testing (M3.3-3.5):** `coral test mutants` mutation-testing wrapper; E2E browser runner (Playwright structural validation); OTel trace-runner span assertions.
+- **MCP & CLI (M3.10-3.11):** mutation budget; export-skill autodetect; MCP Tasks (`tasks/create`, `tasks/list`).
+- **Ingest (M3.7):** `coral ingest --include-docs` for PDF extraction.
+
+✅ **Shipped (audit/fixes-v0.30.0 — 5th multi-agent audit cycle):**
+
+- 11 confirmed findings, all resolved on the audit branch. Highlights: MCP `WikiState` dirty-flag now actually wired through `resources/read` (was dead code per a deferred design note); `coral session distill` patch validator closed against multi-file path-traversal via `git apply --unsafe-paths` (`--unsafe-paths` dropped); `coral guarantee` no longer returns Green on an unreadable wiki (CI deploy-gate bug); `coral project lock` serializes load-mutate-save under flock (lost-update fix vs `project sync`); BM25 index moved to `atomic_write_bytes` + `with_exclusive_lock`; `compute_content_hash` switched to real SHA-256 with length-prefix framing; HTTP/SSE transport now actually broadcasts notifications (NotificationHub with bounded 128-entry replay ring and `Last-Event-ID` resume); JSON-RPC error codes use proper `-32602`/`-32002`/`-32001` ranges instead of collapsing to method-not-found; `coral stats --format json` is byte-deterministic. See [`audit/SUMMARY.md`](audit/SUMMARY.md) for the full catalog with counter-validation status.
+
+🔮 **v0.31+ feature roadmap:**
 
 - `coral session capture --from cursor` and `--from chatgpt` (the v0.20 flags currently emit a clear "not yet implemented" error pointing at #16).
 - `KindBackend`, `TiltBackend`, `K3dBackend` (k8s local, behind feature flags).
@@ -2110,13 +2122,15 @@ The pluggable trait pattern (`Runner` → `EnvBackend` → `TestRunner` → `Res
 
 ### Multi-agent audit pipeline
 
-The v0.19.x sprint shipped 10 patch releases (v0.19.0 → v0.20.2) closing ~70 bugs surfaced by **four audit cycles**, each cycle running multiple parallel agents with non-overlapping mandates:
+The v0.19.x → v0.30.0 arc shipped through **five audit cycles**, each cycle running multiple parallel agents with non-overlapping mandates. Findings are filed as `audit/findings/NNN-*.md` (or in the maintainer's plans directory pre-v0.30.0) so the punch lists are public and counter-validation traces are auditable.
 
-| Cycle | Agents | Focus | Findings |
-|---|---|---|---|
-| 1 (post-v0.19.0) | 1 broad agent | bugs, doc-vs-reality, cross-platform | 11 |
-| 2 (post-v0.19.4) | 3 parallel | reliability + security + doc-vs-reality | ~30 |
-| 3 (post-v0.19.5) | 1 deep dive | concurrency + new MCP code + adversarial inputs | 12 |
+| Cycle | When | Agents | Focus | Findings |
+|---|---|---|---|---|
+| 1 | post-v0.19.0 | 1 broad agent | bugs, doc-vs-reality, cross-platform | 11 |
+| 2 | post-v0.19.4 | 3 parallel | reliability + security + doc-vs-reality | ~30 |
+| 3 | post-v0.19.5 | 1 deep dive | concurrency + new MCP code + adversarial inputs | 12 |
+| 4 | v0.20.x sprint | 2 parallel | distill / session injection + audit-log rotation + prompt-injection lint | ~15 |
+| 5 | post-v0.30.0 | 5 parallel + 4 counter-validators | security + concurrency + MCP server + CLI UX + test quality | 11 (4 High) |
 
 Each cycle followed the same loop:
 1. **Audit agent(s)** — scoped mandate, instructed to verify before reporting (no hand-waving), output a punch list with severity tiers.
@@ -2124,7 +2138,7 @@ Each cycle followed the same loop:
 3. **Validator agent** — re-verifies each fix is real (stash-validates the highest-impact ones), confirms regression tests catch the bug class, looks for fix-agent design decisions that need scrutiny; recommends ship / NEEDS WORK / FAIL.
 4. **Maintainer applies any small inline fixes** (when the validator catches a partial fix, like the v0.19.5 README L568+ regression), then pushes + tags + creates the GitHub release.
 
-This pipeline is reproducible — the agent prompts live in the `.claude/` directory and can be re-run on any future major release. v0.19.5 (30+ findings, fix agent + validator + 1 inline fix) and v0.19.6 (12 findings, fix agent + validator) are the canonical examples.
+This pipeline is reproducible — the agent prompts live in the `.claude/` directory and can be re-run on any future major release. v0.19.5 (30+ findings, fix agent + validator + 1 inline fix), v0.19.6 (12 findings, fix agent + validator), and v0.30.0 (11 findings across 5 specialist agents + 4 counter-validator agents per high-severity fix — see `audit/findings/` and `audit/SUMMARY.md`) are the canonical examples.
 
 ### `scripts/ci-locally.sh`
 
