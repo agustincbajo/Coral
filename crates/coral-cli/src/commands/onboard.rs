@@ -155,6 +155,8 @@ pub(crate) fn persist_onboarding_page(
             backlinks: vec![],
             status: Status::Draft,
             generated_at: Some(chrono::Utc::now().to_rfc3339()),
+            valid_from: None,
+            valid_to: None,
             extra: Default::default(),
         },
         body,

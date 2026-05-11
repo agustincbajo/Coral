@@ -12,7 +12,7 @@ use std::process::ExitCode;
 
 #[derive(Args, Debug)]
 pub struct ExportArgs {
-    /// Output format. Choose: markdown-bundle | json | notion-json | html | jsonl.
+    /// Output format. Choose: markdown-bundle | json | notion-json | html | jsonl | llms-txt.
     #[arg(long, default_value = "markdown-bundle")]
     pub format: String,
     /// Optional output file. If absent, prints to stdout.
@@ -113,8 +113,12 @@ pub fn run_with_runner(
                 render_jsonl(&pages)?
             }
         }
+        "llms-txt" => {
+            let project_name = detect_project_name(&root);
+            coral_core::llms_txt::generate(&pages, &project_name)
+        }
         other => anyhow::bail!(
-            "unknown format: {other}. Choose: markdown-bundle | json | notion-json | html | jsonl"
+            "unknown format: {other}. Choose: markdown-bundle | json | notion-json | html | jsonl | llms-txt"
         ),
     };
 
@@ -169,6 +173,20 @@ pub fn page_type_name_pub(fm: &coral_core::frontmatter::Frontmatter) -> &'static
 /// Public accessor for `status_name` (see `page_type_name_pub`).
 pub fn status_name_pub(fm: &coral_core::frontmatter::Frontmatter) -> &'static str {
     status_name(fm)
+}
+
+/// Detect the project name from `coral.toml` (parent of wiki root).
+fn detect_project_name(wiki_root: &Path) -> String {
+    let parent = wiki_root.parent().unwrap_or(wiki_root);
+    let manifest_path = parent.join("coral.toml");
+    if let Ok(raw) = std::fs::read_to_string(&manifest_path) {
+        if let Ok(table) = raw.parse::<toml::Table>() {
+            if let Some(name) = table.get("name").and_then(|v| v.as_str()) {
+                return name.to_string();
+            }
+        }
+    }
+    parent.file_name().and_then(|n| n.to_str()).unwrap_or("wiki").to_string()
 }
 
 fn render_markdown_bundle(pages: &[Page]) -> String {
@@ -817,6 +835,8 @@ mod tests {
                 backlinks: vec![],
                 status: Status::Reviewed,
                 generated_at: None,
+                valid_from: None,
+                valid_to: None,
                 extra: Default::default(),
             },
             body: body.to_string(),

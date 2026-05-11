@@ -158,6 +158,7 @@ fn full_lifecycle_with_mock_runner() {
             suggest_sources: false,
             check_injection: false,
             no_check_injection: false,
+            governance: false,
         },
         Some(&wiki),
     )
@@ -167,6 +168,7 @@ fn full_lifecycle_with_mock_runner() {
     stats::run(
         StatsArgs {
             format: "markdown".into(),
+            symbols: false,
         },
         Some(&wiki),
     )
@@ -217,6 +219,7 @@ fn lifecycle_init_idempotent_does_not_clobber_seeded_pages() {
             suggest_sources: false,
             check_injection: false,
             no_check_injection: false,
+            governance: false,
         },
         Some(&wiki),
     )
@@ -262,6 +265,7 @@ fn lifecycle_lint_json_format_emits_valid_json() {
             suggest_sources: false,
             check_injection: false,
             no_check_injection: false,
+            governance: false,
         },
         Some(&wiki),
     )

@@ -956,6 +956,8 @@ fn build_merged_frontmatter(
         backlinks: backlinks_union,
         status: Status::Draft,
         generated_at,
+        valid_from: None,
+        valid_to: None,
         extra,
     })
 }
@@ -1033,6 +1035,8 @@ fn apply_split(
             backlinks: vec![source.frontmatter.slug.clone()],
             status: Status::Draft,
             generated_at: Some(now.to_string()),
+            valid_from: None,
+            valid_to: None,
             extra: BTreeMap::new(),
         };
         let body = format!(
@@ -1118,6 +1122,8 @@ mod tests {
                 backlinks: vec![],
                 status,
                 generated_at: None,
+                valid_from: None,
+                valid_to: None,
                 extra: Default::default(),
             },
             body: format!("# {slug}\n\nbody."),
@@ -1157,6 +1163,8 @@ mod tests {
                 backlinks: vec![],
                 status,
                 generated_at: None,
+                valid_from: None,
+                valid_to: None,
                 extra: Default::default(),
             },
             body: body.into(),
@@ -2323,6 +2331,8 @@ splits:
                 backlinks: vec![],
                 status: Status::Reviewed,
                 generated_at: None,
+                valid_from: None,
+                valid_to: None,
                 extra: Default::default(),
             },
             body: "Original orphan body".into(),

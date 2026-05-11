@@ -94,6 +94,8 @@ fn build_pages() -> Vec<Page> {
                 backlinks: vec![],
                 status,
                 generated_at: None,
+                valid_from: None,
+                valid_to: None,
                 extra,
             },
             body,

@@ -243,6 +243,8 @@ mod tests {
                 backlinks: backlinks.into_iter().map(String::from).collect(),
                 status,
                 generated_at: None,
+                valid_from: None,
+                valid_to: None,
                 extra: Default::default(),
             },
             body: body.to_string(),

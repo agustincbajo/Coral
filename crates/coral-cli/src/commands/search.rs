@@ -462,6 +462,8 @@ mod tests {
                 backlinks: vec![],
                 status: Status::Reviewed,
                 generated_at: None,
+                valid_from: None,
+                valid_to: None,
                 extra: Default::default(),
             },
             body: body.to_string(),
@@ -509,6 +511,8 @@ mod tests {
             reindex: false,
             embeddings_provider: "voyage".into(),
             embeddings_model: None,
+            eval: false,
+            goldset: None,
         };
         let exit = run(args, Some(&wiki)).unwrap();
         assert_eq!(exit, ExitCode::SUCCESS);
@@ -531,6 +535,8 @@ mod tests {
             reindex: false,
             embeddings_provider: "voyage".into(),
             embeddings_model: None,
+            eval: false,
+            goldset: None,
         };
         let err = run(args, Some(&wiki)).unwrap_err();
         let msg = err.to_string();
@@ -562,6 +568,8 @@ mod tests {
             reindex: false,
             embeddings_provider: "voyage".into(),
             embeddings_model: None,
+            eval: false,
+            goldset: None,
         };
         let exit = run_embeddings(&pages, &args, wiki, &provider).unwrap();
         assert_eq!(exit, ExitCode::SUCCESS);
@@ -601,6 +609,8 @@ mod tests {
             reindex: false,
             embeddings_provider: "voyage".into(),
             embeddings_model: None,
+            eval: false,
+            goldset: None,
         };
         let exit = run_embeddings_sqlite(&pages, &args, wiki, &provider).unwrap();
         assert_eq!(exit, ExitCode::SUCCESS);

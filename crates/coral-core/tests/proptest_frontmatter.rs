@@ -85,6 +85,8 @@ fn frontmatter_strategy() -> impl Strategy<Value = Frontmatter> {
                     backlinks,
                     status,
                     generated_at: None,
+                    valid_from: None,
+                    valid_to: None,
                     extra: BTreeMap::new(),
                 }
             },

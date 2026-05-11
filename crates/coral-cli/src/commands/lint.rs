@@ -108,6 +108,10 @@ pub struct LintArgs {
     /// (default-on since v0.20.1).
     #[arg(long)]
     pub no_check_injection: bool,
+    /// Run governance policy checks (configurable via `[governance]` in
+    /// `coral.toml`). Appends governance violations to the lint output.
+    #[arg(long)]
+    pub governance: bool,
 }
 
 pub fn run(args: LintArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
@@ -242,6 +246,25 @@ pub fn run_with_runner(
         _ => println!("{}", report.as_markdown()),
     }
 
+    // Governance policy checks
+    if args.governance {
+        let policy = load_governance_policy(&root);
+        let violations = coral_core::governance::check(&pages, &policy);
+        match args.format.as_str() {
+            "json" => {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(
+                        &coral_core::governance::render_json(&violations)
+                    )?
+                );
+            }
+            _ => {
+                println!("\n{}", coral_core::governance::render_markdown(&violations));
+            }
+        }
+    }
+
     // No-LLM rule-based fix pass — runs INDEPENDENTLY of the lint
     // output above. Always last so the lint report renders first and
     // the fix proposal/result is appended cleanly.
@@ -259,6 +282,23 @@ pub fn run_with_runner(
     } else {
         Ok(ExitCode::SUCCESS)
     }
+}
+
+/// Load governance policy from `coral.toml` `[governance]` section.
+fn load_governance_policy(wiki_root: &Path) -> coral_core::governance::GovernancePolicy {
+    let manifest_path = wiki_root.parent().unwrap_or(wiki_root).join("coral.toml");
+    if let Ok(raw) = std::fs::read_to_string(&manifest_path) {
+        if let Ok(table) = raw.parse::<toml::Table>() {
+            if let Some(gov) = table.get("governance") {
+                if let Ok(policy) =
+                    gov.clone().try_into::<coral_core::governance::GovernancePolicy>()
+                {
+                    return policy;
+                }
+            }
+        }
+    }
+    coral_core::governance::GovernancePolicy::default()
 }
 
 /// Snake/kebab-case names of every `LintCode` variant — kept in lockstep
@@ -1554,6 +1594,8 @@ mod tests {
                 backlinks: vec![],
                 status: Status::Verified,
                 generated_at: None,
+                valid_from: None,
+                valid_to: None,
                 extra: Default::default(),
             },
             body: "Original body.".into(),
@@ -1622,6 +1664,8 @@ mod tests {
                 backlinks: vec![],
                 status: Status::Verified,
                 generated_at: None,
+                valid_from: None,
+                valid_to: None,
                 extra: Default::default(),
             },
             body: "going away".into(),
@@ -1679,6 +1723,8 @@ mod tests {
                 backlinks: vec![],
                 status: Status::Verified,
                 generated_at: None,
+                valid_from: None,
+                valid_to: None,
                 extra: Default::default(),
             },
             body: "Original body.".into(),
@@ -2129,6 +2175,8 @@ mod tests {
             backlinks,
             status: Status::Verified,
             generated_at: None,
+            valid_from: None,
+            valid_to: None,
             extra: Default::default(),
         }
     }
@@ -2456,6 +2504,8 @@ mod tests {
             backlinks: vec![],
             status: Status::Reviewed,
             generated_at: None,
+            valid_from: None,
+            valid_to: None,
             extra: BTreeMap::new(),
         };
         let changed = downgrade_confidence_for_missing_sources(&mut fm, tmp.path());
@@ -2479,6 +2529,8 @@ mod tests {
             backlinks: vec![],
             status: Status::Reviewed,
             generated_at: None,
+            valid_from: None,
+            valid_to: None,
             extra: BTreeMap::new(),
         };
         let changed = downgrade_confidence_for_missing_sources(&mut fm, tmp.path());
@@ -2501,6 +2553,8 @@ mod tests {
             backlinks: vec![],
             status: Status::Reviewed,
             generated_at: None,
+            valid_from: None,
+            valid_to: None,
             extra: BTreeMap::new(),
         };
         let changed = downgrade_confidence_for_missing_sources(&mut fm, tmp.path());
@@ -2528,6 +2582,8 @@ mod tests {
             backlinks: vec![],
             status: Status::Reviewed,
             generated_at: None,
+            valid_from: None,
+            valid_to: None,
             extra: BTreeMap::new(),
         };
         let changed = downgrade_confidence_for_missing_sources(&mut fm, tmp.path());
@@ -2555,6 +2611,8 @@ mod tests {
             backlinks: vec![],
             status: Status::Reviewed,
             generated_at: None,
+            valid_from: None,
+            valid_to: None,
             extra: BTreeMap::new(),
         };
         // First call: already at floor — must not change.
@@ -2586,6 +2644,8 @@ mod tests {
             backlinks: vec![],
             status: Status::Reviewed,
             generated_at: None,
+            valid_from: None,
+            valid_to: None,
             extra: BTreeMap::new(),
         };
         let changed = downgrade_confidence_for_missing_sources(&mut fm, tmp.path());
@@ -2897,6 +2957,7 @@ mod tests {
             suggest_sources: false,
             check_injection: false,
             no_check_injection: false,
+            governance: false,
         };
         let runner = MockRunner::new();
         // Capture stdout — we want to confirm the JSON contains an

@@ -194,6 +194,12 @@ pub fn read_pages(root: impl AsRef<Path>) -> Result<Vec<Page>> {
     Ok(pages)
 }
 
+/// Filter pages to only those valid at a given point in time.
+/// Used by `coral query --at <timestamp>` for bi-temporal queries.
+pub fn pages_valid_at<'a>(pages: &'a [Page], at: &str) -> Vec<&'a Page> {
+    pages.iter().filter(|p| p.frontmatter.is_valid_at(at)).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -382,6 +388,8 @@ source:\n  runner: claude-sonnet-4-5\n\
             backlinks: vec![],
             status: Status::Draft,
             generated_at: None,
+            valid_from: None,
+            valid_to: None,
             extra,
         };
         let mut poisoned = WalkCache {

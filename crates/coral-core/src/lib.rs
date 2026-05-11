@@ -10,6 +10,8 @@ pub mod frontmatter;
 pub mod gc;
 pub mod git_remote;
 pub mod gitdiff;
+pub mod governance;
+pub mod llms_txt;
 pub mod index;
 pub mod log;
 pub mod page;
@@ -18,6 +20,7 @@ pub mod project;
 pub mod search;
 pub mod slug;
 pub mod storage;
+pub mod symbols;
 pub mod walk;
 pub mod wikilinks;
 

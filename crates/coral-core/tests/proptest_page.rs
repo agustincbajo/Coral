@@ -88,6 +88,8 @@ fn frontmatter_strategy() -> impl Strategy<Value = Frontmatter> {
                     backlinks,
                     status,
                     generated_at: None,
+                    valid_from: None,
+                    valid_to: None,
                     extra: BTreeMap::new(),
                 }
             },
@@ -220,6 +222,8 @@ fn page_write_via_walk_read_pages() {
             backlinks: vec![],
             status: Status::Draft,
             generated_at: None,
+            valid_from: None,
+            valid_to: None,
             extra: BTreeMap::new(),
         },
         body: "body line\n".to_string(),

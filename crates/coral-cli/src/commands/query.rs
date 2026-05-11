@@ -22,6 +22,10 @@ pub struct QueryArgs {
     /// Use 1-2 for richer connected context.
     #[arg(long, default_value_t = 0)]
     pub expand_graph: usize,
+    /// Filter pages to those valid at this ISO-8601 timestamp.
+    /// Enables bi-temporal queries: "what did the wiki say about X on 2024-06-15?"
+    #[arg(long)]
+    pub at: Option<String>,
 }
 
 pub fn run(args: QueryArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
@@ -45,8 +49,14 @@ pub fn run_with_runner(
             root.display()
         );
     }
-    let pages = walk::read_pages(&root)
+    let all_pages = walk::read_pages(&root)
         .with_context(|| format!("reading pages from {}", root.display()))?;
+    // Bi-temporal filter: when --at is set, only include pages valid at that time.
+    let pages: Vec<coral_core::page::Page> = if let Some(ref at) = args.at {
+        all_pages.into_iter().filter(|p| p.frontmatter.is_valid_at(at)).collect()
+    } else {
+        all_pages
+    };
 
     // v0.20.1 cycle-4 audit H3: every page body that lands in the
     // LLM prompt is wrapped in a `<wiki-page>...</wiki-page>` fence
@@ -274,6 +284,7 @@ mod tests {
                 model: None,
                 provider: None,
                 expand_graph: 0,
+                at: None,
             },
             Some(wiki.as_path()),
             &runner,
@@ -317,6 +328,7 @@ mod tests {
                 model: None,
                 provider: None,
                 expand_graph: 0,
+                at: None,
             },
             Some(wiki.as_path()),
             &runner,
@@ -368,6 +380,7 @@ mod tests {
                 model: None,
                 provider: None,
                 expand_graph: 0,
+                at: None,
             },
             Some(wiki.as_path()),
             &runner,
@@ -412,6 +425,7 @@ mod tests {
                 model: None,
                 provider: None,
                 expand_graph: 1,
+                at: None,
             },
             Some(wiki.as_path()),
             &runner,

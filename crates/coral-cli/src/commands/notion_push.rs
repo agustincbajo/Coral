@@ -235,6 +235,8 @@ mod tests {
                 backlinks: vec![],
                 status: Status::Reviewed,
                 generated_at: None,
+                valid_from: None,
+                valid_to: None,
                 extra: Default::default(),
             },
             body: "body".into(),

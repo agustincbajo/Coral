@@ -832,6 +832,8 @@ mod tests {
                 backlinks: vec![],
                 status: Status::Draft,
                 generated_at: None,
+                valid_from: None,
+                valid_to: None,
                 extra: BTreeMap::new(),
             },
             body: body.to_string(),

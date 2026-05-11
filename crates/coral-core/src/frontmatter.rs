@@ -82,11 +82,41 @@ pub struct Frontmatter {
     /// Optional generated_at timestamp (ISO 8601).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub generated_at: Option<String>,
+    /// ISO-8601 timestamp for when this page's content became valid.
+    /// Enables bi-temporal queries: "what did the wiki say about X at time T?"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub valid_from: Option<String>,
+    /// ISO-8601 timestamp for when this page's content ceased to be valid.
+    /// If None, the page is currently valid.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub valid_to: Option<String>,
     /// Catch-all for additional fields the consumer's SCHEMA may add.
     /// Uses `BTreeMap` (deterministic ordering, derives Serialize/Deserialize natively)
     /// instead of `AHashMap` which would require extra serde feature work.
     #[serde(flatten, default, skip_serializing_if = "BTreeMap::is_empty")]
     pub extra: BTreeMap<String, serde_yaml_ng::Value>,
+}
+
+impl Frontmatter {
+    /// Returns true if this page is currently valid (no valid_to set).
+    pub fn is_current(&self) -> bool {
+        self.valid_to.is_none()
+    }
+
+    /// Returns true if this page was valid at the given timestamp.
+    /// `at` must be ISO-8601 formatted. Uses string comparison
+    /// which works for ISO-8601 dates.
+    pub fn is_valid_at(&self, at: &str) -> bool {
+        let after_from = match &self.valid_from {
+            Some(from) => at >= from.as_str(),
+            None => true,
+        };
+        let before_to = match &self.valid_to {
+            Some(to) => at < to.as_str(),
+            None => true,
+        };
+        after_from && before_to
+    }
 }
 
 /// Parses a Markdown document with YAML frontmatter.
@@ -496,6 +526,8 @@ body line 2
             backlinks: vec![],
             status: Status::Draft,
             generated_at: None,
+            valid_from: None,
+            valid_to: None,
             extra: BTreeMap::new(),
         };
         let out = serialize(&fm, "body\n").expect("serialize");
@@ -503,6 +535,14 @@ body line 2
         assert!(!out.contains("audit:"), "should not contain extra: {out}");
         assert!(
             !out.contains("generated_at:"),
+            "should not contain optional none: {out}"
+        );
+        assert!(
+            !out.contains("valid_from:"),
+            "should not contain optional none: {out}"
+        );
+        assert!(
+            !out.contains("valid_to:"),
             "should not contain optional none: {out}"
         );
     }
@@ -514,5 +554,119 @@ body line 2
         assert_eq!(parsed, PageType::Interface);
         let back = serde_yaml_ng::to_string(&parsed).unwrap();
         assert!(back.trim() == "interface");
+    }
+
+    // ── bi-temporal frontmatter (M2.16) ──────────────────────────────
+
+    #[test]
+    fn parse_with_valid_from_and_valid_to() {
+        let content = "\
+---
+slug: old-arch
+type: decision
+last_updated_commit: abc
+confidence: 0.9
+status: archived
+valid_from: 2024-01-01T00:00:00Z
+valid_to: 2024-08-01T00:00:00Z
+---
+
+Old architecture decision.
+";
+        let (fm, body) = parse(content, "test.md").expect("parse ok");
+        assert_eq!(fm.slug, "old-arch");
+        assert_eq!(fm.valid_from.as_deref(), Some("2024-01-01T00:00:00Z"));
+        assert_eq!(fm.valid_to.as_deref(), Some("2024-08-01T00:00:00Z"));
+        assert!(body.starts_with("Old architecture decision."));
+    }
+
+    #[test]
+    fn is_current_true_when_valid_to_is_none() {
+        let (fm, _) = parse(minimal_fm_yaml(), "test.md").expect("parse ok");
+        assert!(fm.is_current(), "page without valid_to should be current");
+    }
+
+    #[test]
+    fn is_current_false_when_valid_to_is_set() {
+        let content = "\
+---
+slug: old-arch
+type: decision
+last_updated_commit: abc
+confidence: 0.9
+status: archived
+valid_to: 2024-08-01T00:00:00Z
+---
+
+body
+";
+        let (fm, _) = parse(content, "test.md").expect("parse ok");
+        assert!(!fm.is_current(), "page with valid_to should not be current");
+    }
+
+    #[test]
+    fn is_valid_at_within_range() {
+        let content = "\
+---
+slug: arch-v2
+type: decision
+last_updated_commit: abc
+confidence: 0.9
+status: archived
+valid_from: 2024-01-01T00:00:00Z
+valid_to: 2024-08-01T00:00:00Z
+---
+
+body
+";
+        let (fm, _) = parse(content, "test.md").expect("parse ok");
+        // Inside the range
+        assert!(fm.is_valid_at("2024-06-15T00:00:00Z"));
+        // Exactly at valid_from (inclusive)
+        assert!(fm.is_valid_at("2024-01-01T00:00:00Z"));
+        // Before the range
+        assert!(!fm.is_valid_at("2023-12-31T23:59:59Z"));
+        // Exactly at valid_to (exclusive)
+        assert!(!fm.is_valid_at("2024-08-01T00:00:00Z"));
+        // After the range
+        assert!(!fm.is_valid_at("2025-01-01T00:00:00Z"));
+    }
+
+    #[test]
+    fn is_valid_at_open_ended() {
+        // No valid_from, no valid_to -> always valid
+        let (fm, _) = parse(minimal_fm_yaml(), "test.md").expect("parse ok");
+        assert!(fm.is_valid_at("2020-01-01"));
+        assert!(fm.is_valid_at("2099-12-31"));
+    }
+
+    #[test]
+    fn is_valid_at_only_valid_from() {
+        let content = "\
+---
+slug: new-arch
+type: decision
+last_updated_commit: abc
+confidence: 0.9
+status: reviewed
+valid_from: 2024-08-01T00:00:00Z
+---
+
+body
+";
+        let (fm, _) = parse(content, "test.md").expect("parse ok");
+        assert!(!fm.is_valid_at("2024-07-31T23:59:59Z"));
+        assert!(fm.is_valid_at("2024-08-01T00:00:00Z"));
+        assert!(fm.is_valid_at("2099-12-31T23:59:59Z"));
+    }
+
+    #[test]
+    fn backward_compat_pages_without_temporal_fields() {
+        // Existing pages that lack valid_from/valid_to must still parse
+        // with both fields as None.
+        let (fm, _) = parse(minimal_fm_yaml(), "test.md").expect("parse ok");
+        assert!(fm.valid_from.is_none());
+        assert!(fm.valid_to.is_none());
+        assert!(fm.is_current());
     }
 }

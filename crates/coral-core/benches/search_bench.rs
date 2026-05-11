@@ -40,6 +40,8 @@ fn build_corpus() -> Vec<Page> {
                 backlinks: vec![],
                 status: Status::Reviewed,
                 generated_at: None,
+                valid_from: None,
+                valid_to: None,
                 extra: BTreeMap::new(),
             },
             body: bodies[i % bodies.len()].to_string(),

@@ -43,6 +43,8 @@ fn frontmatter_for(slug: &str) -> Frontmatter {
         backlinks: Vec::new(),
         status: Status::Draft,
         generated_at: None,
+        valid_from: None,
+        valid_to: None,
         extra: BTreeMap::new(),
     }
 }
