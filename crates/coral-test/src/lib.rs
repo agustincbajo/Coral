@@ -12,10 +12,12 @@
 //! tests.
 
 pub mod contract_check;
+pub mod contract_runner;
 pub mod coverage;
 pub mod discover;
 pub mod emit_k6;
 pub mod error;
+pub mod event_runner;
 pub mod healthcheck_runner;
 pub mod history;
 pub mod hurl_runner;
@@ -36,6 +38,8 @@ pub use contract_check::{
     Severity as ContractSeverity, check_project as check_contracts,
     render_report_json as render_contract_json, render_report_markdown as render_contract_markdown,
 };
+pub use contract_runner::ContractRunner;
+pub use event_runner::EventRunner;
 pub use coverage::{
     CoverageReport, Endpoint as CoverageEndpoint, compute_coverage,
     render_json as render_coverage_json, render_markdown as render_coverage_markdown,
