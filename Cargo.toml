@@ -76,6 +76,12 @@ proptest = "1"
 # Single-purpose, ~40 KB, pure-C with a thin Rust wrapper; no new Rust
 # transitives beyond the `libmimalloc-sys` build-script.
 mimalloc = { version = "0.1", default-features = false }
+# v0.25.0 M3.1: persisted BM25 search index. bincode 1.x gives a simple
+# encode/decode API for the pre-computed index struct (document frequencies,
+# term vectors, doc lengths). Sub-millisecond load vs multi-ms rebuild on
+# 5000+ page wikis. Single-purpose, pure-Rust, ~20 KB; no new transitives
+# beyond byteorder (already in the tree via rusqlite).
+bincode = "1"
 coral-core = { path = "crates/coral-core", version = "0.25.0" }
 coral-env = { path = "crates/coral-env", version = "0.25.0" }
 coral-lint = { path = "crates/coral-lint", version = "0.25.0" }

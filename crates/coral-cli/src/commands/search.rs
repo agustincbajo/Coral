@@ -43,6 +43,12 @@ pub struct SearchArgs {
     /// PLACEHOLDER_ANTHROPIC_MODEL (anthropic, until Anthropic ships).
     #[arg(long)]
     pub embeddings_model: Option<String>,
+    /// Force regeneration of the persisted BM25 search index
+    /// (`.coral/search-index.bin`). Normally the index is rebuilt
+    /// automatically when page content changes; use this flag to
+    /// force a fresh build regardless.
+    #[arg(long)]
+    pub rebuild_index: bool,
     /// Run evaluation mode against a goldset file.
     #[arg(long)]
     pub eval: bool,
@@ -70,7 +76,7 @@ pub fn run(args: SearchArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
     }
 
     match args.engine.as_str() {
-        "tfidf" => run_tfidf(&pages, &args),
+        "tfidf" => run_tfidf(&pages, &args, &root),
         "embeddings" => {
             let provider = build_embeddings_provider(&args)?;
             run_embeddings(&pages, &args, &root, provider.as_ref())
@@ -168,10 +174,16 @@ fn build_embeddings_provider(args: &SearchArgs) -> Result<Box<dyn EmbeddingsProv
     }
 }
 
-fn run_tfidf(pages: &[coral_core::page::Page], args: &SearchArgs) -> Result<ExitCode> {
+fn run_tfidf(pages: &[coral_core::page::Page], args: &SearchArgs, wiki_root: &Path) -> Result<ExitCode> {
     let results = match args.algorithm.as_str() {
         "tfidf" => search::search(pages, &args.query, args.limit),
-        "bm25" => search::search_bm25(pages, &args.query, args.limit),
+        "bm25" => coral_core::search_index::search_with_index(
+            pages,
+            &args.query,
+            args.limit,
+            wiki_root,
+            args.rebuild_index,
+        ),
         "hybrid" => search::search_hybrid(pages, &args.query, args.limit),
         other => anyhow::bail!(
             "unknown --algorithm: {other}. Choose: tfidf | bm25 | hybrid (or pass --engine embeddings for semantic search)"
@@ -510,6 +522,7 @@ mod tests {
             engine: "tfidf".into(),
             algorithm: "bm25".into(),
             reindex: false,
+            rebuild_index: false,
             embeddings_provider: "voyage".into(),
             embeddings_model: None,
             eval: false,
@@ -534,6 +547,7 @@ mod tests {
             engine: "tfidf".into(),
             algorithm: "totally-bogus".into(),
             reindex: false,
+            rebuild_index: false,
             embeddings_provider: "voyage".into(),
             embeddings_model: None,
             eval: false,
@@ -567,6 +581,7 @@ mod tests {
             engine: "embeddings".into(),
             algorithm: "tfidf".into(),
             reindex: false,
+            rebuild_index: false,
             embeddings_provider: "voyage".into(),
             embeddings_model: None,
             eval: false,
@@ -608,6 +623,7 @@ mod tests {
             engine: "embeddings".into(),
             algorithm: "tfidf".into(),
             reindex: false,
+            rebuild_index: false,
             embeddings_provider: "voyage".into(),
             embeddings_model: None,
             eval: false,
