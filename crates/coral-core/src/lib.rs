@@ -27,6 +27,12 @@ pub mod vocab;
 pub mod walk;
 pub mod wikilinks;
 
+pub mod late_chunking;
+pub mod reranker;
+
+#[cfg(feature = "tantivy")]
+pub mod tantivy_backend;
+
 #[cfg(feature = "pgvector")]
 pub mod pgvector;
 

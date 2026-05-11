@@ -11,6 +11,7 @@ description = "Coral core types: frontmatter, wikilinks, pages, index, log."
 [features]
 default = []
 pgvector = []
+tantivy = []
 
 [dependencies]
 serde = { workspace = true }

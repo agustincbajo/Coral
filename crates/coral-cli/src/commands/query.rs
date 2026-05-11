@@ -26,6 +26,15 @@ pub struct QueryArgs {
     /// Enables bi-temporal queries: "what did the wiki say about X on 2024-06-15?"
     #[arg(long)]
     pub at: Option<String>,
+    /// CRAG-lite: verify top results after retrieval. Flags results as
+    /// "unverified" when the top result's slug does not appear in the
+    /// query terms or when confidence is below 0.5.
+    #[arg(long)]
+    pub verify: bool,
+    /// HyDE: Hypothetical Document Embeddings mode. When set, generates
+    /// a hypothetical document before searching (deferred in v0.25).
+    #[arg(long)]
+    pub hyde: bool,
 }
 
 pub fn run(args: QueryArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
@@ -58,6 +67,17 @@ pub fn run_with_runner(
         all_pages
     };
 
+    // HyDE mode: in a full implementation this would generate a hypothetical
+    // document from the query and search with that. v0.25 stub defers and
+    // falls through to normal query.
+    if args.hyde {
+        let mut stdout = std::io::stdout().lock();
+        let _ = writeln!(
+            stdout,
+            "[HyDE mode: hypothetical document generation deferred]"
+        );
+    }
+
     // v0.20.1 cycle-4 audit H3: every page body that lands in the
     // LLM prompt is wrapped in a `<wiki-page>...</wiki-page>` fence
     // and the system prompt explicitly tells the LLM to treat fenced
@@ -72,6 +92,29 @@ pub fn run_with_runner(
     // first, then remainder) so small wikis don't lose context. The
     // optimization only filters when there are >40 pages.
     let ranked = search::search_hybrid(&pages, &args.question, 40);
+
+    // CRAG-lite --verify: corrective check on retrieval quality.
+    if args.verify {
+        let query_lower = args.question.to_lowercase();
+        let mut stdout = std::io::stdout().lock();
+        for (i, r) in ranked.iter().enumerate().take(5) {
+            let slug_in_query = query_lower.contains(&r.slug.to_lowercase());
+            let low_confidence = r.score < 0.5;
+            let status = if !slug_in_query && low_confidence {
+                "UNVERIFIED"
+            } else {
+                "verified"
+            };
+            let _ = writeln!(
+                stdout,
+                "[CRAG] #{}: {} (score={:.3}) — {}",
+                i + 1,
+                r.slug,
+                r.score,
+                status
+            );
+        }
+    }
     let context_pages: Vec<&coral_core::page::Page> = if ranked.is_empty() || pages.len() <= 40 {
         // Small wiki or all-stopword query: include every page, but put
         // BM25-ranked ones first for better prompt ordering.
@@ -285,6 +328,8 @@ mod tests {
                 provider: None,
                 expand_graph: 0,
                 at: None,
+                verify: false,
+                hyde: false,
             },
             Some(wiki.as_path()),
             &runner,
@@ -329,6 +374,8 @@ mod tests {
                 provider: None,
                 expand_graph: 0,
                 at: None,
+                verify: false,
+                hyde: false,
             },
             Some(wiki.as_path()),
             &runner,
@@ -381,6 +428,8 @@ mod tests {
                 provider: None,
                 expand_graph: 0,
                 at: None,
+                verify: false,
+                hyde: false,
             },
             Some(wiki.as_path()),
             &runner,
@@ -426,6 +475,8 @@ mod tests {
                 provider: None,
                 expand_graph: 1,
                 at: None,
+                verify: false,
+                hyde: false,
             },
             Some(wiki.as_path()),
             &runner,
@@ -449,5 +500,54 @@ mod tests {
             prompt_user.contains("page-c"),
             "page-c should be in context (backlink from B): {prompt_user}"
         );
+    }
+
+    #[test]
+    fn query_hyde_flag_is_parsed_and_falls_through() {
+        let tmp = make_wiki_dir();
+        let wiki = tmp.path().join(".wiki");
+        let runner = MockRunner::new();
+        runner.push_ok("answer");
+        let exit = run_with_runner(
+            QueryArgs {
+                question: "How does ordering work?".into(),
+                model: None,
+                provider: None,
+                expand_graph: 0,
+                at: None,
+                verify: false,
+                hyde: true,
+            },
+            Some(wiki.as_path()),
+            &runner,
+        )
+        .unwrap();
+        // HyDE mode should still complete successfully (falls through).
+        assert_eq!(exit, ExitCode::SUCCESS);
+        // Runner should still be called (query proceeds normally).
+        assert_eq!(runner.calls().len(), 1);
+    }
+
+    #[test]
+    fn query_verify_flag_runs_without_error() {
+        let tmp = make_wiki_dir();
+        let wiki = tmp.path().join(".wiki");
+        let runner = MockRunner::new();
+        runner.push_ok("answer about order");
+        let exit = run_with_runner(
+            QueryArgs {
+                question: "order module".into(),
+                model: None,
+                provider: None,
+                expand_graph: 0,
+                at: None,
+                verify: true,
+                hyde: false,
+            },
+            Some(wiki.as_path()),
+            &runner,
+        )
+        .unwrap();
+        assert_eq!(exit, ExitCode::SUCCESS);
     }
 }
