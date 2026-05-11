@@ -38,6 +38,7 @@ pub mod resources;
 pub mod server;
 pub mod tools;
 pub mod transport;
+pub mod watcher;
 
 pub use card::server_card;
 pub use prompts::{PromptCatalog, PromptDescriptor};
