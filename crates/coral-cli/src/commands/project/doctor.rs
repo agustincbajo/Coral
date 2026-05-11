@@ -230,7 +230,7 @@ mod tests {
         std::env::set_current_dir(dir.path()).unwrap();
         let result = run(DoctorArgs { strict: false }, None);
         std::env::set_current_dir(original).unwrap();
-        assert!(result.is_ok());
+        result.expect("doctor --no-strict must succeed even on a bare temp dir (no coral.toml)");
     }
 
     #[test]

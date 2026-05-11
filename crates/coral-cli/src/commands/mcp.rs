@@ -17,13 +17,16 @@ use clap::{Args, Subcommand};
 use coral_core::{search, walk};
 use coral_mcp::{
     McpHandler, PromptCatalog, ResourceProvider, ServerConfig, ToolCallResult, ToolCatalog,
-    ToolDispatcher, Transport, WikiResourceProvider, server_card, transport::HttpSseTransport,
-    watcher::{WatcherConfig, start_watcher},
+    ToolDispatcher, Transport, WikiResourceProvider, server_card,
+    state::shared_state,
+    transport::HttpSseTransport,
+    watcher::{WatcherConfig, start_watcher_with_state},
 };
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 
 #[derive(Args, Debug)]
 pub struct McpArgs {
@@ -244,11 +247,18 @@ fn preview(args: PreviewArgs) -> Result<ExitCode> {
 
 fn serve(args: ServeArgs) -> Result<ExitCode> {
     let cwd = std::env::current_dir()?;
+    // v0.30.0 audit #002: the resource provider and the file watcher
+    // share one `Arc<RwLock<WikiState>>` so `mark_dirty()` from the
+    // watcher actually invalidates the resource cache. Pre-fix the
+    // provider had an OnceLock that could never be invalidated.
+    let wiki_state = shared_state(cwd.join(".wiki"));
     // v0.20.2 audit-followup #37: opt-in flag to surface unreviewed
     // distilled pages. Default-deny — see `WikiResourceProvider`
     // doc comment.
     let resources: Arc<dyn ResourceProvider> = Arc::new(
-        WikiResourceProvider::new(cwd.clone()).with_include_unreviewed(args.include_unreviewed),
+        WikiResourceProvider::new(cwd.clone())
+            .with_include_unreviewed(args.include_unreviewed)
+            .with_state(Arc::clone(&wiki_state)),
     );
     let tools: Arc<dyn ToolDispatcher> = Arc::new(CoralToolDispatcher::new(cwd.clone()));
     // v0.20.2 audit-followup #38: surface BOTH `read_only` and
@@ -289,16 +299,47 @@ fn serve(args: ServeArgs) -> Result<ExitCode> {
     // signals the background thread to stop.
     let _watcher = if watch {
         eprintln!("  watcher: polling .wiki/ every 2s for change notifications");
-        Some(start_watcher(
+        Some(start_watcher_with_state(
             WatcherConfig {
                 wiki_root: cwd.join(".wiki"),
                 ..Default::default()
             },
             Arc::clone(&handler),
+            Some(Arc::clone(&wiki_state)),
         ))
     } else {
         None
     };
+    // v0.30.0 audit B1: install a SIGINT/SIGTERM handler so Ctrl-C
+    // doesn't kill the process mid-request. Stdio's read loop already
+    // exits on EOF, but Ctrl-C still mostly bites HTTP/SSE — we don't
+    // (yet) own the http_sse.rs serve loop, so when a signal fires we
+    // spawn a watchdog that calls `std::process::exit(0)` once handlers
+    // have a moment to flush. Pattern mirrors `serve.rs:62-64`,
+    // `interface.rs:105`, and `monitor/up.rs:168`.
+    let shutdown = Arc::new(AtomicBool::new(false));
+    install_shutdown_handler(Arc::clone(&shutdown))?;
+    {
+        let watchdog_flag = Arc::clone(&shutdown);
+        std::thread::Builder::new()
+            .name("coral-mcp-shutdown".to_string())
+            .spawn(move || {
+                // Poll the flag; once set, give in-flight handlers a
+                // brief grace window, then exit. Without this, the
+                // tiny_http blocking iterator (HTTP) or stdin read
+                // (stdio) would hang after Ctrl-C until the OS sent
+                // SIGKILL.
+                loop {
+                    if watchdog_flag.load(Ordering::Relaxed) {
+                        eprintln!("\ncoral mcp serve: shutdown signal received, exiting");
+                        std::thread::sleep(std::time::Duration::from_millis(150));
+                        std::process::exit(0);
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+            })
+            .map_err(|e| anyhow::anyhow!("failed to spawn shutdown watchdog: {e}"))?;
+    }
     match args.transport {
         TransportArg::Stdio => {
             handler
@@ -351,6 +392,40 @@ fn serve(args: ServeArgs) -> Result<ExitCode> {
 #[allow(dead_code)]
 fn _ensure_tool_call_result_used(_t: ToolCallResult) {}
 
+/// v0.30.0 audit B1: register SIGINT/SIGTERM so the serve loops can
+/// shut down gracefully instead of being killed mid-request. The flag
+/// is shared with a watchdog thread that calls `std::process::exit(0)`
+/// once a signal flips it.
+fn install_shutdown_handler(flag: Arc<AtomicBool>) -> Result<()> {
+    use signal_hook::consts::{SIGINT, SIGTERM};
+    signal_hook::flag::register(SIGINT, flag.clone())
+        .map_err(|e| anyhow::anyhow!("failed to register SIGINT handler: {e}"))?;
+    signal_hook::flag::register(SIGTERM, flag)
+        .map_err(|e| anyhow::anyhow!("failed to register SIGTERM handler: {e}"))?;
+    Ok(())
+}
+
+/// v0.30.0 audit B4: in-process serialization for audit-log appends
+/// and rotations. The audit log lives in `coral-cli` (NOT `coral-mcp`)
+/// because tools dispatched through `NoOpDispatcher` or any library
+/// consumer of `coral-mcp` get no audit trail — only the CLI's
+/// `CoralToolDispatcher::call` path appends to `.coral/audit.log`.
+///
+/// Under the HTTP transport, several dispatcher threads run
+/// concurrently. Pre-fix, `remove_file(audit.log.1)` + `rename(...)`
+/// + the subsequent `append` were three independent syscalls with no
+/// serialization: two threads could race, lose log entries between
+/// the metadata check and the rename, or partially clobber the rolled
+/// file. The mutex below makes "check size → rotate → append" a single
+/// atomic critical section within the process. Cross-process
+/// serialization would need a real `flock` (which would require a new
+/// dep); in practice nothing else writes the audit log for a given
+/// project, so an in-process mutex covers the realistic race.
+fn audit_log_mutex() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
 /// Real dispatcher backed by the same library APIs the CLI uses.
 ///
 /// v0.19.5 audit C1: replaces `NoOpDispatcher` so MCP clients get real
@@ -393,11 +468,27 @@ impl CoralToolDispatcher {
         // the active file restarts fresh. Users who need longer
         // retention can wire up logrotate externally; a single rolled
         // file keeps the binary policy-free.
+        //
+        // v0.30.0 audit B4: the rotation check, rotation, and append
+        // all run inside the same in-process critical section. Pre-fix
+        // these were three independent syscalls and concurrent
+        // dispatcher threads under the HTTP transport could race,
+        // dropping log lines between the size check and the rename.
+        // The audit log lives in `coral-cli` (NOT `coral-mcp`) — any
+        // consumer of the `coral-mcp` library that doesn't go through
+        // `CoralToolDispatcher` gets no audit trail.
         let dir = self.project_root.join(".coral");
         if std::fs::create_dir_all(&dir).is_err() {
             return;
         }
         let path = dir.join("audit.log");
+        // Acquire the in-process audit-log mutex for the whole
+        // check-rotate-append sequence. `lock()` only errors on
+        // poisoning; even then we proceed (a previous panic during a
+        // write shouldn't permanently disable audit logging).
+        let _guard = audit_log_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         Self::rotate_audit_log_if_needed(&path);
         let entry = serde_json::json!({
             "ts": chrono::Utc::now().to_rfc3339(),
@@ -425,6 +516,24 @@ impl CoralToolDispatcher {
     /// to `audit.log.1` (replacing any prior rolled file). Best-effort:
     /// any I/O error is swallowed because audit logging must never
     /// fail a tool call.
+    ///
+    /// v0.30.0 audit B4: callers MUST hold `audit_log_mutex()` for the
+    /// whole check-rotate-append sequence — this function performs no
+    /// locking of its own. The two syscalls below (`remove_file` +
+    /// `rename`) are not jointly atomic; the surrounding mutex is what
+    /// makes the sequence race-free against other dispatcher threads
+    /// in the same process. The order is deliberate:
+    ///   1. `remove_file(rolled)` — Windows `rename` cannot overwrite
+    ///      a target that exists; POSIX `rename` would have replaced
+    ///      it, but we treat both platforms the same. ENOENT is
+    ///      ignored (no prior rolled file is the common case).
+    ///   2. `rename(active, rolled)` — atomic on POSIX/NTFS; if it
+    ///      fails we leave both files in place and the next append
+    ///      simply appends to the over-cap active file (best-effort).
+    /// We also `sync_all` the parent directory on POSIX so the
+    /// rename's directory entry survives a crash. On Windows opening
+    /// a directory via `File::open` isn't supported, so that step is
+    /// a no-op.
     fn rotate_audit_log_if_needed(path: &Path) {
         let size = match std::fs::metadata(path) {
             Ok(m) => m.len(),
@@ -437,11 +546,15 @@ impl CoralToolDispatcher {
         let mut rolled = path.as_os_str().to_os_string();
         rolled.push(".1");
         let rolled = std::path::PathBuf::from(rolled);
-        // `rename` replaces the target on POSIX; on Windows it errors
-        // if the target exists, so remove first. Both paths are
-        // best-effort.
         let _ = std::fs::remove_file(&rolled);
-        let _ = std::fs::rename(path, &rolled);
+        if std::fs::rename(path, &rolled).is_ok() {
+            // Best-effort fsync of the parent directory so the rename's
+            // entry survives a crash. POSIX-only; on Windows opening a
+            // directory as a file errors and we swallow it.
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::File::open(parent).and_then(|f| f.sync_all());
+            }
+        }
     }
 }
 
@@ -675,6 +788,95 @@ mod tests {
         );
     }
 
+    /// v0.30.0 audit B4: concurrent appends across many threads with a
+    /// small size cap must not drop entries. Pre-fix, the rotation
+    /// race (`remove_file` + `rename` + `append` as three independent
+    /// syscalls) could leave a window where appends between the size
+    /// check and the rename landed on the file that was about to be
+    /// renamed and then got truncated-by-rotation by the next thread.
+    /// Post-fix, the `audit_log_mutex()` serializes the whole
+    /// check-rotate-append sequence within the process, so every
+    /// dispatched entry lands in either `audit.log` or `audit.log.1`
+    /// with no losses or duplicates.
+    #[test]
+    fn audit_log_concurrent_appends_lose_no_entries_across_rotations() {
+        use std::sync::Arc as StdArc;
+
+        let dir = TempDir::new().unwrap();
+        make_project(dir.path());
+        // Force several rotations within the test run by shrinking the
+        // effective cap. We can't change the const, so instead drive
+        // many large args so the first few KiB of entries already
+        // trip the 16 MiB cap... no — at 16 MiB this would be far too
+        // slow. Instead, drop a pre-seeded log already past the cap
+        // and verify the FIRST rotation works correctly across N
+        // racing threads. (A multi-rotation test would need a config
+        // knob; the lock invariant we're guarding is per-rotation.)
+        let coral_dir = dir.path().join(".coral");
+        std::fs::create_dir_all(&coral_dir).unwrap();
+        let active = coral_dir.join("audit.log");
+        let mut content = String::new();
+        while (content.len() as u64) < CoralToolDispatcher::AUDIT_LOG_MAX_BYTES + 1 {
+            content.push_str("seed-padding-padding-padding-padding-padding\n");
+        }
+        std::fs::write(&active, &content).unwrap();
+
+        let n_threads = 8;
+        let per_thread = 100;
+        let dispatcher = StdArc::new(CoralToolDispatcher::new(dir.path().to_path_buf()));
+        let mut handles = Vec::with_capacity(n_threads);
+        for t in 0..n_threads {
+            let d = StdArc::clone(&dispatcher);
+            handles.push(std::thread::spawn(move || {
+                for i in 0..per_thread {
+                    let _ = d.call(
+                        "search",
+                        &serde_json::json!({"q": format!("t{}-i{}", t, i)}),
+                    );
+                }
+            }));
+        }
+        for h in handles {
+            h.join().expect("worker thread panicked");
+        }
+
+        // Every call also issues a `search` audit line. Count
+        // occurrences of the marker that identifies one of OUR calls
+        // (the `q` value) across BOTH the active file and the rolled
+        // file. Total must equal n_threads * per_thread — no losses
+        // due to rotation race.
+        let active_content = std::fs::read_to_string(&active).unwrap_or_default();
+        let rolled_content = std::fs::read_to_string(coral_dir.join("audit.log.1"))
+            .unwrap_or_default();
+        let mut seen = 0usize;
+        for t in 0..n_threads {
+            for i in 0..per_thread {
+                let needle = format!("\"q\":\"t{}-i{}\"", t, i);
+                let in_active = active_content.matches(needle.as_str()).count();
+                let in_rolled = rolled_content.matches(needle.as_str()).count();
+                assert!(
+                    in_active + in_rolled >= 1,
+                    "entry t={t} i={i} missing from both audit.log and audit.log.1"
+                );
+                // No duplicate within a single file (each append is
+                // single-line and the lock prevents a second writer
+                // re-running the same payload).
+                assert!(
+                    in_active <= 1 && in_rolled <= 1,
+                    "entry t={t} i={i} duplicated (active={in_active}, rolled={in_rolled})"
+                );
+                seen += in_active + in_rolled;
+            }
+        }
+        assert_eq!(
+            seen,
+            n_threads * per_thread,
+            "expected {} entries across both files, saw {}",
+            n_threads * per_thread,
+            seen
+        );
+    }
+
     /// v0.24.3 M1.14: preview constructs providers without panicking
     /// when no wiki exists (empty project / temp dir).
     #[test]
@@ -688,13 +890,13 @@ mod tests {
             format: PreviewFormat::Human,
             include_unreviewed: false,
         });
-        assert!(result.is_ok());
+        result.expect("preview Human must succeed on empty project");
 
         let result = preview(PreviewArgs {
             format: PreviewFormat::Json,
             include_unreviewed: false,
         });
-        assert!(result.is_ok());
+        result.expect("preview Json must succeed on empty project");
 
         std::env::set_current_dir(prev_cwd).unwrap();
     }

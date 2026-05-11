@@ -123,7 +123,7 @@ mod tests {
     fn wait_for_healthy_returns_ok_on_first_pass() {
         let hc = http_check();
         let result = wait_for_healthy("api", &hc, |_| ProbeResult::Pass);
-        assert!(result.is_ok());
+        result.expect("wait_for_healthy must succeed when the probe returns Pass on the first try");
     }
 
     #[test]

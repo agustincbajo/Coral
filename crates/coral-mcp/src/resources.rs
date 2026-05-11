@@ -11,11 +11,13 @@
 //! - `coral://lock` — coral.lock as JSON
 //! - `coral://stats` — `coral stats --format json`
 
-use std::sync::OnceLock;
+use std::sync::{Arc, RwLock};
 
 use coral_core::frontmatter::PageType;
 use coral_core::page::Page;
 use serde::{Deserialize, Serialize};
+
+use crate::state::WikiState;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Resource {
@@ -66,11 +68,17 @@ pub struct WikiResourceProvider {
     /// Set to `true` only via `coral mcp serve --include-unreviewed`,
     /// which is intended for users debugging distill flows.
     pub include_unreviewed: bool,
-    /// v0.24: in-memory page cache. The MCP server is long-lived, so
-    /// we load pages from disk once and serve from memory on all
-    /// subsequent requests. Avoids ~200ms filesystem walks per request
-    /// for large wikis.
-    pages_cache: OnceLock<Vec<Page>>,
+    /// v0.30.0 audit #002: live-reloadable wiki cache. Wired by the
+    /// CLI (`coral mcp serve`) to the same `Arc<RwLock<WikiState>>`
+    /// the file watcher pokes via `mark_dirty()` — so a `resources/read`
+    /// after a filesystem change sees fresh content within one
+    /// `is_dirty()` check, no process restart needed.
+    ///
+    /// Optional so existing constructors (e.g. tests, `coral mcp card`,
+    /// `coral mcp preview`) keep working without standing up a shared
+    /// state handle; when `None`, `read_pages()` falls back to an
+    /// on-demand walk (slower, but correct — no stale cache).
+    state: Option<Arc<RwLock<WikiState>>>,
 }
 
 impl WikiResourceProvider {
@@ -82,7 +90,7 @@ impl WikiResourceProvider {
         Self {
             project_root,
             include_unreviewed: false,
-            pages_cache: OnceLock::new(),
+            state: None,
         }
     }
 
@@ -92,6 +100,15 @@ impl WikiResourceProvider {
     /// v0.20.2 audit-followup #37.
     pub fn with_include_unreviewed(mut self, include: bool) -> Self {
         self.include_unreviewed = include;
+        self
+    }
+
+    /// v0.30.0 audit #002: wire a shared `WikiState` handle so reads
+    /// can observe filesystem changes pushed by the watcher. Without
+    /// this, the provider performs an on-demand walk on every
+    /// `read_pages()` call.
+    pub fn with_state(mut self, state: Arc<RwLock<WikiState>>) -> Self {
+        self.state = Some(state);
         self
     }
 
@@ -157,13 +174,21 @@ impl WikiResourceProvider {
         self.project_root.join(".wiki")
     }
 
-    /// Read pages from the wiki root, returning an empty slice if the
+    /// Read pages from the wiki root, returning an empty vec if the
     /// root doesn't exist (a freshly-initialized project).
     ///
-    /// v0.24: pages are loaded once on first access and cached in
-    /// `self.pages_cache` for the lifetime of the provider. This
-    /// eliminates repeated filesystem walks (~200ms each for large
-    /// wikis) on every MCP request.
+    /// v0.30.0 audit #002: when a shared `WikiState` is wired in (the
+    /// production path via `coral mcp serve`), this method consults
+    /// the dirty flag the watcher pokes on filesystem changes. A dirty
+    /// state triggers a `refresh()` under a write lock before pages
+    /// are cloned out; otherwise the cached vec is cloned under a read
+    /// lock. Without a wired state (tests, `coral mcp card`, …), this
+    /// falls back to an on-demand walk — slower per call, but never
+    /// stale.
+    ///
+    /// Returns an owned `Vec<Page>` rather than a borrow so callers
+    /// don't keep the `WikiState` lock guard alive across renderer
+    /// work (which would block the watcher and other resource reads).
     ///
     /// v0.20.2 audit-followup #37: when `include_unreviewed` is
     /// false, pages flagged by [`is_unreviewed_distilled`] are
@@ -171,21 +196,49 @@ impl WikiResourceProvider {
     /// renderer (`render_page`, `render_aggregate_index`,
     /// `render_repo_index`, the per-page enumeration in `list`)
     /// inherits the same qualifier with no extra filter calls.
-    fn read_pages(&self) -> &[Page] {
-        self.pages_cache.get_or_init(|| {
+    fn read_pages(&self) -> Vec<Page> {
+        let raw: Vec<Page> = if let Some(state) = self.state.as_ref() {
+            // Fast path: take the read lock and check the dirty flag.
+            // If clean, clone the cached pages out and drop the guard
+            // before the renderer runs. If dirty, upgrade by dropping
+            // the read guard and re-acquiring as write — std `RwLock`
+            // has no in-place upgrade, but the window between drop and
+            // re-acquire is harmless: the worst case is two writers
+            // both refresh, which is idempotent.
+            let need_refresh = match state.read() {
+                Ok(guard) => guard.is_dirty(),
+                Err(_) => true, // poisoned: force a refresh attempt
+            };
+            if need_refresh {
+                if let Ok(mut guard) = state.write() {
+                    if guard.is_dirty() {
+                        guard.refresh();
+                    }
+                }
+            }
+            match state.read() {
+                Ok(guard) => guard.pages().to_vec(),
+                Err(_) => Vec::new(),
+            }
+        } else {
+            // Fallback: on-demand walk. No caching here is intentional
+            // — better a slower correct read than a stale cache that
+            // can never invalidate (the pre-v0.30 OnceLock bug).
             let root = self.wiki_root();
             if !root.exists() {
-                return Vec::new();
+                Vec::new()
+            } else {
+                coral_core::walk::read_pages(&root).unwrap_or_default()
             }
-            let pages = coral_core::walk::read_pages(&root).unwrap_or_default();
-            if self.include_unreviewed {
-                return pages;
-            }
-            pages
-                .into_iter()
+        };
+
+        if self.include_unreviewed {
+            raw
+        } else {
+            raw.into_iter()
                 .filter(|p| !p.is_unreviewed_distilled())
                 .collect()
-        })
+        }
     }
 
     /// Render `coral://manifest` as JSON.
@@ -232,7 +285,7 @@ impl WikiResourceProvider {
 
     fn render_stats(&self) -> Option<String> {
         let pages = self.read_pages();
-        let report = coral_stats::StatsReport::new(pages);
+        let report = coral_stats::StatsReport::new(&pages);
         report.as_json().ok()
     }
 
@@ -550,5 +603,77 @@ mod tests {
         assert!(!slug_is_safe_segments("api/.."));
         assert!(slug_is_safe_segments("api/order"));
         assert!(slug_is_safe_segments("order"));
+    }
+
+    /// v0.30.0 audit #002 regression: when wired to a `WikiState`, the
+    /// provider must observe filesystem changes after the watcher (or
+    /// any other actor) marks the state dirty. Pre-fix this would have
+    /// silently served the first-cached page set forever.
+    #[test]
+    fn read_pages_observes_state_dirty_after_disk_change() {
+        use std::fs;
+
+        let dir = tempfile::tempdir().unwrap();
+        let project_root = dir.path().to_path_buf();
+        let wiki_root = project_root.join(".wiki");
+        let modules = wiki_root.join("module");
+        fs::create_dir_all(&modules).unwrap();
+
+        // Seed one page so the initial scan picks it up.
+        fs::write(
+            modules.join("alpha.md"),
+            "---\nslug: alpha\ntype: module\nlast_updated_commit: abc\nconfidence: 0.6\nstatus: draft\n---\n\n# alpha\n",
+        )
+        .unwrap();
+
+        let state = crate::state::shared_state(wiki_root.clone());
+        let provider = WikiResourceProvider::new(project_root).with_state(state.clone());
+
+        // First read populates / serves the cached set: one page.
+        let pages1 = provider.read_pages();
+        assert_eq!(pages1.len(), 1, "expected initial scan to find alpha");
+
+        // Write a second page on disk and force the dirty flag (as the
+        // watcher would, on the next polling tick).
+        fs::write(
+            modules.join("beta.md"),
+            "---\nslug: beta\ntype: module\nlast_updated_commit: def\nconfidence: 0.6\nstatus: draft\n---\n\n# beta\n",
+        )
+        .unwrap();
+        state.write().unwrap().mark_dirty();
+
+        // Now the next read MUST observe both pages — pre-fix this
+        // would have returned the stale single-page vec from OnceLock.
+        let pages2 = provider.read_pages();
+        assert_eq!(
+            pages2.len(),
+            2,
+            "post-mark_dirty read must observe new page; got slugs {:?}",
+            pages2.iter().map(|p| &p.frontmatter.slug).collect::<Vec<_>>()
+        );
+    }
+
+    /// Without a wired `WikiState`, `read_pages()` must still work via
+    /// the on-demand fallback path. Guards the "tests / `coral mcp
+    /// card` / `coral mcp preview` keep working without standing up a
+    /// shared state handle" claim on `with_state`.
+    #[test]
+    fn read_pages_works_without_state_via_fallback_walk() {
+        use std::fs;
+
+        let dir = tempfile::tempdir().unwrap();
+        let project_root = dir.path().to_path_buf();
+        let modules = project_root.join(".wiki").join("module");
+        fs::create_dir_all(&modules).unwrap();
+        fs::write(
+            modules.join("only.md"),
+            "---\nslug: only\ntype: module\nlast_updated_commit: abc\nconfidence: 0.6\nstatus: draft\n---\n\n# only\n",
+        )
+        .unwrap();
+
+        let provider = WikiResourceProvider::new(project_root);
+        let pages = provider.read_pages();
+        assert_eq!(pages.len(), 1);
+        assert_eq!(pages[0].frontmatter.slug, "only");
     }
 }

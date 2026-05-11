@@ -130,7 +130,7 @@ mod tests {
         );
         std::env::set_current_dir(original).unwrap();
 
-        assert!(result.is_ok());
+        result.expect("project new must succeed in a fresh empty directory");
         let manifest = std::fs::read_to_string(dir.path().join("coral.toml")).unwrap();
         let parsed = parse_toml(&manifest, &dir.path().join("coral.toml")).unwrap();
         assert_eq!(parsed.name, "my-stack");
@@ -183,7 +183,7 @@ mod tests {
         );
         std::env::set_current_dir(original).unwrap();
 
-        assert!(result.is_ok());
+        result.expect("project new --force must succeed even when coral.toml already exists");
         let after = std::fs::read_to_string(dir.path().join("coral.toml")).unwrap();
         assert!(after.contains("[project]"));
     }
