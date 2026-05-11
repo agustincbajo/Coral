@@ -56,7 +56,7 @@ pub fn run_with_runner(
     // When the wiki has ≤40 pages total, include ALL of them (relevant
     // first, then remainder) so small wikis don't lose context. The
     // optimization only filters when there are >40 pages.
-    let ranked = search::search_bm25(&pages, &args.question, 40);
+    let ranked = search::search_hybrid(&pages, &args.question, 40);
     let context_pages: Vec<&coral_core::page::Page> = if ranked.is_empty() || pages.len() <= 40 {
         // Small wiki or all-stopword query: include every page, but put
         // BM25-ranked ones first for better prompt ordering.
