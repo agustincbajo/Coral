@@ -26,17 +26,28 @@
   ],
   "server": {
     "type": "binary",
-    "entry_point": "server/coral",
+    "entry_point": "server/linux/coral",
     "mcp_config": {
-      "command": "${__dirname}/server/coral",
+      "command": "${__dirname}/server/linux/coral",
       "args": ["mcp", "serve", "--transport", "stdio"],
       "env": {
         "RUST_LOG": "coral_mcp=info"
+      },
+      "platform_overrides": {
+        "linux": {
+          "command": "${__dirname}/server/linux/coral"
+        },
+        "darwin": {
+          "command": "${__dirname}/server/darwin/coral"
+        },
+        "win32": {
+          "command": "${__dirname}/server/win32/coral.exe"
+        }
       }
     }
   },
   "compatibility": {
     "claude_desktop": ">=0.10.0",
-    "platforms": ["linux"]
+    "platforms": ["linux", "darwin", "win32"]
   }
 }

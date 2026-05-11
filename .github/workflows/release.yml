@@ -101,6 +101,41 @@ jobs:
     name: Build .mcpb (Claude Desktop)
     needs: build
     runs-on: ubuntu-latest
+    # ----------------------------------------------------------------------
+    # Architecture decision: Option A — single fat .mcpb covering all platforms
+    # ----------------------------------------------------------------------
+    # We ship ONE `coral-<tag>.mcpb` artifact that contains binaries for all
+    # supported platforms, and rely on the MCPB runtime to pick the right one
+    # via `mcp_config.platform_overrides`. End users download a single file
+    # regardless of OS; Claude Desktop resolves the correct `command` path at
+    # launch based on `process.platform`.
+    #
+    # Why A over B (one bundle per platform):
+    #   * The MCPB v0.3 manifest schema (modelcontextprotocol/mcpb,
+    #     src/schemas/0.3.ts) defines `mcp_config.platform_overrides` as a
+    #     first-class field, keyed by Node-style platform strings
+    #     `darwin` / `win32` / `linux`, with each value a partial override of
+    #     `command` / `args` / `env`. Per-platform entry resolution is part
+    #     of the official spec — not a hack.
+    #   * `compatibility.platforms` is `z.enum(["darwin", "win32", "linux"])`,
+    #     so we can declare full cross-platform support in one manifest.
+    #   * Users get one URL, not four; Claude Desktop's "install extension"
+    #     UX never asks the user to pick an OS/arch.
+    #
+    # The one rough edge: the MCPB spec keys platform_overrides by OS only,
+    # not by architecture. macOS has two arches (x86_64-apple-darwin and
+    # aarch64-apple-darwin) but only one `darwin` override slot. We resolve
+    # this by `lipo`-fusing the two Mach-O slices into a single universal
+    # binary at bundle-assembly time, so the bundle's `darwin/coral` is a
+    # fat Mach-O that runs natively on both Intel and Apple Silicon.
+    # `llvm-lipo` (from the LLVM tools pre-installed on ubuntu-latest) is a
+    # drop-in for Apple's `lipo -create` and runs without a macOS host.
+    #
+    # If the official mcpb packer (`@anthropic-ai/mcpb pack`) is unavailable
+    # for any reason, the fallback is a plain `zip -r` since an .mcpb is
+    # just a zip of `manifest.json` + bundled files. We keep that fallback
+    # path for resilience.
+    # ----------------------------------------------------------------------
     steps:
       - uses: actions/checkout@v4
       - name: Set up Node.js
@@ -112,37 +147,90 @@ jobs:
         with:
           path: artifacts
           merge-multiple: true
-      # The DXT/MCPB packer is the official `@anthropic-ai/mcpb` CLI (the
-      # former `@anthropic-ai/dxt` package). We invoke it via `npx -y` so we
-      # don't pull a new dev dependency into the repo. If the official packer
-      # ever fails or isn't available, the fallback is straightforward: an
-      # .mcpb is just a zip of the manifest + server/ dir, so a `zip -r`
-      # would also work.
-      #
-      # TODO(v0.31): expand to all 4 platforms (linux x64, darwin x64, darwin
-      # arm64, windows x64) — DXT format supports per-platform binaries via
-      # platform-suffixed entry points. For v0.30 we ship a single Linux x64
-      # bundle to keep scope tight; macOS users currently install via cargo
-      # or the install.sh script.
-      - name: Assemble bundle directory (linux x64)
+      - name: Locate llvm-lipo (for universal macOS binary)
+        id: lipo
         run: |
           set -euo pipefail
-          BUNDLE="bundle"
-          mkdir -p "$BUNDLE/server" "$BUNDLE/tmp"
-          # Extract the linux x64 tarball; it expands as
-          # coral-<tag>-<target>/coral. We just need the binary inside server/.
-          TAR=$(ls artifacts/coral-${{ github.ref_name }}-x86_64-unknown-linux-gnu.tar.gz)
-          tar -xzf "$TAR" -C "$BUNDLE/tmp"
-          find "$BUNDLE/tmp" -maxdepth 3 -type f -name coral -print -exec cp {} "$BUNDLE/server/coral" \;
-          chmod +x "$BUNDLE/server/coral"
-          rm -rf "$BUNDLE/tmp"
-          # Copy the manifest. Patch the version field to match the tag so the
-          # bundle's declared version always matches the release tag, even if
-          # someone forgot to bump .dxt/manifest.json before tagging.
+          # ubuntu-latest ships several LLVM toolchains; pick the newest
+          # `llvm-lipo` on PATH. `lipo` itself is macOS-only, but llvm-lipo
+          # implements the same `-create` operation for Mach-O fat binaries.
+          LIPO_BIN=$(command -v llvm-lipo || true)
+          if [ -z "$LIPO_BIN" ]; then
+            # Fall back to a versioned name (e.g. llvm-lipo-18).
+            LIPO_BIN=$(ls /usr/bin/llvm-lipo-* 2>/dev/null | sort -V | tail -n1 || true)
+          fi
+          if [ -z "$LIPO_BIN" ]; then
+            echo "Installing llvm to obtain llvm-lipo..." >&2
+            sudo apt-get update -y
+            sudo apt-get install -y llvm
+            LIPO_BIN=$(command -v llvm-lipo || ls /usr/bin/llvm-lipo-* | sort -V | tail -n1)
+          fi
+          echo "Using lipo: $LIPO_BIN"
+          "$LIPO_BIN" --version || true
+          echo "bin=$LIPO_BIN" >> "$GITHUB_OUTPUT"
+      - name: Assemble bundle directory (all platforms)
+        run: |
+          set -euo pipefail
           TAG="${{ github.ref_name }}"
+          BUNDLE="bundle"
+          TMP="$BUNDLE/_unpack"
+          mkdir -p "$BUNDLE/server/linux" "$BUNDLE/server/darwin" "$BUNDLE/server/win32" "$TMP"
+
+          # ---- Linux x86_64 ------------------------------------------------
+          LINUX_TAR="artifacts/coral-${TAG}-x86_64-unknown-linux-gnu.tar.gz"
+          tar -xzf "$LINUX_TAR" -C "$TMP"
+          find "$TMP" -maxdepth 3 -type f -name coral -print \
+            -exec cp {} "$BUNDLE/server/linux/coral" \;
+          chmod +x "$BUNDLE/server/linux/coral"
+          rm -rf "$TMP"/*
+
+          # ---- macOS: lipo-fuse x86_64 + aarch64 into one universal binary -
+          DARWIN_X64_TAR="artifacts/coral-${TAG}-x86_64-apple-darwin.tar.gz"
+          DARWIN_ARM_TAR="artifacts/coral-${TAG}-aarch64-apple-darwin.tar.gz"
+          mkdir -p "$TMP/darwin-x64" "$TMP/darwin-arm64"
+          tar -xzf "$DARWIN_X64_TAR" -C "$TMP/darwin-x64"
+          tar -xzf "$DARWIN_ARM_TAR" -C "$TMP/darwin-arm64"
+          DX64=$(find "$TMP/darwin-x64"  -maxdepth 3 -type f -name coral | head -n1)
+          DARM=$(find "$TMP/darwin-arm64" -maxdepth 3 -type f -name coral | head -n1)
+          if [ -z "$DX64" ] || [ -z "$DARM" ]; then
+            echo "Could not locate one or both macOS slices" >&2
+            ls -R "$TMP" || true
+            exit 1
+          fi
+          "${{ steps.lipo.outputs.bin }}" -create "$DX64" "$DARM" \
+            -output "$BUNDLE/server/darwin/coral"
+          chmod +x "$BUNDLE/server/darwin/coral"
+          # Note: we intentionally do NOT re-codesign here. The two input
+          # slices are already ad-hoc signed by the build job; llvm-lipo
+          # preserves load-command signatures inside each slice. The user
+          # still hits Gatekeeper "unidentified developer" on first launch,
+          # which is the same behavior as the standalone .tar.gz binary.
+          rm -rf "$TMP"/*
+
+          # ---- Windows x86_64 ----------------------------------------------
+          WIN_ZIP="artifacts/coral-${TAG}-x86_64-pc-windows-msvc.zip"
+          unzip -q "$WIN_ZIP" -d "$TMP"
+          WIN_EXE=$(find "$TMP" -maxdepth 3 -type f -name coral.exe | head -n1)
+          if [ -z "$WIN_EXE" ]; then
+            echo "Could not locate coral.exe in Windows zip" >&2
+            ls -R "$TMP" || true
+            exit 1
+          fi
+          cp "$WIN_EXE" "$BUNDLE/server/win32/coral.exe"
+
+          rm -rf "$TMP"
+
+          # ---- Manifest ----------------------------------------------------
+          # Patch the version field to match the tag so the bundle's declared
+          # version always matches the release tag, even if someone forgot to
+          # bump .dxt/manifest.json before tagging.
           VERSION="${TAG#v}" \
             node -e "const fs=require('fs'); const m=JSON.parse(fs.readFileSync('.dxt/manifest.json')); m.version=process.env.VERSION; fs.writeFileSync('$BUNDLE/manifest.json', JSON.stringify(m, null, 2));"
-          ls -la "$BUNDLE" "$BUNDLE/server"
+
+          echo "----- bundle layout -----"
+          find "$BUNDLE" -maxdepth 4 -type f | sort
+          echo "----- darwin binary archs -----"
+          file "$BUNDLE/server/darwin/coral" || true
       - name: Pack .mcpb
         run: |
           set -euo pipefail
