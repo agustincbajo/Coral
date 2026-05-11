@@ -1,8 +1,8 @@
 //! Wiki garbage collection analysis.
 //!
-//! Detects orphan pages, stale/broken backlinks, and archived pages
-//! that are still referenced by non-archived pages. The output is a
-//! read-only report — no mutations.
+//! Detects orphan pages, broken wikilinks, stale/broken backlinks, and
+//! archived pages that are still referenced by non-archived pages. The
+//! output is a read-only report — no mutations.
 
 use crate::frontmatter::{PageType, Status};
 use crate::page::Page;
@@ -16,6 +16,10 @@ pub struct GcReport {
     /// Pages with zero inbound wikilinks from other pages and zero
     /// declared backlinks. Index pages are excluded.
     pub orphans: Vec<String>,
+    /// `(source_slug, target_slug)` pairs where the body of
+    /// `source_slug` contains a `[[target_slug]]` wikilink but
+    /// `target_slug` does not exist in the page set.
+    pub broken_wikilinks: Vec<(String, String)>,
     /// `(page_slug, declared_backlink)` pairs where the declared
     /// backlink page does NOT actually link back to `page_slug` in its
     /// body (or doesn't exist at all).
@@ -29,78 +33,104 @@ impl GcReport {
     /// Returns `true` when all finding lists are empty.
     pub fn is_clean(&self) -> bool {
         self.orphans.is_empty()
+            && self.broken_wikilinks.is_empty()
             && self.stale_backlinks.is_empty()
             && self.archived_still_referenced.is_empty()
     }
 
     /// Total number of individual findings across all categories.
     pub fn total_findings(&self) -> usize {
-        self.orphans.len() + self.stale_backlinks.len() + self.archived_still_referenced.len()
+        self.orphans.len()
+            + self.broken_wikilinks.len()
+            + self.stale_backlinks.len()
+            + self.archived_still_referenced.len()
     }
 
     /// Renders the report as human-readable Markdown.
+    ///
+    /// Prefer the free function [`render_markdown`] when you only have
+    /// a `&GcReport` reference.
     pub fn to_markdown(&self) -> String {
-        let mut out = String::new();
-        out.push_str("# Wiki GC Report\n\n");
-
-        if self.is_clean() {
-            out.push_str("No issues found — wiki is clean.\n");
-            return out;
-        }
-
-        // Orphans
-        if !self.orphans.is_empty() {
-            out.push_str(&format!("## Orphan pages ({})\n\n", self.orphans.len()));
-            out.push_str(
-                "Pages with no inbound wikilinks and no declared backlinks:\n\n",
-            );
-            for slug in &self.orphans {
-                out.push_str(&format!("- `{slug}`\n"));
-            }
-            out.push('\n');
-        }
-
-        // Stale backlinks
-        if !self.stale_backlinks.is_empty() {
-            out.push_str(&format!(
-                "## Stale backlinks ({})\n\n",
-                self.stale_backlinks.len()
-            ));
-            out.push_str(
-                "Declared `backlinks:` entries where the referenced page doesn't actually link back:\n\n",
-            );
-            for (page, bl) in &self.stale_backlinks {
-                out.push_str(&format!("- `{page}` declares backlink from `{bl}`\n"));
-            }
-            out.push('\n');
-        }
-
-        // Archived still referenced
-        if !self.archived_still_referenced.is_empty() {
-            out.push_str(&format!(
-                "## Archived pages still referenced ({})\n\n",
-                self.archived_still_referenced.len()
-            ));
-            out.push_str(
-                "Archived pages that are still wikilinked from non-archived pages:\n\n",
-            );
-            for (archived, refs) in &self.archived_still_referenced {
-                let ref_list = refs
-                    .iter()
-                    .map(|r| format!("`{r}`"))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                out.push_str(&format!("- `{archived}` ← {ref_list}\n"));
-            }
-            out.push('\n');
-        }
-
-        out.push_str(&format!(
-            "**Total findings: {}**\n",
-            self.total_findings()
-        ));
-        out
+        render_markdown(self)
     }
+}
+
+/// Renders a [`GcReport`] as human-readable Markdown.
+pub fn render_markdown(report: &GcReport) -> String {
+    let mut out = String::new();
+    out.push_str("# Wiki GC Report\n\n");
+
+    if report.is_clean() {
+        out.push_str("No issues found — wiki is clean.\n");
+        return out;
+    }
+
+    // Orphans
+    if !report.orphans.is_empty() {
+        out.push_str(&format!("## Orphan pages ({})\n\n", report.orphans.len()));
+        out.push_str("Pages with no inbound wikilinks and no declared backlinks:\n\n");
+        for slug in &report.orphans {
+            out.push_str(&format!("- `{slug}`\n"));
+        }
+        out.push('\n');
+    }
+
+    // Broken wikilinks
+    if !report.broken_wikilinks.is_empty() {
+        out.push_str(&format!(
+            "## Broken wikilinks ({})\n\n",
+            report.broken_wikilinks.len()
+        ));
+        out.push_str("Wikilinks whose target page does not exist:\n\n");
+        for (source, target) in &report.broken_wikilinks {
+            out.push_str(&format!("- `{source}` → `[[{target}]]`\n"));
+        }
+        out.push('\n');
+    }
+
+    // Stale backlinks
+    if !report.stale_backlinks.is_empty() {
+        out.push_str(&format!(
+            "## Stale backlinks ({})\n\n",
+            report.stale_backlinks.len()
+        ));
+        out.push_str(
+            "Declared `backlinks:` entries where the referenced page doesn't actually link back:\n\n",
+        );
+        for (page, bl) in &report.stale_backlinks {
+            out.push_str(&format!("- `{page}` declares backlink from `{bl}`\n"));
+        }
+        out.push('\n');
+    }
+
+    // Archived still referenced
+    if !report.archived_still_referenced.is_empty() {
+        out.push_str(&format!(
+            "## Archived pages still referenced ({})\n\n",
+            report.archived_still_referenced.len()
+        ));
+        out.push_str("Archived pages that are still wikilinked from non-archived pages:\n\n");
+        for (archived, refs) in &report.archived_still_referenced {
+            let ref_list = refs
+                .iter()
+                .map(|r| format!("`{r}`"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            out.push_str(&format!("- `{archived}` ← {ref_list}\n"));
+        }
+        out.push('\n');
+    }
+
+    out.push_str(&format!(
+        "**Total findings: {}**\n",
+        report.total_findings()
+    ));
+    out
+}
+
+/// Renders a [`GcReport`] as pretty-printed JSON.
+pub fn render_json(report: &GcReport) -> String {
+    serde_json::to_string_pretty(report).expect("GcReport is always serializable")
 }
 
 /// Analyse a set of wiki pages and return a [`GcReport`].
@@ -112,11 +142,14 @@ impl GcReport {
 ///    Pages whose type is `Index` are excluded (they are structural
 ///    roots).
 ///
-/// 2. **Stale backlinks** — a page declares `backlinks: [slug-x]` but
+/// 2. **Broken wikilinks** — a page body contains `[[target]]` but
+///    `target` does not exist in the page set.
+///
+/// 3. **Stale backlinks** — a page declares `backlinks: [slug-x]` but
 ///    `slug-x` does not contain a `[[this-page]]` wikilink in its body
 ///    (or `slug-x` doesn't even exist in the page set).
 ///
-/// 3. **Archived still referenced** — a page with `status: archived` is
+/// 4. **Archived still referenced** — a page with `status: archived` is
 ///    still wikilinked from at least one non-archived page body.
 pub fn analyze(pages: &[Page]) -> GcReport {
     let slug_set: HashSet<&str> = pages.iter().map(|p| p.frontmatter.slug.as_str()).collect();
@@ -162,7 +195,21 @@ pub fn analyze(pages: &[Page]) -> GcReport {
     }
     report.orphans.sort();
 
-    // ── 2. Stale backlinks ───────────────────────────────────────────
+    // ── 2. Broken wikilinks ─────────────────────────────────────────
+    for (from_slug, links) in &body_links {
+        for link in links {
+            if !slug_set.contains(link.as_str()) {
+                report
+                    .broken_wikilinks
+                    .push((from_slug.to_string(), link.clone()));
+            }
+        }
+    }
+    report
+        .broken_wikilinks
+        .sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+
+    // ── 3. Stale backlinks ───────────────────────────────────────────
     for p in pages {
         let my_slug = &p.frontmatter.slug;
         for bl in &p.frontmatter.backlinks {
@@ -184,7 +231,7 @@ pub fn analyze(pages: &[Page]) -> GcReport {
         .stale_backlinks
         .sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
 
-    // ── 3. Archived pages still referenced ───────────────────────────
+    // ── 4. Archived pages still referenced ───────────────────────────
     let status_map: HashMap<&str, Status> = pages
         .iter()
         .map(|p| (p.frontmatter.slug.as_str(), p.frontmatter.status))
@@ -251,19 +298,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn clean_wiki_produces_empty_report() {
-        let pages = vec![
-            make_page("index", PageType::Index, Status::Reviewed, "Welcome", vec![]),
-            make_page("alpha", PageType::Module, Status::Reviewed, "See [[beta]]", vec![]),
-            make_page("beta", PageType::Concept, Status::Reviewed, "See [[alpha]]", vec![]),
-        ];
-        let report = analyze(&pages);
-        assert!(report.is_clean(), "expected clean report: {report:?}");
-    }
+    // ── Orphan detection ─────────────────────────────────────────────
 
     #[test]
-    fn detects_orphan_page() {
+    fn analyze_detects_orphaned_pages() {
         // alpha ↔ beta form a cycle; orphan has no links in or out.
         let pages = vec![
             make_page("alpha", PageType::Module, Status::Reviewed, "See [[beta]]", vec![]),
@@ -292,8 +330,35 @@ mod tests {
         assert!(report.orphans.is_empty(), "page with backlinks is not an orphan");
     }
 
+    // ── Broken wikilinks ─────────────────────────────────────────────
+
     #[test]
-    fn detects_stale_backlink() {
+    fn analyze_detects_broken_wikilinks() {
+        let pages = vec![
+            make_page("alpha", PageType::Module, Status::Reviewed, "See [[nonexistent]] and [[beta]]", vec![]),
+            make_page("beta", PageType::Concept, Status::Reviewed, "See [[alpha]]", vec![]),
+        ];
+        let report = analyze(&pages);
+        assert_eq!(
+            report.broken_wikilinks,
+            vec![("alpha".to_string(), "nonexistent".to_string())]
+        );
+    }
+
+    #[test]
+    fn valid_wikilink_not_broken() {
+        let pages = vec![
+            make_page("alpha", PageType::Module, Status::Reviewed, "See [[beta]]", vec![]),
+            make_page("beta", PageType::Concept, Status::Reviewed, "See [[alpha]]", vec![]),
+        ];
+        let report = analyze(&pages);
+        assert!(report.broken_wikilinks.is_empty());
+    }
+
+    // ── Stale backlinks ──────────────────────────────────────────────
+
+    #[test]
+    fn analyze_detects_broken_backlinks() {
         // `beta` declares backlink from `alpha`, but alpha doesn't link to beta.
         let pages = vec![
             make_page("alpha", PageType::Module, Status::Reviewed, "Nothing here", vec![]),
@@ -323,8 +388,10 @@ mod tests {
         assert_eq!(report.stale_backlinks, vec![("beta".to_string(), "ghost".to_string())]);
     }
 
+    // ── Archived still referenced ────────────────────────────────────
+
     #[test]
-    fn detects_archived_still_referenced() {
+    fn analyze_detects_archived_with_live_refs() {
         let pages = vec![
             make_page("alive", PageType::Module, Status::Reviewed, "See [[old-stuff]]", vec![]),
             make_page("old-stuff", PageType::Concept, Status::Archived, "Archived content", vec![]),
@@ -349,24 +416,60 @@ mod tests {
         );
     }
 
+    // ── Clean wiki ───────────────────────────────────────────────────
+
     #[test]
-    fn markdown_report_renders() {
+    fn analyze_clean_wiki_returns_empty_report() {
+        let pages = vec![
+            make_page("index", PageType::Index, Status::Reviewed, "Welcome", vec![]),
+            make_page("alpha", PageType::Module, Status::Reviewed, "See [[beta]]", vec![]),
+            make_page("beta", PageType::Concept, Status::Reviewed, "See [[alpha]]", vec![]),
+        ];
+        let report = analyze(&pages);
+        assert!(report.is_clean(), "expected clean report: {report:?}");
+    }
+
+    // ── Rendering ────────────────────────────────────────────────────
+
+    #[test]
+    fn render_markdown_formats_correctly() {
         let report = GcReport {
             orphans: vec!["lonely".to_string()],
+            broken_wikilinks: vec![("alpha".to_string(), "missing".to_string())],
             stale_backlinks: vec![("a".to_string(), "b".to_string())],
             archived_still_referenced: vec![("old".to_string(), vec!["live".to_string()])],
         };
-        let md = report.to_markdown();
+        let md = render_markdown(&report);
         assert!(md.contains("## Orphan pages (1)"));
+        assert!(md.contains("## Broken wikilinks (1)"));
         assert!(md.contains("## Stale backlinks (1)"));
         assert!(md.contains("## Archived pages still referenced (1)"));
-        assert!(md.contains("**Total findings: 3**"));
+        assert!(md.contains("**Total findings: 4**"));
+        // Also verify the method delegates correctly.
+        assert_eq!(md, report.to_markdown());
+    }
+
+    #[test]
+    fn render_json_is_valid() {
+        let report = GcReport {
+            orphans: vec!["lonely".to_string()],
+            broken_wikilinks: vec![("src".to_string(), "tgt".to_string())],
+            stale_backlinks: vec![("a".to_string(), "b".to_string())],
+            archived_still_referenced: vec![("old".to_string(), vec!["live".to_string()])],
+        };
+        let json = render_json(&report);
+        let parsed: serde_json::Value = serde_json::from_str(&json)
+            .expect("render_json must produce valid JSON");
+        assert!(parsed["orphans"].is_array());
+        assert!(parsed["broken_wikilinks"].is_array());
+        assert!(parsed["stale_backlinks"].is_array());
+        assert!(parsed["archived_still_referenced"].is_array());
     }
 
     #[test]
     fn clean_markdown_report() {
         let report = GcReport::default();
-        let md = report.to_markdown();
+        let md = render_markdown(&report);
         assert!(md.contains("No issues found"));
     }
 }

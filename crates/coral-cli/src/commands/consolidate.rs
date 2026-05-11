@@ -126,12 +126,8 @@ fn run_gc(args: &ConsolidateArgs, wiki_root: Option<&Path>) -> Result<ExitCode> 
     let report = coral_core::gc::analyze(&pages);
 
     match args.format {
-        GcFormat::Markdown => print!("{}", report.to_markdown()),
-        GcFormat::Json => {
-            let json = serde_json::to_string_pretty(&report)
-                .context("serializing GC report to JSON")?;
-            println!("{json}");
-        }
+        GcFormat::Markdown => print!("{}", coral_core::gc::render_markdown(&report)),
+        GcFormat::Json => println!("{}", coral_core::gc::render_json(&report)),
     }
 
     if report.is_clean() {
