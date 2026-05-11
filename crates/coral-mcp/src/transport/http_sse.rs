@@ -134,6 +134,10 @@ impl HttpSseTransport {
         })?;
         let local_addr = match server.server_addr() {
             tiny_http::ListenAddr::IP(s) => s,
+            // `ListenAddr::Unix` only exists `#[cfg(unix)]` in tiny_http; on
+            // Windows the enum has no Unix variant so this arm must be
+            // gated to match. We don't accept unix-socket binds anyway.
+            #[cfg(unix)]
             tiny_http::ListenAddr::Unix(_) => {
                 return Err(io::Error::other(
                     "MCP HTTP transport bound to a unix socket — not supported in v0.21.1; \

@@ -64,6 +64,7 @@ use coral_runner::{
 use std::time::Duration;
 
 mod common;
+#[cfg(unix)]
 use common::forever_yes_script;
 
 /// Shared assertion 1: empty / default `Prompt` does not panic.
@@ -105,6 +106,7 @@ fn assert_streaming_emits_chunk_on_ok<R: Runner>(runner: &R, prompt: &Prompt) {
 /// Verifies ClaudeRunner honors all five contract clauses, using
 /// `/bin/echo` as a stand-in for the real `claude` CLI and `/usr/bin/yes`
 /// for the timeout leg. Both binaries are present on macOS + Linux.
+#[cfg(unix)]
 #[test]
 fn claude_runner_honors_contract() {
     let r = ClaudeRunner::with_binary("/bin/echo");
@@ -166,6 +168,7 @@ fn claude_runner_honors_contract() {
 
 /// Verifies GeminiRunner honors all five contract clauses with `/bin/echo`
 /// substitution. Same pattern as the Claude leg.
+#[cfg(unix)]
 #[test]
 fn gemini_runner_honors_contract() {
     let r = GeminiRunner::with_binary("/bin/echo");
@@ -218,6 +221,7 @@ fn gemini_runner_honors_contract() {
 
 /// Verifies LocalRunner honors all five contract clauses with `/bin/echo`
 /// substitution. Same pattern as the Claude/Gemini legs.
+#[cfg(unix)]
 #[test]
 fn local_runner_honors_contract() {
     let r = LocalRunner::with_binary("/bin/echo");
