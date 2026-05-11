@@ -5,57 +5,53 @@
 [![CI](https://github.com/agustincbajo/Coral/actions/workflows/ci.yml/badge.svg)](https://github.com/agustincbajo/Coral/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/agustincbajo/Coral?display_name=tag)](https://github.com/agustincbajo/Coral/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-1124%20passing-brightgreen)](#testing--ci)
-[![Codecov](https://codecov.io/gh/agustincbajo/Coral/branch/main/graph/badge.svg)](https://codecov.io/gh/agustincbajo/Coral)
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange?logo=rust)](rust-toolchain.toml)
 [![MCP](https://img.shields.io/badge/MCP-2025--11--25-blue?logo=anthropic)](https://modelcontextprotocol.io/)
-[![BC](https://img.shields.io/badge/BC-v0.15%20single--repo-blue)](#backward-compatibility)
-[![Audit](https://img.shields.io/badge/multi--agent_audited-4_cycles-green)](#how-coral-itself-was-built)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/agustincbajo/Coral/badge)](https://scorecard.dev/viewer/?uri=github.com/agustincbajo/Coral)
 
-Coral started as a [Karpathy-style LLM Wiki](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) maintainer for a single repo. **As of v0.19** it's a full developer-experience platform for microservice-shaped projects: declare your repos in a `coral.toml`, bring up a multi-service environment, run functional tests, and expose the whole thing to coding agents (Claude Code, Cursor, Continue, Cline, Goose, Codex, Copilot) via Model Context Protocol — all from one binary, all open source, all locally runnable.
+Coral is a Karpathy-style LLM wiki for your code, scaled to microservice-shaped projects: declare your repos in a `coral.toml`, bring up a multi-service environment, run functional tests, and expose the whole thing to coding agents (Claude Code, Cursor, Continue, Cline, Goose, Codex, Copilot) via Model Context Protocol — one binary, open source, all local. Hardened across **five multi-agent audit cycles**.
 
 > *"The IDE is Claude Code. The programmer is you + the LLM. The wiki is the living memory of your codebase. Coral is the manifest that makes both intelligible across N repos."*
+
+### Try it in 60 seconds
+
+```bash
+# Install (Linux/macOS — Windows prereqs below)
+cargo install --locked --git https://github.com/agustincbajo/Coral --tag v0.30.0 coral-cli
+
+# Scaffold a wiki in any git repo
+cd /path/to/your/repo
+coral init
+coral bootstrap --apply   # one-time LLM compile of .wiki/ — needs `claude` on $PATH
+coral query "how does authentication work?"
+```
+
+That's the single-repo flow. Multi-repo, environments, tests, MCP, and session-distill all build on the same `coral` binary — see the [Quickstart](#quickstart) section below.
 
 ---
 
 ## Table of contents
 
-- [What you get](#what-you-get)
-- [Why Coral](#why-coral)
-- [Install](#install)
-- [Quickstart — single-repo](#quickstart--single-repo-2-minutes)
-- [Quickstart — multi-repo](#quickstart--multi-repo-5-minutes)
-- [Quickstart — environments + tests](#quickstart--environments--tests)
-- [Quickstart — MCP server for coding agents](#quickstart--mcp-server-for-coding-agents)
-- [Quickstart — capture and distill agent sessions](#quickstart--capture-and-distill-agent-sessions)
-- [Cookbook — common workflows](#cookbook--common-workflows)
-- [MCP client integration (Claude Code, Cursor, Continue, …)](#mcp-client-integration)
-- [Output examples — what each command actually prints](#output-examples)
-- [Subcommand reference](#subcommand-reference)
-- [The wiki schema](#the-wiki-schema)
-- [The `coral.toml` manifest](#the-coraltoml-manifest)
-- [The `coral.lock` lockfile](#the-corallock-lockfile)
-- [Test schema (`.coral/tests/*.{yaml,hurl}`)](#test-schema-coraltestsyamlhurl)
-- [Backward compatibility](#backward-compatibility)
-- [Comparison vs adjacent tools](#comparison-vs-adjacent-tools)
-- [Security model](#security-model)
-- [CI integration](#ci-integration)
-- [Multi-provider LLM support](#multi-provider-llm-support)
-- [Auth setup](#auth-setup)
-- [Configuration](#configuration)
-- [Architecture](#architecture)
-- [Performance](#performance)
-- [Testing & CI](#testing--ci)
-- [Troubleshooting](#troubleshooting)
-- [FAQ](#faq)
-- [Glossary](#glossary)
-- [Roadmap](#roadmap)
-- [How Coral itself was built](#how-coral-itself-was-built)
-- [Releasing](#releasing)
-- [Contributing](#contributing)
-- [References & related work](#references--related-work)
-- [License](#license)
+**Getting started**
+- [What you get](#what-you-get) · [Why Coral](#why-coral) · [Install](#install)
+- [Quickstart](#quickstart) (single-repo, multi-repo, environments+tests, MCP server, session-distill)
+
+**Use it**
+- [Cookbook — 7 common workflows](#cookbook--common-workflows)
+- [MCP client integration](#mcp-client-integration) (Claude Code · Cursor · Continue · Cline · Goose · raw JSON-RPC · HTTP/SSE)
+- [Output examples](#output-examples) — what each command actually prints
+
+**Reference**
+- [Subcommand reference](#subcommand-reference) · [Wiki schema](#the-wiki-schema) · [`coral.toml`](#the-coraltoml-manifest) · [`coral.lock`](#the-corallock-lockfile) · [Test schema](#test-schema-coraltestsyamlhurl)
+- [Multi-provider LLM support](#multi-provider-llm-support) · [Auth setup](#auth-setup) · [Configuration](#configuration)
+
+**Operations**
+- [Backward compatibility](#backward-compatibility) · [Security model](#security-model) · [CI integration](#ci-integration) · [Performance](#performance) · [Testing & CI](#testing--ci)
+- [Troubleshooting](#troubleshooting) · [FAQ](#faq) · [Glossary](#glossary)
+
+**Project**
+- [Architecture](#architecture) · [Comparison vs adjacent tools](#comparison-vs-adjacent-tools) · [Roadmap](#roadmap)
+- [How Coral itself was built](#how-coral-itself-was-built) · [Releasing](#releasing) · [Contributing](#contributing) · [References](#references--related-work) · [License](#license)
 
 ---
 
@@ -137,8 +133,10 @@ Unit tests don't tell you if your microservices actually work together. End-to-e
 ### From a tagged release (recommended)
 
 ```bash
-cargo install --locked --git https://github.com/agustincbajo/Coral --tag v0.21.1 coral-cli
+cargo install --locked --git https://github.com/agustincbajo/Coral --tag v0.30.0 coral-cli
 ```
+
+(Replace `v0.30.0` with the latest tag from the [Releases page](https://github.com/agustincbajo/Coral/releases).)
 
 ### From `main` (latest)
 
@@ -169,10 +167,15 @@ Common gotcha: Git Bash's `C:\Program Files\Git\usr\bin\link.exe` (a coreutils t
 Each tagged release ships pre-built binaries for x86_64 Linux, x86_64 macOS, and aarch64 macOS (Apple Silicon) on the [Releases page](https://github.com/agustincbajo/Coral/releases). Download `coral-vX.Y.Z-<target>.tar.gz`, verify the SHA-256, extract the `coral` binary, place it on your `$PATH`.
 
 ```bash
-curl -L -o coral.tar.gz https://github.com/agustincbajo/Coral/releases/download/v0.21.1/coral-v0.21.1-aarch64-apple-darwin.tar.gz
+# Replace VERSION and TARGET with the values for the release you want; e.g.
+#   VERSION=v0.30.0
+#   TARGET=aarch64-apple-darwin   # x86_64-apple-darwin or x86_64-unknown-linux-gnu
+VERSION=v0.30.0
+TARGET=aarch64-apple-darwin
+curl -L -o coral.tar.gz "https://github.com/agustincbajo/Coral/releases/download/${VERSION}/coral-${VERSION}-${TARGET}.tar.gz"
 shasum -a 256 -c coral.tar.gz.sha256  # if you also downloaded the .sha256 sidecar
 tar -xzf coral.tar.gz
-sudo mv coral-v0.21.1-aarch64-apple-darwin/coral /usr/local/bin/
+sudo mv "coral-${VERSION}-${TARGET}/coral" /usr/local/bin/
 coral --version
 ```
 
