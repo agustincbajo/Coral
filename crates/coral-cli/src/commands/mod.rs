@@ -50,6 +50,90 @@ pub mod mutants;
 pub mod scaffold;
 pub mod runner_helper;
 
+/// v0.30.0 audit cycle 5 B2: documented exit-code contract for the
+/// "is-something-wrong-with-my-project" family of commands (`lint`,
+/// `verify`, `contract check`). Other commands MAY adopt this; the
+/// hard requirement is just that these three distinguish "I ran fine
+/// and reported N findings" from "I crashed trying to run".
+///
+/// | Code | Meaning                                              |
+/// |------|------------------------------------------------------|
+/// |   0  | Clean. No findings.                                  |
+/// |   1  | Findings. User-actionable (lint hits, drift, …).     |
+/// |   2  | Usage error. Bad flags, missing required arg.        |
+/// |   3  | Internal error. I/O, parse, backend down, panic.     |
+///
+/// `commands::test::run` already uses `ExitCode::from(2)` for usage
+/// errors via the clap subcommand layer. This module documents the
+/// rest; the actual `Err -> ExitCode::from(3)` mapping happens at the
+/// dispatch boundary in `main.rs` (see `dispatch_with_internal_exit`).
+pub mod exit_codes {
+    use std::process::ExitCode;
+
+    pub const CLEAN: u8 = 0;
+    pub const FINDINGS: u8 = 1;
+    /// Usage / argument errors. Reserved for clap-driven failures;
+    /// `commands::test::run` already returns this for unknown test
+    /// kinds.
+    pub const USAGE: u8 = 2;
+    /// Internal / crash. The command never produced a report; the
+    /// caller should treat this as "tool was unable to determine
+    /// whether the project is clean" rather than "project is dirty".
+    pub const INTERNAL: u8 = 3;
+
+    /// Helper: turn a `Result<ExitCode>` from a command module into a
+    /// `Result<ExitCode>` that maps `Err` to `Ok(ExitCode::from(3))`.
+    /// Errors are still printed (caller does that). Used at the
+    /// dispatch boundary for commands that opt into the contract.
+    pub fn map_internal_err(
+        result: anyhow::Result<ExitCode>,
+    ) -> (ExitCode, Option<anyhow::Error>) {
+        match result {
+            Ok(code) => (code, None),
+            Err(e) => (ExitCode::from(INTERNAL), Some(e)),
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// v0.30.0 audit cycle 5 B2: the exit-code contract constants
+        /// must match what `lint`/`verify`/`contract` and external CI
+        /// systems agree on. A change here is a breaking change to
+        /// the CLI contract — the test pins the numeric values so a
+        /// careless refactor can't silently shift them.
+        #[test]
+        fn exit_code_contract_constants_are_pinned() {
+            assert_eq!(CLEAN, 0, "0 is reserved for `clean`");
+            assert_eq!(FINDINGS, 1, "1 is reserved for `findings`");
+            assert_eq!(USAGE, 2, "2 is reserved for `usage error`");
+            assert_eq!(INTERNAL, 3, "3 is reserved for `internal error`");
+        }
+
+        /// v0.30.0 audit cycle 5 B2: `map_internal_err` converts an
+        /// `Err` to `ExitCode 3` and preserves the error for the
+        /// caller to print. An `Ok(code)` passes through unchanged.
+        #[test]
+        fn map_internal_err_rewrites_err_to_3_and_passes_ok_through() {
+            // Ok-finding case: ExitCode 1 passes through unchanged.
+            let (code, err) = map_internal_err(Ok(ExitCode::from(FINDINGS)));
+            assert!(err.is_none(), "Ok input must not produce an error");
+            // ExitCode does not implement PartialEq; compare via Debug.
+            assert_eq!(format!("{code:?}"), format!("{:?}", ExitCode::from(FINDINGS)));
+
+            // Err case: rewritten to ExitCode 3 with the error preserved.
+            let (code, err) = map_internal_err(Err(anyhow::anyhow!("backend down")));
+            assert!(err.is_some(), "Err input must surface the error");
+            assert!(
+                err.unwrap().to_string().contains("backend down"),
+                "the original error message must survive"
+            );
+            assert_eq!(format!("{code:?}"), format!("{:?}", ExitCode::from(INTERNAL)));
+        }
+    }
+}
+
 /// Shared cwd mutex for tests across all command modules.
 ///
 /// Process cwd is global, so any test that calls `set_current_dir` must

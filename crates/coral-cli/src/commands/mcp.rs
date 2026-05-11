@@ -879,8 +879,18 @@ mod tests {
 
     /// v0.24.3 M1.14: preview constructs providers without panicking
     /// when no wiki exists (empty project / temp dir).
+    ///
+    /// v0.30.0 audit cycle 5 B11: acquire `CWD_LOCK` before mutating
+    /// the process-wide cwd. Other test sites that touch
+    /// `set_current_dir` (`project/new.rs`, `project/add.rs`,
+    /// `project/lock.rs`, `bootstrap.rs`, `ingest.rs`, …) hold this
+    /// lock; without it, this test races them under `cargo test`
+    /// parallelism and intermittently sees the wrong cwd.
     #[test]
     fn preview_does_not_panic_on_empty_project() {
+        let _guard = crate::commands::CWD_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         let dir = TempDir::new().unwrap();
         // Set CWD to a temp dir with no wiki — preview must still work.
         let prev_cwd = std::env::current_dir().unwrap();
@@ -890,14 +900,18 @@ mod tests {
             format: PreviewFormat::Human,
             include_unreviewed: false,
         });
-        result.expect("preview Human must succeed on empty project");
-
+        // Restore cwd BEFORE the assertion so a failure can't strand
+        // the rest of the test suite in a deleted tempdir.
+        let preview_human_outcome = result;
         let result = preview(PreviewArgs {
             format: PreviewFormat::Json,
             include_unreviewed: false,
         });
-        result.expect("preview Json must succeed on empty project");
+        let preview_json_outcome = result;
 
         std::env::set_current_dir(prev_cwd).unwrap();
+
+        preview_human_outcome.expect("preview Human must succeed on empty project");
+        preview_json_outcome.expect("preview Json must succeed on empty project");
     }
 }

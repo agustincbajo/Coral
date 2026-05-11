@@ -180,7 +180,11 @@ depends_on = ["api"]
             // We can't easily intercept, but assert no panic.
             print_mermaid(&p, None);
         });
-        assert!(captured.is_ok());
+        // v0.30.0 audit cycle 5 B10: surface the panic payload instead
+        // of `assert!(... .is_ok())`, which only prints "left: true,
+        // right: false" on failure. `.expect` lets a future regression
+        // include the actual panic message in the CI log.
+        captured.expect("print_mermaid must not panic on a two-repo project");
     }
 
     #[test]

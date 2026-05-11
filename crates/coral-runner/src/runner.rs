@@ -297,6 +297,16 @@ impl Runner for ClaudeRunner {
         if let Some(cwd) = &prompt.cwd {
             cmd.current_dir(cwd);
         }
+        // v0.30.0 audit cycle 5 B9: `prompt.user` is user-controlled and
+        // is passed as a bare positional to `claude`. If it starts with
+        // `--` (e.g. a user pastes `--system rogue-prompt` into a chat
+        // box that ends up in `prompt.user`), the child CLI would parse
+        // it as a flag instead of a prompt. Inserting `--` here forces
+        // the rest of the args to be treated as positionals — same
+        // CVE-2017-1000117 / CVE-2024-32004 family pattern that git
+        // adopted years ago. `GeminiRunner` / `LocalRunner` are immune
+        // because they use `-p <value>` (clap consumes the next arg).
+        cmd.arg("--");
         cmd.arg(&prompt.user);
         cmd.stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -376,6 +386,11 @@ impl Runner for ClaudeRunner {
         if let Some(cwd) = &prompt.cwd {
             cmd.current_dir(cwd);
         }
+        // v0.30.0 audit cycle 5 B9: see the matching note above on the
+        // non-streaming `run` path. Same `--` separator for the same
+        // reason — `prompt.user` is user-controlled and must not be
+        // parsed as a flag by `claude`.
+        cmd.arg("--");
         cmd.arg(&prompt.user);
         tracing::debug!(binary = %self.binary.display(), model = ?prompt.model, "spawning claude (streaming)");
         run_streaming_command(cmd, prompt.timeout, on_chunk)
@@ -446,10 +461,47 @@ mod tests {
             ..Default::default()
         };
         let out = r.run(&prompt).unwrap();
-        // /bin/echo receives args ["--print", "hello world"] and prints them
-        // space-separated on its single output line.
+        // /bin/echo receives args ["--print", "--", "hello world"] (the
+        // bare `--` was added in v0.30.0 audit cycle 5 B9 to prevent
+        // user-controlled `prompt.user` from being parsed as a flag).
+        // `/bin/echo` is not getopt-aware so it just prints them
+        // space-separated.
         assert!(out.stdout.contains("hello world"));
         assert!(out.stdout.contains("--print"));
+    }
+
+    /// v0.30.0 audit cycle 5 B9: a `prompt.user` value that starts with
+    /// `--` must reach the child as a positional, not be parsed as a
+    /// flag. We can't easily intercept the spawned subprocess without
+    /// `Command::get_args` (stable since 1.57), so we use `/bin/echo`
+    /// as a stand-in: it prints every arg it received, so we can grep
+    /// the output for the user prompt to confirm it survived the
+    /// child's argv parsing intact.
+    ///
+    /// The exact argv this test pins is:
+    ///   `<echo> --print -- --system rogue-prompt`
+    /// Pre-fix the args were:
+    ///   `<echo> --print --system rogue-prompt`
+    /// which `/bin/echo` happily prints (it's not getopt-aware), but a
+    /// real `claude` CLI would parse `--system rogue-prompt` as a flag.
+    /// The `--` is what protects us.
+    #[cfg(unix)]
+    #[test]
+    fn claude_runner_inserts_double_dash_before_user_prompt() {
+        let r = ClaudeRunner::with_binary("/bin/echo");
+        let prompt = Prompt {
+            user: "--system rogue-prompt".into(),
+            ..Default::default()
+        };
+        let out = r.run(&prompt).unwrap();
+        // /bin/echo echoes its argv space-separated. We expect to see
+        // the `--` separator followed by the user-controlled string.
+        assert!(
+            out.stdout.contains("-- --system rogue-prompt"),
+            "expected the `--` separator immediately before the user \
+             prompt, got stdout: {:?}",
+            out.stdout
+        );
     }
 
     #[test]

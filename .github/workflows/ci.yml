@@ -51,6 +51,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: cargo test
+        # `--all-features` is load-bearing: it enables the feature-gated
+        # `tantivy` and `pgvector` modules in `coral-core`, so their inline
+        # tests participate in CI. This is what closes audit cycle 5 item
+        # B12 — do NOT drop `--all-features` here without adding a separate
+        # matrix row that re-enables them.
         run: cargo test --workspace --all-features
 
   msrv:

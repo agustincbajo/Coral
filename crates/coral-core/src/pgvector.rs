@@ -351,8 +351,11 @@ mod tests {
         // search → Err
         assert!(storage.search(&[0.0; 1536], 5).is_err());
 
-        // flush → Ok (no-op)
-        assert!(storage.flush().is_ok());
+        // flush → Ok (no-op).
+        // v0.30.0 audit cycle 5 B10: use `.expect` so a future
+        // regression surfaces the actual `Err` variant in the CI log
+        // rather than the opaque "assertion failed: ...is_ok()".
+        storage.flush().expect("flush is a no-op and must succeed");
     }
 
     #[test]

@@ -211,7 +211,14 @@ fn main() -> ExitCode {
         Cmd::Bootstrap(args) => commands::bootstrap::run(args, cli.wiki_root.as_deref()),
         Cmd::Ingest(args) => commands::ingest::run(args, cli.wiki_root.as_deref()),
         Cmd::Query(args) => commands::query::run(args, cli.wiki_root.as_deref()),
-        Cmd::Lint(args) => commands::lint::run(args, cli.wiki_root.as_deref()),
+        // v0.30.0 audit cycle 5 B2: `lint` / `verify` / `contract check`
+        // adopt the documented exit-code contract (0 clean / 1 findings /
+        // 2 usage / 3 internal). The command itself returns
+        // `Ok(ExitCode::from(1))` for findings and propagates `Err` only
+        // for internal failures; `map_b2_internal_err` rewrites that
+        // `Err` into `Ok(ExitCode::from(3))` at the dispatch boundary so
+        // CI can distinguish "real lint findings" from "lint crashed".
+        Cmd::Lint(args) => map_b2_internal_err(commands::lint::run(args, cli.wiki_root.as_deref())),
         Cmd::Consolidate(args) => commands::consolidate::run(args, cli.wiki_root.as_deref()),
         Cmd::Stats(args) => commands::stats::run(args, cli.wiki_root.as_deref()),
         Cmd::Sync(args) => commands::sync::run(args, cli.wiki_root.as_deref()),
@@ -228,14 +235,18 @@ fn main() -> ExitCode {
         Cmd::Up(args) => commands::up::run(args, cli.wiki_root.as_deref()),
         Cmd::Down(args) => commands::down::run(args, cli.wiki_root.as_deref()),
         Cmd::Env(args) => commands::env::run(args, cli.wiki_root.as_deref()),
-        Cmd::Verify(args) => commands::verify::run(args, cli.wiki_root.as_deref()),
+        // v0.30.0 audit cycle 5 B2: see `Cmd::Lint` above for the
+        // exit-code contract this wrapper implements.
+        Cmd::Verify(args) => map_b2_internal_err(commands::verify::run(args, cli.wiki_root.as_deref())),
         Cmd::Test(args) => commands::test::run(args, cli.wiki_root.as_deref()),
         Cmd::Guarantee(args) => commands::guarantee::run(args, cli.wiki_root.as_deref()),
         Cmd::TestDiscover(args) => commands::test_discover::run(args, cli.wiki_root.as_deref()),
         Cmd::Mcp(args) => commands::mcp::run(args, cli.wiki_root.as_deref()),
         Cmd::ExportAgents(args) => commands::export_agents::run(args, cli.wiki_root.as_deref()),
         Cmd::ContextBuild(args) => commands::context_build::run(args, cli.wiki_root.as_deref()),
-        Cmd::Contract(args) => commands::contract::run(args, cli.wiki_root.as_deref()),
+        // v0.30.0 audit cycle 5 B2: see `Cmd::Lint` above for the
+        // exit-code contract this wrapper implements.
+        Cmd::Contract(args) => map_b2_internal_err(commands::contract::run(args, cli.wiki_root.as_deref())),
         Cmd::Session(args) => commands::session::run(args, cli.wiki_root.as_deref()),
         Cmd::Skill(args) => match args.command {
             SkillCmd::Build { output } => commands::skill::build(output),
@@ -251,11 +262,41 @@ fn main() -> ExitCode {
         Cmd::TestLockIncr { path } => run_test_lock_incr(&path),
     };
 
+    // v0.30.0 audit cycle 5 B2: for `lint`, `verify`, and `contract check`
+    // we apply the documented exit-code contract — internal failures map
+    // to ExitCode 3, NOT 1, so callers (CI especially) can distinguish a
+    // backend-down crash from real findings. We detect "did this Result
+    // come from one of those commands" by stashing a marker on the
+    // command variant; here we just use the simpler approach of having
+    // the routes themselves opt in via `map_b2_internal_err` below.
     match result {
         Ok(exit_code) => exit_code,
         Err(err) => {
             eprintln!("error: {err:#}");
+            // Note: `lint`/`verify`/`contract` already map their internal
+            // errors to `Ok(ExitCode::from(3))` before reaching here (see
+            // the `map_b2_internal_err`-wrapped routes above). The
+            // generic 1 below covers every other subcommand whose error
+            // contract we haven't formalized yet.
             ExitCode::FAILURE
+        }
+    }
+}
+
+/// v0.30.0 audit cycle 5 B2: convert an `anyhow::Error` from a
+/// contract-adopting command (`lint` / `verify` / `contract check`) into
+/// an `Ok(ExitCode::from(3))`. The caller is expected to print the
+/// error to stderr first so the user still sees what happened — we
+/// only change the EXIT CODE, not the diagnostic output.
+fn map_b2_internal_err(result: Result<ExitCode>) -> Result<ExitCode> {
+    use commands::exit_codes::INTERNAL;
+    match result {
+        Ok(code) => Ok(code),
+        Err(e) => {
+            // Match the same `error: {err:#}` shape as the generic
+            // dispatch tail so users see one consistent envelope.
+            eprintln!("error: {e:#}");
+            Ok(ExitCode::from(INTERNAL))
         }
     }
 }

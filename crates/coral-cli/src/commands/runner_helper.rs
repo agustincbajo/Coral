@@ -110,6 +110,52 @@ mod tests {
     /// Tests in this module mutate process-global env; serialize them.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
+    /// v0.30.0 audit cycle 5 B11: RAII guard for a single env var.
+    /// Captures the previous value on construction and restores it on
+    /// `Drop`, so a panic between `set_var` and `remove_var` (or
+    /// between two `set_var`s) never leaks state into the next test.
+    ///
+    /// The bare `set_var` / `remove_var` pair this replaces was already
+    /// inside an `ENV_LOCK` critical section, so it was safe against
+    /// concurrent tests; the failure mode it didn't cover was an
+    /// `unwrap()` panicking AFTER `set_var` ran but BEFORE the matching
+    /// `remove_var`, which would then leave the env var set for any
+    /// later test that ran without holding the lock.
+    ///
+    /// `unsafe` is required because `std::env::set_var` /
+    /// `std::env::remove_var` are `unsafe` in Rust 1.85+ (the MSRV
+    /// gate on `rust-version.workspace`). Both are safe here because
+    /// the caller holds `ENV_LOCK` for the lifetime of the guard.
+    struct EnvVarGuard {
+        key: &'static str,
+        prev: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let prev = std::env::var(key).ok();
+            // SAFETY: caller serializes env mutation via `ENV_LOCK`.
+            unsafe {
+                std::env::set_var(key, value);
+            }
+            Self { key, prev }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            // SAFETY: caller still holds `ENV_LOCK` for the lifetime of
+            // the guard (the guard's scope is nested inside the lock's
+            // scope at every call site).
+            unsafe {
+                match &self.prev {
+                    Some(v) => std::env::set_var(self.key, v),
+                    None => std::env::remove_var(self.key),
+                }
+            }
+        }
+    }
+
     #[test]
     fn provider_name_parses_claude_and_gemini() {
         assert_eq!(
@@ -155,14 +201,56 @@ mod tests {
     #[test]
     fn resolve_provider_prefers_cli_over_env() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        // SAFETY: serialized via ENV_LOCK; only this test mutates CORAL_PROVIDER.
-        unsafe {
-            std::env::set_var("CORAL_PROVIDER", "gemini");
-        }
+        // v0.30.0 audit cycle 5 B11: RAII guard restores `CORAL_PROVIDER`
+        // on drop, even if `resolve_provider` panics. Pre-fix this was a
+        // bare `set_var` / `remove_var` pair with `.unwrap()` between
+        // them — a panic at the unwrap would leak `CORAL_PROVIDER=gemini`
+        // into every later test in the process.
+        let _env = EnvVarGuard::set("CORAL_PROVIDER", "gemini");
         let p = resolve_provider(Some("claude")).unwrap();
         assert_eq!(p, ProviderName::Claude);
+    }
+
+    /// v0.30.0 audit cycle 5 B11: regression test for the RAII guard.
+    /// Setting a var, then dropping the guard, must restore the
+    /// previous value (or absence). Covered without a real panic by
+    /// observing the env state before / after a guarded scope.
+    #[test]
+    fn env_var_guard_restores_previous_value_on_drop() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        const KEY: &str = "CORAL_TEST_B11_GUARD";
+
+        // Case 1: var was unset before; guard must leave it unset after.
+        // SAFETY: serialized via ENV_LOCK.
         unsafe {
-            std::env::remove_var("CORAL_PROVIDER");
+            std::env::remove_var(KEY);
+        }
+        {
+            let _g = EnvVarGuard::set(KEY, "scoped-value");
+            assert_eq!(std::env::var(KEY).ok().as_deref(), Some("scoped-value"));
+        }
+        assert!(
+            std::env::var(KEY).is_err(),
+            "guard must remove the var if it was unset before"
+        );
+
+        // Case 2: var had a value before; guard must restore it.
+        // SAFETY: serialized via ENV_LOCK.
+        unsafe {
+            std::env::set_var(KEY, "original");
+        }
+        {
+            let _g = EnvVarGuard::set(KEY, "scoped");
+            assert_eq!(std::env::var(KEY).ok().as_deref(), Some("scoped"));
+        }
+        assert_eq!(
+            std::env::var(KEY).ok().as_deref(),
+            Some("original"),
+            "guard must restore the prior value"
+        );
+        // SAFETY: serialized via ENV_LOCK.
+        unsafe {
+            std::env::remove_var(KEY);
         }
     }
 }

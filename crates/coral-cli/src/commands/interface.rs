@@ -18,7 +18,15 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+/// v0.30.0 audit cycle 5 B3: debounce window for own-writes /
+/// duplicate-emission protection. Any path that has been emitted on
+/// the notification stream within the last `DEBOUNCE_WINDOW` is
+/// suppressed if it re-fires within that window. 250ms is short
+/// enough that "save twice, fast" still hits the latch but long
+/// enough to swallow an immediate downstream-consumer rewrite.
+const DEBOUNCE_WINDOW: Duration = Duration::from_millis(250);
 
 use crate::commands::common::resolve_project;
 
@@ -119,13 +127,28 @@ fn run_watch(args: WatchArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
 
 // ── Polling loop ────────────────────────────────────────────────────
 
-/// Snapshot of a known interface page: (mtime_secs, slug).
-type MtimeMap = HashMap<PathBuf, (i64, String)>;
+/// Snapshot of a known interface page: (mtime_ns, slug).
+///
+/// v0.30.0 audit cycle 5 B3: pre-fix this was `mtime_secs` (i64
+/// seconds), so two writes in the same wall-clock second were
+/// silently coalesced. Sub-second nanoseconds (u128) preserve every
+/// modification an editor or downstream tool can produce.
+type MtimeMap = HashMap<PathBuf, (u128, String)>;
+
+/// Per-path debounce ledger: when we LAST emitted a notification for
+/// each path. Used by `run_poll_loop` to suppress a re-emission for
+/// the same path within `DEBOUNCE_WINDOW`. This swallows the
+/// "watcher emits → downstream consumer rewrites file → watcher
+/// re-emits → …" feedback loop the audit flagged as well as ordinary
+/// editor save-stutter.
+type DebounceLedger = HashMap<PathBuf, Instant>;
 
 /// Core polling loop. Factored out so tests can exercise it with a
 /// temp directory.
 fn run_poll_loop(wiki_dir: &Path, args: &WatchArgs) -> Result<()> {
     let mut known = scan_interface_pages(wiki_dir)?;
+    // v0.30.0 audit cycle 5 B3: debounce ledger (path -> last emit).
+    let mut last_emit: DebounceLedger = DebounceLedger::new();
 
     loop {
         if shutdown_requested() {
@@ -142,29 +165,43 @@ fn run_poll_loop(wiki_dir: &Path, args: &WatchArgs) -> Result<()> {
 
         // Detect changes and new pages.
         for (path, (mtime, slug)) in &current {
-            match known.get(path) {
-                Some((old_mtime, _)) if *old_mtime != *mtime => {
-                    emit_notification("contract_changed", slug, path, &args.format);
-                }
-                None => {
-                    emit_notification("contract_changed", slug, path, &args.format);
-                }
-                _ => {} // unchanged
+            let should_emit = match known.get(path) {
+                Some((old_mtime, _)) if *old_mtime != *mtime => true,
+                None => true,
+                _ => false,
+            };
+            if should_emit && !is_debounced(&last_emit, path) {
+                emit_notification("contract_changed", slug, path, &args.format);
+                last_emit.insert(path.clone(), Instant::now());
             }
         }
 
         // Detect deleted pages.
         for (path, (_, slug)) in &known {
-            if !current.contains_key(path) {
+            if !current.contains_key(path) && !is_debounced(&last_emit, path) {
                 emit_notification("contract_changed", slug, path, &args.format);
+                last_emit.insert(path.clone(), Instant::now());
             }
         }
+
+        // v0.30.0 audit cycle 5 B3: trim stale debounce entries so the
+        // ledger doesn't grow unbounded over a long-running watch.
+        last_emit.retain(|_, t| t.elapsed() < DEBOUNCE_WINDOW * 4);
 
         known = current;
     }
 }
 
-/// Walk `.wiki/` and return (path -> (mtime_secs, slug)) for every
+/// v0.30.0 audit cycle 5 B3: returns true iff `path` had a
+/// notification emitted within the last `DEBOUNCE_WINDOW`. The caller
+/// then suppresses the new event.
+fn is_debounced(ledger: &DebounceLedger, path: &Path) -> bool {
+    ledger
+        .get(path)
+        .is_some_and(|t| t.elapsed() < DEBOUNCE_WINDOW)
+}
+
+/// Walk `.wiki/` and return (path -> (mtime_ns, slug)) for every
 /// `.md` file whose frontmatter `page_type` is `Interface`.
 fn scan_interface_pages(wiki_dir: &Path) -> Result<MtimeMap> {
     let mut map = MtimeMap::new();
@@ -184,21 +221,24 @@ fn scan_interface_pages(wiki_dir: &Path) -> Result<MtimeMap> {
         if fm.page_type != PageType::Interface {
             continue;
         }
-        let mtime = mtime_secs(&path);
+        let mtime = mtime_ns(&path);
         map.insert(path, (mtime, fm.slug));
     }
 
     Ok(map)
 }
 
-/// Get the mtime of a file in seconds since the UNIX epoch, or 0 on
-/// error. Mirrors `WalkCache::mtime_of` but returns a plain i64.
-fn mtime_secs(path: &Path) -> i64 {
+/// v0.30.0 audit cycle 5 B3: nanosecond-precision mtime. Returns 0 on
+/// error so a stat failure degrades gracefully (the page just looks
+/// "unchanged forever" rather than panicking). Replaces the previous
+/// `mtime_secs` which truncated to whole seconds and silently dropped
+/// sub-second writes.
+fn mtime_ns(path: &Path) -> u128 {
     std::fs::metadata(path)
         .and_then(|m| m.modified())
         .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs() as i64)
+        .map(|d| d.as_nanos())
         .unwrap_or(0)
 }
 
@@ -462,5 +502,96 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let map = scan_interface_pages(dir.path()).unwrap();
         assert!(map.is_empty());
+    }
+
+    // ── v0.30.0 audit cycle 5 B3: sub-second mtime + debounce ───────
+
+    /// `mtime_ns` returns nanosecond-precision values. We can't easily
+    /// assert "two writes 10ms apart produce different mtimes" without
+    /// flakiness on filesystems with second-precision mtime (FAT,
+    /// some NFS), but we CAN assert that:
+    ///   (a) the returned value is non-zero for an existing file, and
+    ///   (b) the unit is nanoseconds, not seconds — i.e. the value is
+    ///       at least 1e9 (the number of nanos in one second since
+    ///       1970-01-01). A pre-fix `mtime_secs` returning seconds
+    ///       would fail this lower-bound check.
+    #[test]
+    fn mtime_ns_returns_nanosecond_precision_value() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("file.md");
+        fs::write(&path, "x").unwrap();
+        let ns = mtime_ns(&path);
+        // Current time, in nanoseconds since epoch, is well past 1.7e18.
+        // Old `mtime_secs` would return ~1.7e9 — three orders of magnitude
+        // smaller. Pick a conservative lower bound that's clearly
+        // nanosecond-scale: 1e12 = 1000 seconds after epoch (year 1970).
+        assert!(
+            ns > 1_000_000_000_000,
+            "mtime_ns must report nanoseconds; got {ns} (looks like seconds)"
+        );
+    }
+
+    /// Returns 0 on missing-file to mirror the no-panic contract.
+    #[test]
+    fn mtime_ns_returns_zero_for_missing_path() {
+        let dir = TempDir::new().unwrap();
+        let missing = dir.path().join("does-not-exist.md");
+        assert_eq!(mtime_ns(&missing), 0);
+    }
+
+    /// `is_debounced` returns true within the debounce window, false
+    /// after it elapses. This is the core invariant the watcher relies
+    /// on to suppress own-write / save-stutter re-emission.
+    #[test]
+    fn is_debounced_suppresses_within_window_and_releases_after() {
+        let mut ledger = DebounceLedger::new();
+        let p = std::path::PathBuf::from("/synthetic/path.md");
+
+        // Empty ledger: not debounced.
+        assert!(!is_debounced(&ledger, &p));
+
+        // Just-emitted: debounced.
+        ledger.insert(p.clone(), Instant::now());
+        assert!(is_debounced(&ledger, &p));
+
+        // Emitted DEBOUNCE_WINDOW+slack ago: NOT debounced anymore.
+        // We construct an Instant in the past by subtracting from now.
+        // `checked_sub` returns None on platforms that can't represent
+        // an earlier `Instant` (very rare); fall back to `Instant::now`
+        // which then can't be in the past — in that case skip the
+        // negative-window assertion rather than fail the test.
+        let way_back = Instant::now().checked_sub(DEBOUNCE_WINDOW * 2);
+        if let Some(past) = way_back {
+            ledger.insert(p.clone(), past);
+            assert!(
+                !is_debounced(&ledger, &p),
+                "after the window elapses, the path must be re-emittable"
+            );
+        }
+    }
+
+    /// End-to-end-ish: a write that lands inside the debounce window
+    /// of an earlier write to the same path must NOT trigger a second
+    /// notification on the next poll. We exercise the inner decision
+    /// (`is_debounced` + ledger insert) rather than `run_poll_loop`
+    /// directly to avoid stdout capture / sleep races.
+    #[test]
+    fn debounce_suppresses_rapid_resave_of_same_path() {
+        let mut ledger = DebounceLedger::new();
+        let p = std::path::PathBuf::from("/synthetic/iface.md");
+
+        // First "emission" — the watcher would print a notification
+        // here, and record the timestamp in the ledger.
+        assert!(!is_debounced(&ledger, &p));
+        ledger.insert(p.clone(), Instant::now());
+
+        // Second poll, less than DEBOUNCE_WINDOW later, sees that the
+        // file changed again (mtime moved). Pre-fix this would emit a
+        // duplicate notification. Post-fix the ledger suppresses it.
+        assert!(
+            is_debounced(&ledger, &p),
+            "a re-modified path within the debounce window must NOT \
+             re-emit; pre-B3 the watcher would have re-fired the loop"
+        );
     }
 }

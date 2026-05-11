@@ -3325,4 +3325,67 @@ mod tests {
         }
         cmd.status().expect("git add");
     }
+
+    /// v0.30.0 audit cycle 5 B2: `lint::run` MUST distinguish "ran fine
+    /// and found N issues" from "tool crashed". The dispatch boundary
+    /// in `main.rs` rewrites `Err` to exit code 3 via `map_b2_internal_err`;
+    /// for that to mean anything, `lint::run` must still PROPAGATE
+    /// internal failures as `Err` rather than swallowing them into
+    /// `Ok(ExitCode::FAILURE)`. This test pins that contract: a missing
+    /// `.wiki/` is an "internal" condition (tool can't run), so `run`
+    /// must `Err`, not return `Ok(1)`.
+    #[test]
+    fn lint_run_returns_err_when_wiki_missing() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // `dir.path()/.wiki/` does NOT exist — `run_with_runner` bails.
+        let wiki = dir.path().join(".wiki");
+        let runner = coral_runner::MockRunner::new();
+        let args = LintArgs {
+            structural: true,
+            no_check_injection: true,
+            severity: "all".into(),
+            ..LintArgs::default()
+        };
+        let result = run_with_runner(args, Some(&wiki), &runner);
+        assert!(
+            result.is_err(),
+            "missing .wiki/ is an internal-class failure; \
+             `run_with_runner` must `Err` so the dispatch wrapper can \
+             map it to exit code 3 (not 1, which is reserved for findings)"
+        );
+        let err_msg = format!("{:#}", result.unwrap_err());
+        assert!(
+            err_msg.contains("wiki root not found"),
+            "actionable error text expected, got: {err_msg}"
+        );
+    }
+
+    /// v0.30.0 audit cycle 5 B2: complement of the above — when the
+    /// wiki exists and has no issues, `run_with_runner` MUST return
+    /// `Ok(ExitCode::SUCCESS)` (exit 0 = "clean"). Pre-fix this was
+    /// already the behaviour; the test pins it so a future refactor
+    /// can't accidentally widen "no findings" to exit 1.
+    #[test]
+    fn lint_run_returns_clean_exit_on_empty_wiki() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let wiki = dir.path().join(".wiki");
+        std::fs::create_dir_all(&wiki).unwrap();
+        // No pages → no issues. structural pass returns an empty report.
+        let runner = coral_runner::MockRunner::new();
+        let args = LintArgs {
+            structural: true,
+            no_check_injection: true,
+            severity: "all".into(),
+            ..LintArgs::default()
+        };
+        let result = run_with_runner(args, Some(&wiki), &runner);
+        let code = result.expect("clean lint must succeed on an empty wiki");
+        // Pin the exact ExitCode value. SUCCESS is the only Ok variant
+        // we expect here; ExitCode lacks PartialEq so compare via Debug.
+        assert_eq!(
+            format!("{code:?}"),
+            format!("{:?}", std::process::ExitCode::SUCCESS),
+            "empty wiki → no findings → exit 0"
+        );
+    }
 }
