@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.31.1] - 2026-05-11
+
+**Audit cycle 5 closure + `TestKind` reserved-variant honesty.** Patch release that finishes the v0.30.0 audit umbrella (issue #62, B-batch) and makes the test-kind value-enum honest about what's wired. Twelve B-items total in the umbrella: six (B1, B4, B5, B6, B7, B8) shipped in v0.31.0; the remaining six (B2, B3, B9, B10, B11, B12) close in this release. No public-surface breakage — every change is a tightening of existing behavior.
+
+### Added
+
+- **`coral_cli::commands::exit_codes` module (audit #B2).** Pins the exit-code contract (`CLEAN=0`, `FINDINGS=1`, `USAGE=2`, `INTERNAL=3`) with documentation and constants tested via `exit_code_contract_constants_are_pinned`. The new `map_b2_internal_err` wrapper in `main.rs` routes I/O failures and backend-down errors to exit 3 for `lint` / `verify` / `contract check`, distinguishing them from "I ran fine and found N issues" (exit 1). Other commands keep the legacy `Err → ExitCode::FAILURE` mapping for BC.
+- **`coral_cli::commands::runner_helper::EnvVarGuard` RAII (audit #B11).** Test-side helper that records the prior `env::var(key)` state on construction and restores it on `Drop` (`set_var(prev)` if it was set, `remove_var(key)` if it was unset). Replaces the bare `env::set_var`/`remove_var` calls in `resolve_provider_prefers_cli_over_env` so test cleanup is deterministic even on panic.
+
+### Changed
+
+- **`TestKind` reserved variants now honest at CLI + runtime.** Audit cycle 5 understated the bug: the five unwired `TestKind` variants (`LlmGenerated`, `Contract`, `Event`, `Trace`, `E2eBrowser`) did not return `Skip` with a "deferred to vN" message as documented — they produced **zero reports**, indistinguishable from "no test cases match the given filters", and exit 2. Closed in three places:
+  - **Clap `--kind` help** now flags each unwired variant with `[reserved — not yet wired]` and a tracking URL to README §Roadmap.
+  - **`coral_test::orchestrator::run_test_suite_filtered`** detects when `filters.kinds` requests a reserved kind that produced zero real reports, and synthesizes a single `TestReport::Skip` with the reason + tracking URL. De-duped against runner output: if a stub runner ever does emit a real Skip for the same kind, it wins.
+  - **`crates/coral-test/src/spec.rs` doc-comment** rewritten from "v0.18 ships Healthcheck + UserDefined" to the audit-validated v0.31 truth (4 wired / 4 stub / 1 reserved-schema).
+- **README §what-you-get + §1755 ASCII tree** counts aligned to the same 4/4/1 split.
+- **`coral interface watch` debounce + nanosecond mtime (audit #B3).** `mtime_ns` now reads `SystemTime::duration_since(UNIX_EPOCH).as_nanos()` (was `mtime_secs()` second-precision). New per-path `DebounceLedger` (`HashMap<PathBuf, Instant>`) suppresses re-fires within `DEBOUNCE_WINDOW = 250ms`. Ledger trim retains entries for `DEBOUNCE_WINDOW * 4` to keep memory bounded. Per-path so independent file edits don't suppress each other. Four new unit tests: `mtime_ns_returns_nanosecond_precision_value`, `mtime_ns_returns_zero_for_missing_path`, `is_debounced_suppresses_within_window_and_releases_after`, `debounce_suppresses_rapid_resave_of_same_path`.
+
+### Fixed
+
+- **`ClaudeRunner` `--` separator before user-controlled positional (audit #B9).** Both `run` and `run_streaming` now insert `cmd.arg("--")` immediately before `cmd.arg(&prompt.user)`. Without this, a prompt starting with `--system rogue-prompt` would be parsed by `claude` as a flag (CVE-2017-1000117 / CVE-2024-32004 family pattern). Regression test `claude_runner_inserts_double_dash_before_user_prompt` exercises a flag-shaped prompt against `/bin/echo` and asserts the spawned argv contains `-- --system rogue-prompt` as a positional, not a flag.
+- **`assert!(result.is_ok())` migration to `.expect(...)` (audit #B10).** Two remaining sites — `crates/coral-cli/src/commands/project/graph.rs:183-188` and `crates/coral-core/src/pgvector.rs:354-358` — now use `.expect("descriptive msg")` so failing tests surface the actual error variant. Closes the migration started in v0.31.0 (9 sites originally; these were missed in the first pass).
+- **`CWD_LOCK` adoption in MCP serve test (audit #B11).** `mcp.rs::preview_does_not_panic_on_empty_project` test now acquires `crate::commands::CWD_LOCK` before `set_current_dir` — matches the reference pattern at `project/new.rs:115-184`. Previously this test could race with other workspace tests that mutate cwd.
+
+### Internal
+
+- **`ci.yml` explanatory comment for B12 coverage.** The workspace test job already runs `cargo test --workspace --all-features`, which compiles and exercises the inline tests for `tantivy` and `pgvector` feature-gated modules. Added a one-line comment making the coverage intent explicit so a future maintainer doesn't try to "fix" it by removing `--all-features`.
+
+### Pipeline note
+
+Umbrella issue #62 closes with this release. The full B-batch (12 items) is now resolved: B1/B4/B5/B6/B7/B8 in v0.31.0; B2/B3/B9/B10/B11/B12 here. Audit cycle 5 ends — 11/11 findings closed, plus the 5-variant `TestKind` honesty pass that came out of the post-audit review.
+
 ## [0.31.0] - 2026-05-11
 
 **Plug-and-play Claude Code integration + post-v0.30.0 audit cycle 5 fixes (11 findings).** Two unrelated tracks landed on `main` after the `v0.30.0` tag and before the next release ships. The headline change is **plug-and-play install**: the repo now doubles as a Claude Code plugin marketplace (`.claude-plugin/`), ships a Claude Desktop `.mcpb` bundle (Linux x64 in this iteration; the other three targets follow in v0.31), one-line installers (`scripts/install.sh` / `scripts/install.ps1`), and an `x86_64-pc-windows-msvc` artifact in `release.yml`. The three-step install (`cargo install` → hand-edit `settings.json` → learn subcommands) collapses to two lines typed inside Claude Code: `/plugin marketplace add agustincbajo/Coral` then `/plugin install coral@coral`. The plugin registers the stdio MCP server automatically and bundles three skills (`coral-bootstrap`, `coral-query`, `coral-onboard`) plus two slash commands so Claude knows when to drive Coral on the user's behalf. The second track is the **5th multi-agent audit cycle on `v0.30.0`** — five parallel domain-specialist agents (security, concurrency, MCP server, CLI UX, test quality) produced 11 findings (4 High, 4 Medium, 3 Low / batch), each cross-referenced as `audit/findings/NNN-*.md` and counter-validated by 4 independent reviewer agents on the High-severity items before fix commits landed. Issues will be filed as GitHub `#52`–`#62` when the next release publishes. See `audit/SUMMARY.md` for the full catalog.
@@ -2012,7 +2044,8 @@ Test count: 385 (v0.8.0) → 427 (+42).
 - 5 ADRs: Rust CLI architecture, Claude CLI vs API, template via include_dir, multi-agent flow, versioning + sync.
 - Self-hosted `.wiki/` with 14 seed pages (cli/core/lint/runner/stats modules + concepts + entities + flow + decisions + synthesis + operations + sources).
 
-[Unreleased]: https://github.com/agustincbajo/Coral/compare/v0.31.0...HEAD
+[Unreleased]: https://github.com/agustincbajo/Coral/compare/v0.31.1...HEAD
+[0.31.1]: https://github.com/agustincbajo/Coral/releases/tag/v0.31.1
 [0.31.0]: https://github.com/agustincbajo/Coral/releases/tag/v0.31.0
 [0.30.0]: https://github.com/agustincbajo/Coral/releases/tag/v0.30.0
 [0.25.0]: https://github.com/agustincbajo/Coral/releases/tag/v0.25.0
