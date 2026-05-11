@@ -283,6 +283,123 @@ pub fn search_hybrid(pages: &[Page], query: &str, limit: usize) -> Vec<SearchRes
     results
 }
 
+/// Whether a query targets a specific entity or asks a synthesis question.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueryLevel {
+    /// Query targets a specific known entity (module, concept, etc.)
+    Entity,
+    /// Query asks about a cross-cutting flow, pattern, or relationship
+    Synthesis,
+}
+
+/// Heuristic classification of query level.
+///
+/// Entity signals:
+/// - Query contains a known slug (exact or close match)
+/// - Query is short (≤4 tokens after stopword removal)
+/// - Query uses patterns like "what is X", "describe X", "the X module"
+///
+/// Synthesis signals:
+/// - Query uses flow/process words: "how", "flow", "end-to-end", "between", "across"
+/// - Query mentions multiple entities
+/// - Query is longer (>6 tokens)
+pub fn classify_query(query: &str, known_slugs: &[&str]) -> QueryLevel {
+    let tokens = tokenize(query);
+
+    // Check if query directly names a known slug
+    let slug_matches: Vec<&&str> = known_slugs
+        .iter()
+        .filter(|slug| {
+            let slug_lower = slug.to_lowercase();
+            tokens
+                .iter()
+                .any(|t| t == &slug_lower || slug_lower.contains(t.as_str()))
+        })
+        .collect();
+
+    // Synthesis signal words
+    let synthesis_words = [
+        "how",
+        "flow",
+        "end-to-end",
+        "between",
+        "across",
+        "process",
+        "architecture",
+        "overview",
+        "relationship",
+        "interact",
+        "sequence",
+    ];
+    let has_synthesis_signal = tokens.iter().any(|t| synthesis_words.contains(&t.as_str()));
+
+    // Multiple entity references suggest synthesis
+    if slug_matches.len() > 1 {
+        return QueryLevel::Synthesis;
+    }
+
+    // Flow/process questions are synthesis
+    if has_synthesis_signal && tokens.len() > 3 {
+        return QueryLevel::Synthesis;
+    }
+
+    // Short queries that match a slug are entity-level
+    if slug_matches.len() == 1 && tokens.len() <= 4 {
+        return QueryLevel::Entity;
+    }
+
+    // Default: longer queries lean synthesis, shorter lean entity
+    if tokens.len() > 6 {
+        QueryLevel::Synthesis
+    } else {
+        QueryLevel::Entity
+    }
+}
+
+/// Adaptive search that routes based on query level.
+///
+/// - Entity: prioritizes exact slug match, then direct neighbors (backlinks)
+/// - Synthesis: uses full hybrid RRF search across the corpus
+pub fn search_adaptive(pages: &[Page], query: &str, limit: usize) -> Vec<SearchResult> {
+    let slugs: Vec<&str> = pages.iter().map(|p| p.frontmatter.slug.as_str()).collect();
+    let level = classify_query(query, &slugs);
+
+    match level {
+        QueryLevel::Entity => {
+            // Try exact slug match first
+            let tokens = tokenize(query);
+            let exact_match = pages.iter().find(|p| {
+                let slug_tokens = tokenize(&p.frontmatter.slug);
+                slug_tokens.iter().any(|st| tokens.contains(st))
+            });
+
+            if let Some(target) = exact_match {
+                let mut results = vec![SearchResult {
+                    slug: target.frontmatter.slug.clone(),
+                    score: 1.0,
+                    snippet: build_snippet(&target.body, &tokens, 200),
+                }];
+                // Add direct backlinks
+                for bl in &target.frontmatter.backlinks {
+                    if let Some(bp) = pages.iter().find(|p| &p.frontmatter.slug == bl) {
+                        results.push(SearchResult {
+                            slug: bp.frontmatter.slug.clone(),
+                            score: 0.8,
+                            snippet: build_snippet(&bp.body, &tokens, 200),
+                        });
+                    }
+                }
+                results.truncate(limit);
+                results
+            } else {
+                // Fallback to hybrid
+                search_hybrid(pages, query, limit)
+            }
+        }
+        QueryLevel::Synthesis => search_hybrid(pages, query, limit),
+    }
+}
+
 fn stopwords() -> &'static HashSet<&'static str> {
     static INSTANCE: OnceLock<HashSet<&'static str>> = OnceLock::new();
     INSTANCE.get_or_init(|| {
@@ -693,5 +810,98 @@ mod tests {
             !same_top || scores_differ,
             "TF-IDF and BM25 must not produce identical results; tfidf={tfidf:?} bm25={bm25:?}"
         );
+    }
+
+    // ───────────────────────── Query routing (M2.9) tests ─────────────────────────
+
+    #[test]
+    fn classify_entity_query() {
+        let slugs = &["order", "payment", "outbox"];
+        assert_eq!(
+            classify_query("what is the order module", slugs),
+            QueryLevel::Entity
+        );
+        assert_eq!(classify_query("describe outbox", slugs), QueryLevel::Entity);
+    }
+
+    #[test]
+    fn classify_synthesis_query() {
+        let slugs = &["order", "payment", "outbox"];
+        assert_eq!(
+            classify_query("how does payment flow from order to invoice end-to-end", slugs),
+            QueryLevel::Synthesis
+        );
+        assert_eq!(
+            classify_query("what is the relationship between order and payment", slugs),
+            QueryLevel::Synthesis
+        );
+    }
+
+    #[test]
+    fn classify_short_unknown_slug_is_entity() {
+        let slugs = &["order", "payment"];
+        // Short query with no synthesis signals defaults to entity
+        assert_eq!(classify_query("describe invoice", slugs), QueryLevel::Entity);
+    }
+
+    #[test]
+    fn classify_long_query_without_slug_is_synthesis() {
+        let slugs = &["order", "payment"];
+        assert_eq!(
+            classify_query(
+                "explain distributed transaction guarantees across all services",
+                slugs
+            ),
+            QueryLevel::Synthesis
+        );
+    }
+
+    #[test]
+    fn search_adaptive_finds_exact_entity() {
+        let pages = vec![
+            page("order", "the order module handles purchases"),
+            page("payment", "payment processing via stripe"),
+            page("outbox", "outbox pattern for async delivery"),
+        ];
+        let results = search_adaptive(&pages, "order", 5);
+        assert_eq!(results[0].slug, "order");
+        assert_eq!(results[0].score, 1.0);
+    }
+
+    #[test]
+    fn search_adaptive_includes_backlinks() {
+        let mut pages = vec![
+            page("order", "the order module handles purchases"),
+            page("payment", "payment processing via stripe"),
+            page("outbox", "outbox pattern for async delivery"),
+        ];
+        // Add payment as a backlink of order
+        pages[0].frontmatter.backlinks = vec!["payment".to_string()];
+
+        let results = search_adaptive(&pages, "order", 5);
+        assert_eq!(results[0].slug, "order");
+        assert_eq!(results[0].score, 1.0);
+        assert_eq!(results[1].slug, "payment");
+        assert_eq!(results[1].score, 0.8);
+    }
+
+    #[test]
+    fn search_adaptive_synthesis_uses_hybrid() {
+        let pages = vec![
+            page("order", "the order module handles purchases"),
+            page("payment", "payment processing via stripe"),
+            page("outbox", "outbox pattern for async delivery"),
+        ];
+        // Multi-entity synthesis query should use hybrid search
+        let results = search_adaptive(
+            &pages,
+            "how does payment flow from order to outbox end-to-end",
+            5,
+        );
+        // Should return results from hybrid (all matching pages)
+        assert!(!results.is_empty());
+        let slugs: Vec<&str> = results.iter().map(|r| r.slug.as_str()).collect();
+        // Multiple pages should be returned
+        assert!(slugs.len() >= 2);
     }
 }
