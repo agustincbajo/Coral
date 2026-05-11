@@ -178,13 +178,19 @@ fn run_lint_check(wiki_path: &Path) -> CheckResult {
     }
     let pages = match coral_core::walk::read_pages(wiki_path) {
         Ok(p) => p,
-        Err(_) => {
+        Err(e) => {
+            // v0.30.x audit #004: a failure to read the wiki must NOT
+            // be a silent zero-failure check. Pre-fix, `failures: 0`
+            // contributed nothing to the verdict and the deploy gate
+            // went green on an unreadable wiki. Surface it as a hard
+            // failure with the underlying error string so CI logs are
+            // actionable.
             return CheckResult {
                 name: "lint",
                 passed: 0,
                 warnings: 0,
-                failures: 0,
-                detail: "failed to read wiki pages".into(),
+                failures: 1,
+                detail: format!("failed to read wiki pages: {e}"),
             };
         }
     };
@@ -227,13 +233,16 @@ fn run_lint_check(wiki_path: &Path) -> CheckResult {
 fn run_contract_check(project_root: &Path, repos: &[(String, Vec<String>)]) -> CheckResult {
     let report = match coral_test::check_contracts(project_root, repos) {
         Ok(r) => r,
-        Err(_) => {
+        Err(e) => {
+            // v0.30.x audit #004: same false-green pattern as the lint
+            // check above — a contract-check tool crash must register
+            // as a failure, not a silent zero-failure no-op.
             return CheckResult {
                 name: "contracts",
                 passed: 0,
                 warnings: 0,
-                failures: 0,
-                detail: "failed to run contract check".into(),
+                failures: 1,
+                detail: format!("failed to run contract check: {e}"),
             };
         }
     };
@@ -300,5 +309,51 @@ mod tests {
         assert_eq!(result.warnings, 0);
         assert_eq!(result.failures, 0);
         assert!(result.detail.contains("no wiki found"));
+    }
+
+    /// v0.30.x audit #004 regression: a wiki page that triggers a
+    /// Critical lint issue (broken wikilink) must produce `failures >= 1`
+    /// from `run_lint_check`, and `run(..)` must surface a non-zero
+    /// exit code (Verdict::Red). Pre-fix the read-failure branch
+    /// returned `failures: 0` and the gate went green.
+    #[test]
+    fn lint_check_failure_propagates_to_red_verdict() {
+        let _guard = crate::commands::CWD_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let dir = tempfile::TempDir::new().unwrap();
+        let wiki = dir.path().join(".wiki");
+        let modules = wiki.join("modules");
+        std::fs::create_dir_all(&modules).unwrap();
+        // A page whose body wikilinks a non-existent page — yields a
+        // BrokenWikilink Critical, which the lint check must count as
+        // a failure (>=1).
+        let body = "---\nslug: orphan\ntype: module\nlast_updated_commit: aaa\nconfidence: 0.7\nstatus: reviewed\n---\n\n# orphan\n\nSee [[missing-target]].\n";
+        std::fs::write(modules.join("orphan.md"), body).unwrap();
+
+        let result = run_lint_check(&wiki);
+        assert!(
+            result.failures >= 1,
+            "expected at least one failure, got: {result:?}"
+        );
+
+        // Drive the top-level entry point and assert a non-zero exit.
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+        let exit = run(
+            GuaranteeArgs {
+                can_i_deploy: true,
+                strict: false,
+                format: "json".into(),
+            },
+            Some(&wiki),
+        );
+        std::env::set_current_dir(original).unwrap();
+        let exit = exit.expect("guarantee::run must not bail");
+        assert_eq!(
+            exit,
+            ExitCode::FAILURE,
+            "wiki with broken wikilink must produce Verdict::Red"
+        );
     }
 }

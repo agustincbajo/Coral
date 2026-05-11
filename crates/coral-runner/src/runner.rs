@@ -483,6 +483,7 @@ mod tests {
     /// — equivalent to `yes` but tolerant of `--print` and other flags.
     /// Plain `/usr/bin/yes` rejects unknown long options on GNU coreutils
     /// 9.4+ (Ubuntu 24.04).
+    #[cfg(unix)]
     #[test]
     fn claude_runner_run_honors_timeout() {
         use std::time::Instant;
@@ -553,6 +554,7 @@ mod tests {
     /// Plain `/usr/bin/yes` no longer works because GNU coreutils 9.4+ rejects
     /// `--print` as an unknown long option (we can't suppress the runner's
     /// `--print` flag).
+    #[cfg(unix)]
     #[test]
     fn claude_runner_streaming_timeout_kills_child() {
         use std::time::Instant;

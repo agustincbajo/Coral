@@ -126,6 +126,6 @@ mod tests {
             None,
         );
         std::env::set_current_dir(original).unwrap();
-        assert!(result.is_ok());
+        result.expect("project list --format json must succeed against a valid coral.toml");
     }
 }

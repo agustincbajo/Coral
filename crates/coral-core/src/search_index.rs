@@ -11,7 +11,7 @@ use crate::search::{self, SearchResult};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 /// Filename for the persisted search index.
@@ -27,7 +27,10 @@ pub const INDEX_DIR: &str = ".coral";
 /// matches the current wiki state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchIndex {
-    /// SHA-256 hex digest of all page bodies (concatenated in slug-sorted order).
+    /// SHA-256 hex digest of all page bodies (concatenated in
+    /// slug-sorted order with length prefixes). See
+    /// [`compute_content_hash`] for the exact framing. 64-char
+    /// lowercase hex.
     pub content_hash: String,
 
     /// Number of documents in the corpus at index time.
@@ -175,17 +178,19 @@ impl SearchIndex {
     }
 
     /// Save the index to disk at the given path.
+    ///
+    /// Uses `atomic_write_bytes` (tmp + rename) so a SIGKILL or panic
+    /// mid-write can never leave a torn / zero-length file on disk.
+    /// Readers (incl. parallel `coral` processes) see either the OLD
+    /// contents or the NEW contents, never garbage.
     pub fn save_index(&self, path: &Path) -> std::io::Result<()> {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
         let encoded = bincode::serialize(self).map_err(|e| {
             std::io::Error::new(std::io::ErrorKind::Other, format!("bincode encode: {e}"))
         })?;
-        let mut file = fs::File::create(path)?;
-        file.write_all(&encoded)?;
-        file.sync_all()?;
-        Ok(())
+        crate::atomic::atomic_write_bytes(path, &encoded).map_err(|e| match e {
+            crate::error::CoralError::Io { source, .. } => source,
+            other => std::io::Error::new(std::io::ErrorKind::Other, other.to_string()),
+        })
     }
 
     /// Load the index from disk.
@@ -224,32 +229,68 @@ pub fn search_with_index(
 ) -> Vec<SearchResult> {
     let index_path = SearchIndex::default_path(wiki_root);
 
-    let index = if force_rebuild {
-        let idx = SearchIndex::build(pages);
-        let _ = idx.save_index(&index_path);
-        idx
-    } else {
-        match SearchIndex::load_index(&index_path) {
-            Ok(idx) if idx.is_valid_for(pages) => idx,
-            _ => {
-                let idx = SearchIndex::build(pages);
-                let _ = idx.save_index(&index_path);
-                idx
-            }
-        }
+    // Make sure the parent dir exists before we ask `with_exclusive_lock`
+    // to create the `.lock` sibling next to a path that doesn't yet have
+    // a parent on disk (first-run case in `tempdir/.coral/`).
+    if let Some(parent) = index_path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+
+    // Wrap load + rebuild + save in an exclusive flock so two concurrent
+    // ingest invocations against the same wiki_root can't race and have
+    // one of them read a half-written file while the other is mid-save.
+    // The lock is on `<index_path>.lock`; the actual data file is still
+    // replaced atomically via tmp + rename inside `save_index`.
+    let index_res: crate::error::Result<SearchIndex> =
+        crate::atomic::with_exclusive_lock(&index_path, || {
+            let idx = if force_rebuild {
+                let i = SearchIndex::build(pages);
+                let _ = i.save_index(&index_path);
+                i
+            } else {
+                match SearchIndex::load_index(&index_path) {
+                    Ok(i) if i.is_valid_for(pages) => i,
+                    _ => {
+                        let i = SearchIndex::build(pages);
+                        let _ = i.save_index(&index_path);
+                        i
+                    }
+                }
+            };
+            Ok(idx)
+        });
+
+    // If the lock itself failed (extremely unusual — typically a perms
+    // problem creating the `.lock` file), fall back to an in-memory
+    // build so the search still succeeds. The persistent cache is then
+    // a perf regression on this call only.
+    let index = match index_res {
+        Ok(i) => i,
+        Err(_) => SearchIndex::build(pages),
     };
 
+    // BM25 scoring runs OUTSIDE the lock — it only needs a `&[Page]`
+    // snapshot and the in-memory `SearchIndex` we just built/loaded,
+    // so we don't block other ingests on it.
     index.search_bm25(query, limit, pages)
 }
 
 /// Compute a content hash for a set of pages.
 ///
-/// SHA-256 of all page bodies concatenated in slug-sorted order.
-/// This ensures the hash changes when any page content changes,
-/// pages are added, or pages are removed.
+/// SHA-256 of `(slug, body)` pairs concatenated in slug-sorted order,
+/// with explicit length prefixes so distinct page sets can't collide
+/// just by re-flowing bytes across a slug/body boundary. The output is
+/// a 64-character lowercase hex digest.
+///
+/// Cryptographic collision resistance matters here because the hash is
+/// the sole gate that decides whether `load_index` returns a stale
+/// cached index or rebuilds. A 64-bit hash (the v0.30.0 implementation
+/// — `DefaultHasher` / SipHash 1-3) would silently serve stale results
+/// on collision; SHA-256 brings the collision probability to
+/// cryptographically negligible.
 pub fn compute_content_hash(pages: &[Page]) -> String {
+    use sha2::{Digest, Sha256};
     use std::collections::BTreeMap;
-    use std::hash::{DefaultHasher, Hash, Hasher};
 
     // Sort by slug for determinism.
     let sorted: BTreeMap<&str, &str> = pages
@@ -257,12 +298,17 @@ pub fn compute_content_hash(pages: &[Page]) -> String {
         .map(|p| (p.frontmatter.slug.as_str(), p.body.as_str()))
         .collect();
 
-    let mut hasher = DefaultHasher::new();
+    let mut hasher = Sha256::new();
     for (slug, body) in &sorted {
-        slug.hash(&mut hasher);
-        body.hash(&mut hasher);
+        // Length prefixes (u64-LE) frame each field so concatenation is
+        // unambiguous — without them, ("ab", "c") and ("a", "bc") would
+        // hash to the same bytes.
+        hasher.update(&(slug.len() as u64).to_le_bytes());
+        hasher.update(slug.as_bytes());
+        hasher.update(&(body.len() as u64).to_le_bytes());
+        hasher.update(body.as_bytes());
     }
-    format!("{:016x}", hasher.finish())
+    format!("{:x}", hasher.finalize())
 }
 
 // ─── Internal helpers (mirrors search.rs tokenization) ───
@@ -615,6 +661,99 @@ mod tests {
         let pages: Vec<Page> = vec![];
         let results = search_with_index(&pages, "anything", 5, tmp.path(), false);
         assert!(results.is_empty());
+    }
+
+    // ─── Regression: SHA-256 content hash format ───
+
+    /// v0.30.0 audit (finding #006B): `compute_content_hash` previously
+    /// used 64-bit `DefaultHasher` despite the doc claiming SHA-256.
+    /// Pin the new contract: 64 lowercase hex chars (= 256 bits).
+    #[test]
+    fn content_hash_is_64_char_hex_sha256() {
+        let pages = vec![page("outbox", "outbox dispatcher")];
+        let h = compute_content_hash(&pages);
+        assert_eq!(
+            h.len(),
+            64,
+            "SHA-256 hex digest must be 64 chars, got {}: {h}",
+            h.len()
+        );
+        assert!(
+            h.chars().all(|c| c.is_ascii_hexdigit() && !c.is_uppercase()),
+            "digest must be lowercase hex: {h}"
+        );
+    }
+
+    /// Length-prefix framing in `compute_content_hash` must prevent the
+    /// classic concatenation collision: ("ab", "c") and ("a", "bc") must
+    /// hash differently even though their unframed byte concatenation
+    /// "abc" is identical. (Strictly speaking, slug-sorted pairs in
+    /// production differ by slug, but the framing is the principled fix.)
+    #[test]
+    fn content_hash_framing_prevents_split_ambiguity() {
+        let a = vec![page("ab", "c")];
+        let b = vec![page("a", "bc")];
+        assert_ne!(
+            compute_content_hash(&a),
+            compute_content_hash(&b),
+            "length-prefix framing must distinguish (\"ab\",\"c\") from (\"a\",\"bc\")"
+        );
+    }
+
+    // ─── Concurrency: search_with_index under contention ───
+
+    /// v0.30.0 audit (finding #006A): two `coral ingest` processes
+    /// could race the rebuild and produce torn writes or
+    /// bincode-decode errors. The fix wraps load+rebuild+save in
+    /// `with_exclusive_lock` and persists via tmp+rename. Pin it: N
+    /// threads hammering the same wiki_root all return non-empty
+    /// results, the final on-disk index decodes cleanly, no panics.
+    #[test]
+    fn search_with_index_is_safe_under_concurrent_writers() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let wiki_root = tmp.path().to_path_buf();
+        // Distinct page sets per thread so each one would invalidate
+        // the other's cache and trigger a rebuild — maximises the
+        // contention the lock is supposed to serialise.
+        let datasets: Vec<Vec<Page>> = (0..4)
+            .map(|i| {
+                vec![
+                    page("outbox", &format!("outbox dispatcher version {i}")),
+                    page("order", &format!("order module references outbox {i}")),
+                    page(
+                        &format!("extra-{i}"),
+                        &format!("extra page only present in thread {i}"),
+                    ),
+                ]
+            })
+            .collect();
+
+        const ROUNDS: usize = 5;
+        std::thread::scope(|s| {
+            for ds in &datasets {
+                let wiki_root = wiki_root.clone();
+                let ds = ds.clone();
+                s.spawn(move || {
+                    for _ in 0..ROUNDS {
+                        let r = search_with_index(&ds, "outbox", 5, &wiki_root, false);
+                        // Each call must return at least one result; the
+                        // important invariant is "no panic, no bincode
+                        // garbage observed by a reader mid-rebuild".
+                        assert!(!r.is_empty(), "concurrent search returned no results");
+                    }
+                });
+            }
+        });
+
+        // After the storm the persisted index must still decode
+        // cleanly — proving no torn write ever escaped to disk.
+        let index_path = SearchIndex::default_path(&wiki_root);
+        let loaded = SearchIndex::load_index(&index_path)
+            .expect("post-contention index file must decode cleanly");
+        assert!(
+            loaded.n_docs > 0,
+            "post-contention index must contain documents"
+        );
     }
 
     #[test]

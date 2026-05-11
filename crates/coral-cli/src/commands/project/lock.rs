@@ -31,68 +31,94 @@ pub fn run(args: LockArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
     }
 
     let lock_path = project.lockfile_path();
-    let mut lock = Lockfile::load_or_default(&lock_path)
-        .with_context(|| format!("loading {}", lock_path.display()))?;
 
+    // v0.30.x audit #005: pre-fix the load-mutate-save sequence below
+    // ran outside any flock — a concurrent `coral project sync` or
+    // a second `coral project lock` could read the same snapshot,
+    // each apply their own mutations, and the second `write_atomic`
+    // would silently clobber the first. Wrap the whole body in
+    // `with_exclusive_lock` (same pattern as `project::sync::run`),
+    // re-reading INSIDE the lock so a freshly-persisted snapshot
+    // from sync is picked up.
+    //
+    // We call `atomic_write_string` directly rather than
+    // `Lockfile::write_atomic`: the latter re-acquires the same
+    // flock from a fresh FD, which on Linux/macOS can self-deadlock
+    // when re-entered from the same process.
     let now = Utc::now();
-    for repo in &project.repos {
-        if !repo.enabled {
-            continue;
-        }
-        let in_place = repo
-            .path
-            .as_ref()
-            .map(|p| p == Path::new("."))
-            .unwrap_or(false);
-        if in_place {
-            continue;
-        }
-        let url = match project.resolved_url(repo) {
-            Some(u) => u,
-            None => continue,
-        };
-        let r#ref = repo
-            .r#ref
-            .clone()
-            .unwrap_or_else(|| project.defaults.r#ref.clone());
+    let dry_run = args.dry_run;
+    let manifest_names: std::collections::BTreeSet<String> =
+        project.repos.iter().map(|r| r.name.clone()).collect();
 
-        let sha = lock
+    coral_core::atomic::with_exclusive_lock(&lock_path, || {
+        let mut lock = Lockfile::load_or_default(&lock_path).map_err(|e| {
+            coral_core::error::CoralError::Walk(format!(
+                "loading {}: {}",
+                lock_path.display(),
+                e
+            ))
+        })?;
+
+        for repo in &project.repos {
+            if !repo.enabled {
+                continue;
+            }
+            let in_place = repo
+                .path
+                .as_ref()
+                .map(|p| p == Path::new("."))
+                .unwrap_or(false);
+            if in_place {
+                continue;
+            }
+            let url = match project.resolved_url(repo) {
+                Some(u) => u,
+                None => continue,
+            };
+            let r#ref = repo
+                .r#ref
+                .clone()
+                .unwrap_or_else(|| project.defaults.r#ref.clone());
+
+            let sha = lock
+                .repos
+                .get(&repo.name)
+                .map(|e| e.sha.clone())
+                .unwrap_or_else(|| "0000000000000000000000000000000000000000".to_string());
+
+            lock.upsert(
+                &repo.name,
+                RepoLockEntry {
+                    url,
+                    r#ref,
+                    sha,
+                    synced_at: now,
+                },
+            );
+        }
+
+        // Drop entries that no longer correspond to a repo.
+        let stale: Vec<String> = lock
             .repos
-            .get(&repo.name)
-            .map(|e| e.sha.clone())
-            .unwrap_or_else(|| "0000000000000000000000000000000000000000".to_string());
+            .keys()
+            .filter(|k| !manifest_names.contains(k.as_str()))
+            .cloned()
+            .collect();
+        for name in stale {
+            lock.repos.remove(&name);
+        }
 
-        lock.upsert(
-            &repo.name,
-            RepoLockEntry {
-                url,
-                r#ref,
-                sha,
-                synced_at: now,
-            },
-        );
-    }
+        if dry_run {
+            print!("{lock}");
+            return Ok(());
+        }
+        coral_core::atomic::atomic_write_string(&lock_path, &lock.to_string())
+    })
+    .with_context(|| format!("locking {}", lock_path.display()))?;
 
-    // Drop entries that no longer correspond to a repo.
-    let manifest_names: std::collections::BTreeSet<&str> =
-        project.repos.iter().map(|r| r.name.as_str()).collect();
-    let stale: Vec<String> = lock
-        .repos
-        .keys()
-        .filter(|k| !manifest_names.contains(k.as_str()))
-        .cloned()
-        .collect();
-    for name in stale {
-        lock.repos.remove(&name);
+    if !dry_run {
+        println!("✔ updated {}", lock_path.display());
     }
-
-    if args.dry_run {
-        print!("{lock}");
-        return Ok(ExitCode::SUCCESS);
-    }
-    lock.write_atomic(&lock_path)
-        .with_context(|| format!("writing {}", lock_path.display()))?;
-    println!("✔ updated {}", lock_path.display());
     Ok(ExitCode::SUCCESS)
 }
 
@@ -123,7 +149,7 @@ url = "git@example.com:acme/api.git"
         std::env::set_current_dir(dir.path()).unwrap();
         let result = run(LockArgs { dry_run: false }, None);
         std::env::set_current_dir(original).unwrap();
-        assert!(result.is_ok());
+        result.expect("lock run must succeed on a valid manifest");
 
         let raw = std::fs::read_to_string(dir.path().join("coral.lock")).unwrap();
         let lock = Lockfile::parse(&raw).unwrap();
@@ -169,11 +195,74 @@ synced_at = "2026-05-01T00:00:00Z"
         std::env::set_current_dir(dir.path()).unwrap();
         let result = run(LockArgs { dry_run: false }, None);
         std::env::set_current_dir(original).unwrap();
-        assert!(result.is_ok());
+        result.expect("lock run must succeed and drop stale entries");
         let raw = std::fs::read_to_string(dir.path().join("coral.lock")).unwrap();
         let lock = Lockfile::parse(&raw).unwrap();
         assert!(!lock.repos.contains_key("gone"));
         assert!(lock.repos.contains_key("api"));
+    }
+
+    /// v0.30.x audit #005 regression: concurrent load-mutate-save against
+    /// the same `coral.lock` via `with_exclusive_lock` must serialize,
+    /// so every thread's upsert lands in the final file. Pre-fix the
+    /// `coral project lock` body ran outside any flock and lost updates
+    /// under a concurrent `coral project sync`.
+    ///
+    /// We exercise the lock-acquisition path with N threads each performing
+    /// the same load → mutate → atomic_write_string sequence the production
+    /// code now uses. If serialization is broken we lose at least one
+    /// upsert and the final entry count will be < N.
+    #[test]
+    fn project_lock_serializes_concurrent_writers() {
+        use chrono::Utc;
+        const N: usize = 8;
+        let dir = TempDir::new().unwrap();
+        let lock_path = dir.path().join("coral.lock");
+        // Seed with an empty lockfile so load_or_default has something
+        // valid to parse on the first reader (it tolerates missing file).
+        std::thread::scope(|s| {
+            for i in 0..N {
+                let lock_path = lock_path.clone();
+                s.spawn(move || {
+                    let name = format!("repo-{i}");
+                    coral_core::atomic::with_exclusive_lock(&lock_path, || {
+                        let mut lock = Lockfile::load_or_default(&lock_path).map_err(|e| {
+                            coral_core::error::CoralError::Walk(format!(
+                                "loading {}: {}",
+                                lock_path.display(),
+                                e
+                            ))
+                        })?;
+                        lock.upsert(
+                            &name,
+                            RepoLockEntry {
+                                url: format!("git@example.com:acme/{name}.git"),
+                                r#ref: "main".into(),
+                                sha: "0000000000000000000000000000000000000000".into(),
+                                synced_at: Utc::now(),
+                            },
+                        );
+                        coral_core::atomic::atomic_write_string(&lock_path, &lock.to_string())
+                    })
+                    .expect("with_exclusive_lock must succeed under contention");
+                });
+            }
+        });
+
+        let raw = std::fs::read_to_string(&lock_path).expect("final lockfile present");
+        let lock = Lockfile::parse(&raw).expect("final lockfile parseable");
+        assert_eq!(
+            lock.repos.len(),
+            N,
+            "all {N} concurrent upserts must land; got: {:?}",
+            lock.repos.keys().collect::<Vec<_>>()
+        );
+        for i in 0..N {
+            assert!(
+                lock.repos.contains_key(&format!("repo-{i}")),
+                "missing repo-{i} upsert — lost update under concurrent lock contention"
+            );
+        }
     }
 
     #[test]

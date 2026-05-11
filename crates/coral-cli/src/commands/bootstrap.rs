@@ -191,6 +191,17 @@ pub fn run_with_runner(
             format!(" Skipped: {}.", skipped.join(", "))
         }
     );
+    // v0.30.x audit #B7: if the LLM produced a plan but every entry was
+    // skipped (e.g., all action != Create, or all build_page() failed),
+    // exit non-zero so CI / scripts can detect the no-op-on-failure
+    // case. Pre-fix this returned SUCCESS even when nothing was written.
+    if created == 0 && !skipped.is_empty() {
+        eprintln!(
+            "bootstrap: no pages created; {} skipped — surfacing as failure",
+            skipped.len()
+        );
+        return Ok(ExitCode::FAILURE);
+    }
     Ok(ExitCode::SUCCESS)
 }
 
@@ -337,6 +348,15 @@ pub fn run_from_symbols(args: BootstrapArgs, wiki_root: Option<&Path>) -> Result
             format!(" Skipped: {}.", skipped.join(", "))
         }
     );
+    // v0.30.x audit #B7: same skip-everything-still-SUCCESS bug as the
+    // LLM bootstrap path above.
+    if created == 0 && !skipped.is_empty() {
+        eprintln!(
+            "bootstrap --from-symbols: no pages created; {} skipped — surfacing as failure",
+            skipped.len()
+        );
+        return Ok(ExitCode::FAILURE);
+    }
     Ok(ExitCode::SUCCESS)
 }
 
@@ -639,6 +659,42 @@ mod tests {
             "log missing bootstrap entry: {log}"
         );
         assert!(log.contains("2 pages created"), "log missing count: {log}");
+    }
+
+    /// v0.30.x audit #B7 regression: when every plan entry is skipped
+    /// (here, every entry has a non-Create action that bootstrap rejects),
+    /// the command must exit FAILURE so CI catches the no-op-on-failure
+    /// case. Pre-fix the exit was SUCCESS.
+    #[test]
+    fn bootstrap_apply_all_skipped_returns_failure() {
+        let _guard = CWD_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = TempDir::new().unwrap();
+        let cur = std::env::current_dir().unwrap();
+        let wiki = tmp.path().join(".wiki");
+        seed_wiki_with_index(&wiki);
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let runner = MockRunner::new();
+        // All entries use action=update — bootstrap only supports Create
+        // and will push every one into `skipped`.
+        runner.push_ok(
+            "plan:\n  - slug: a\n    action: update\n    rationale: x\n  - slug: b\n    action: update\n    rationale: y",
+        );
+        let exit = run_with_runner(
+            BootstrapArgs {
+                apply: true,
+                ..Default::default()
+            },
+            Some(&wiki),
+            &runner,
+        )
+        .expect("bootstrap must not bail; it should return FAILURE explicitly");
+        std::env::set_current_dir(&cur).unwrap();
+        assert_eq!(
+            exit,
+            ExitCode::FAILURE,
+            "all-skipped bootstrap must exit non-zero"
+        );
     }
 
     #[test]

@@ -58,6 +58,51 @@ struct JsonRpcError {
     message: String,
 }
 
+/// v0.30 audit #008: typed handler error so the JSON-RPC envelope's
+/// `error.code` reflects the actual cause (params malformed vs method
+/// missing vs gated). Pre-fix every non-parse, non-version error
+/// collapsed to `-32601 Method not found`, defeating clients that
+/// branch on `error.code` (JSON-RPC 2.0 §5.1).
+#[derive(Debug)]
+enum HandlerError {
+    /// `-32602 Invalid params` — missing required parameter, bad cursor, etc.
+    InvalidParams(String),
+    /// `-32002` server-defined: resource/prompt URI does not exist.
+    NotFound(String),
+    /// `-32001` server-defined: feature gated behind `--allow-write-tools`
+    /// or `--allow-experimental-tasks`.
+    Gated(String),
+    /// `-32601 Method not found` — the only case where the pre-fix
+    /// behavior was correct.
+    MethodNotFound(String),
+    /// `-32603 Internal error` — handler couldn't satisfy the request
+    /// for an internal reason (catch-all).
+    #[allow(dead_code)]
+    Internal(String),
+}
+
+impl HandlerError {
+    fn code(&self) -> i64 {
+        match self {
+            HandlerError::InvalidParams(_) => -32602,
+            HandlerError::NotFound(_) => -32002,
+            HandlerError::Gated(_) => -32001,
+            HandlerError::MethodNotFound(_) => -32601,
+            HandlerError::Internal(_) => -32603,
+        }
+    }
+
+    fn message(&self) -> &str {
+        match self {
+            HandlerError::InvalidParams(m)
+            | HandlerError::NotFound(m)
+            | HandlerError::Gated(m)
+            | HandlerError::MethodNotFound(m)
+            | HandlerError::Internal(m) => m,
+        }
+    }
+}
+
 /// v0.25 M3.11: A task stored in the experimental MCP Tasks handle.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpTask {
@@ -269,18 +314,26 @@ impl McpHandler {
             "tasks/create" => self.method_tasks_create(&request.params),
             "tasks/list" => self.method_tasks_list(),
             "ping" => Ok(serde_json::json!({})),
-            _ => Err(format!("unknown method: {}", request.method)),
+            _ => Err(HandlerError::MethodNotFound(format!(
+                "unknown method: {}",
+                request.method
+            ))),
         };
         // Notifications: side effects ran above, but we MUST NOT emit
         // a response — JSON-RPC 2.0 §4.1.
         request.id.as_ref()?;
         Some(match result {
             Ok(value) => ok_response(request.id, value),
-            Err(message) => error_response(request.id, -32601, &message),
+            Err(e) => error_response(request.id, e.code(), e.message()),
         })
     }
 
-    fn method_initialize(&self) -> std::result::Result<serde_json::Value, String> {
+    fn method_initialize(&self) -> std::result::Result<serde_json::Value, HandlerError> {
+        // v0.30 audit #010: when running over HTTP/SSE we still advertise
+        // subscribe + listChanged. The GET /mcp stream now drains
+        // notifications from `notification_tx` (see
+        // `transport/http_sse.rs::handle_get_sse`), so the capability is
+        // honest for both transports.
         Ok(serde_json::json!({
             "protocolVersion": PROTOCOL_VERSION,
             "capabilities": {
@@ -298,9 +351,10 @@ impl McpHandler {
     fn method_resources_list(
         &self,
         params: &serde_json::Value,
-    ) -> std::result::Result<serde_json::Value, String> {
+    ) -> std::result::Result<serde_json::Value, HandlerError> {
         let resources = self.resources.list();
-        let (page, next_cursor) = paginate(&resources, params, PAGINATION_PAGE_SIZE)?;
+        let (page, next_cursor) = paginate(&resources, params, PAGINATION_PAGE_SIZE)
+            .map_err(HandlerError::InvalidParams)?;
         let mut response = serde_json::json!({ "resources": page });
         // MCP 2025-11-25: omit `nextCursor` when there is no next page.
         // Including a `null` field would mislead clients that test
@@ -317,11 +371,13 @@ impl McpHandler {
     fn method_resources_read(
         &self,
         params: &serde_json::Value,
-    ) -> std::result::Result<serde_json::Value, String> {
+    ) -> std::result::Result<serde_json::Value, HandlerError> {
         let uri = params
             .get("uri")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| "missing required parameter `uri`".to_string())?;
+            .ok_or_else(|| {
+                HandlerError::InvalidParams("missing required parameter `uri`".to_string())
+            })?;
         // v0.19.6 audit C1: forward the provider-supplied mimeType
         // instead of hardcoding `text/markdown`. Hardcoding was
         // silently mislabeling every JSON resource in the catalog
@@ -331,7 +387,7 @@ impl McpHandler {
         let (body, mime_type) = self
             .resources
             .read(uri)
-            .ok_or_else(|| format!("resource not found: {uri}"))?;
+            .ok_or_else(|| HandlerError::NotFound(format!("resource not found: {uri}")))?;
         Ok(serde_json::json!({
             "contents": [
                 { "uri": uri, "mimeType": mime_type, "text": body }
@@ -342,7 +398,7 @@ impl McpHandler {
     fn method_tools_list(
         &self,
         params: &serde_json::Value,
-    ) -> std::result::Result<serde_json::Value, String> {
+    ) -> std::result::Result<serde_json::Value, HandlerError> {
         // v0.20.2 audit-followup #38: the listing gate is now
         // `allow_write_tools`, NOT `!read_only`. Pre-fix `--read-only
         // false` alone would list write tools in `tools/list` even
@@ -369,7 +425,8 @@ impl McpHandler {
         // the MCP spec. The current catalog ships ~5–8 tools, well
         // under PAGINATION_PAGE_SIZE — pagination is a no-op today
         // but the contract is pinned for forward compatibility.
-        let (page, next_cursor) = paginate(&tools_json, params, PAGINATION_PAGE_SIZE)?;
+        let (page, next_cursor) = paginate(&tools_json, params, PAGINATION_PAGE_SIZE)
+            .map_err(HandlerError::InvalidParams)?;
         let mut response = serde_json::json!({ "tools": page });
         if let Some(cursor) = next_cursor {
             response
@@ -383,11 +440,13 @@ impl McpHandler {
     fn method_tools_call(
         &self,
         params: &serde_json::Value,
-    ) -> std::result::Result<serde_json::Value, String> {
+    ) -> std::result::Result<serde_json::Value, HandlerError> {
         let name = params
             .get("name")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| "missing required parameter `name`".to_string())?;
+            .ok_or_else(|| {
+                HandlerError::InvalidParams("missing required parameter `name`".to_string())
+            })?;
         let args = params
             .get("arguments")
             .cloned()
@@ -398,11 +457,21 @@ impl McpHandler {
         // listing checked `!read_only` while the dispatcher checked
         // `read_only && !allow_write_tools` (computed at the CLI
         // layer); the two surfaces could disagree.
-        let kind = lookup_tool_kind(name).ok_or_else(|| format!("unknown tool: {name}"))?;
+        let kind = lookup_tool_kind(name)
+            .ok_or_else(|| HandlerError::InvalidParams(format!("unknown tool: {name}")))?;
         let is_write = matches!(kind, ToolKind::RunTest | ToolKind::Up | ToolKind::Down);
         if is_write && !self.config.allow_write_tools {
-            return Err(format!("tool '{name}' requires --allow-write-tools"));
+            return Err(HandlerError::Gated(format!(
+                "tool '{name}' requires --allow-write-tools"
+            )));
         }
+        // v0.30 audit #008: per MCP spec, errors from a tool *that ran*
+        // surface as `result: { isError: true, content: [...] }` — the
+        // JSON-RPC envelope `error` is reserved for protocol-level
+        // failures (method missing, params malformed, gating). Pre-fix
+        // `ToolCallResult::Error` was returned as `Err(message)` which
+        // collapsed into a `-32601` JSON-RPC error, double-violating
+        // the spec.
         match self.tools.call(name, &args) {
             ToolCallResult::Ok(value) => Ok(serde_json::json!({
                 "content": [
@@ -414,11 +483,16 @@ impl McpHandler {
                     { "type": "text", "text": format!("(skipped: {reason})") }
                 ]
             })),
-            ToolCallResult::Error { message } => Err(message),
+            ToolCallResult::Error { message } => Ok(serde_json::json!({
+                "isError": true,
+                "content": [
+                    { "type": "text", "text": message }
+                ]
+            })),
         }
     }
 
-    fn method_prompts_list(&self) -> std::result::Result<serde_json::Value, String> {
+    fn method_prompts_list(&self) -> std::result::Result<serde_json::Value, HandlerError> {
         let prompts = PromptCatalog::list();
         let json: Vec<serde_json::Value> = prompts
             .into_iter()
@@ -436,15 +510,17 @@ impl McpHandler {
     fn method_prompts_get(
         &self,
         params: &serde_json::Value,
-    ) -> std::result::Result<serde_json::Value, String> {
+    ) -> std::result::Result<serde_json::Value, HandlerError> {
         let name = params
             .get("name")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| "missing required parameter `name`".to_string())?;
+            .ok_or_else(|| {
+                HandlerError::InvalidParams("missing required parameter `name`".to_string())
+            })?;
         let prompt = PromptCatalog::list()
             .into_iter()
             .find(|p| p.name == name)
-            .ok_or_else(|| format!("unknown prompt: {name}"))?;
+            .ok_or_else(|| HandlerError::NotFound(format!("unknown prompt: {name}")))?;
         let mut content = prompt.template.clone();
         if let Some(args_obj) = params.get("arguments").and_then(|v| v.as_object()) {
             for (key, val) in args_obj {
@@ -470,11 +546,13 @@ impl McpHandler {
     fn method_resources_subscribe(
         &self,
         params: &serde_json::Value,
-    ) -> std::result::Result<serde_json::Value, String> {
+    ) -> std::result::Result<serde_json::Value, HandlerError> {
         let uri = params
             .get("uri")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| "missing required parameter `uri`".to_string())?;
+            .ok_or_else(|| {
+                HandlerError::InvalidParams("missing required parameter `uri`".to_string())
+            })?;
         self.subscriptions.lock().unwrap().insert(uri.to_string());
         Ok(serde_json::json!({}))
     }
@@ -482,11 +560,13 @@ impl McpHandler {
     fn method_resources_unsubscribe(
         &self,
         params: &serde_json::Value,
-    ) -> std::result::Result<serde_json::Value, String> {
+    ) -> std::result::Result<serde_json::Value, HandlerError> {
         let uri = params
             .get("uri")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| "missing required parameter `uri`".to_string())?;
+            .ok_or_else(|| {
+                HandlerError::InvalidParams("missing required parameter `uri`".to_string())
+            })?;
         self.subscriptions.lock().unwrap().remove(uri);
         Ok(serde_json::json!({}))
     }
@@ -497,16 +577,18 @@ impl McpHandler {
     fn method_tasks_create(
         &self,
         params: &serde_json::Value,
-    ) -> std::result::Result<serde_json::Value, String> {
+    ) -> std::result::Result<serde_json::Value, HandlerError> {
         if !self.config.allow_experimental_tasks {
-            return Err(
+            return Err(HandlerError::MethodNotFound(
                 "unknown method: tasks/create (enable with allow_experimental_tasks)".to_string(),
-            );
+            ));
         }
         let name = params
             .get("name")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| "missing required parameter `name`".to_string())?;
+            .ok_or_else(|| {
+                HandlerError::InvalidParams("missing required parameter `name`".to_string())
+            })?;
         let description = params
             .get("description")
             .and_then(|v| v.as_str())
@@ -528,11 +610,11 @@ impl McpHandler {
     /// v0.25 M3.11: `tasks/list` — experimental MCP Tasks handle.
     /// Returns the in-memory task list.
     /// Gated behind `allow_experimental_tasks` config flag.
-    fn method_tasks_list(&self) -> std::result::Result<serde_json::Value, String> {
+    fn method_tasks_list(&self) -> std::result::Result<serde_json::Value, HandlerError> {
         if !self.config.allow_experimental_tasks {
-            return Err(
+            return Err(HandlerError::MethodNotFound(
                 "unknown method: tasks/list (enable with allow_experimental_tasks)".to_string(),
-            );
+            ));
         }
         let tasks = self.tasks.lock().unwrap();
         let tasks_json: Vec<serde_json::Value> = tasks
@@ -1473,6 +1555,174 @@ mod tests {
         assert!(
             msg.contains("missing required parameter `name`"),
             "expected name error: {msg}"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // v0.30 audit #008: JSON-RPC error code mapping. Pre-fix every
+    // non-parse, non-version error collapsed to `-32601`. Pin each
+    // variant of `HandlerError` to its JSON-RPC code so a regression
+    // would surface immediately.
+    // ---------------------------------------------------------------
+
+    /// Dispatcher that always returns `ToolCallResult::Error` — used
+    /// to verify that tool runtime errors flow through `result:
+    /// { isError: true }` per MCP spec, NOT through the JSON-RPC
+    /// envelope `error`.
+    struct ErrorToolDispatcher;
+    impl ToolDispatcher for ErrorToolDispatcher {
+        fn call(&self, _name: &str, _args: &serde_json::Value) -> ToolCallResult {
+            ToolCallResult::Error {
+                message: "tool blew up".to_string(),
+            }
+        }
+    }
+
+    fn handler_with_error_dispatcher() -> McpHandler {
+        let cfg = ServerConfig {
+            transport: crate::Transport::Stdio,
+            read_only: true,
+            allow_write_tools: false,
+            port: None,
+            bind_addr: None,
+            allow_experimental_tasks: false,
+        };
+        let resources = Arc::new(WikiResourceProvider::new(std::path::PathBuf::from("/tmp")));
+        let tools = Arc::new(ErrorToolDispatcher);
+        McpHandler::new(cfg, resources, tools)
+    }
+
+    /// #008: missing `uri` on `resources/read` is `-32602 Invalid params`,
+    /// not `-32601`.
+    #[test]
+    fn error_code_invalid_params_for_missing_uri_on_resources_read() {
+        let h = handler(true);
+        let resp = call(&h, "resources/read", serde_json::json!({}));
+        assert_eq!(
+            resp["error"]["code"], -32602,
+            "missing required param must be -32602 InvalidParams, got: {resp}"
+        );
+    }
+
+    /// #008: missing `name` on `prompts/get` is `-32602`.
+    #[test]
+    fn error_code_invalid_params_for_missing_name_on_prompts_get() {
+        let h = handler(true);
+        let resp = call(&h, "prompts/get", serde_json::json!({}));
+        assert_eq!(resp["error"]["code"], -32602);
+    }
+
+    /// #008: invalid cursor on `resources/list` is `-32602`, not
+    /// `-32601`.
+    #[test]
+    fn error_code_invalid_params_for_garbage_cursor() {
+        let h = handler(true);
+        let resp = call(
+            &h,
+            "resources/list",
+            serde_json::json!({"cursor": "not-a-number"}),
+        );
+        assert_eq!(
+            resp["error"]["code"], -32602,
+            "invalid cursor must be -32602, got: {resp}"
+        );
+    }
+
+    /// #008: cursor offset past end is also `-32602` (drift detection).
+    #[test]
+    fn error_code_invalid_params_for_cursor_past_end() {
+        let h = handler(true);
+        let resp = call(
+            &h,
+            "resources/list",
+            serde_json::json!({"cursor": "999999"}),
+        );
+        assert_eq!(resp["error"]["code"], -32602);
+    }
+
+    /// #008: unknown resource URI is `-32002 NotFound` (server-defined
+    /// MCP convention), not `-32601`.
+    #[test]
+    fn error_code_not_found_for_unknown_resource_uri() {
+        let h = handler(true);
+        let resp = call(
+            &h,
+            "resources/read",
+            serde_json::json!({"uri": "coral://does-not-exist"}),
+        );
+        assert_eq!(
+            resp["error"]["code"], -32002,
+            "unknown resource must be -32002 NotFound, got: {resp}"
+        );
+    }
+
+    /// #008: unknown prompt is `-32002 NotFound`.
+    #[test]
+    fn error_code_not_found_for_unknown_prompt() {
+        let h = handler(true);
+        let resp = call(
+            &h,
+            "prompts/get",
+            serde_json::json!({"name": "no-such-prompt"}),
+        );
+        assert_eq!(resp["error"]["code"], -32002);
+    }
+
+    /// #008: gated write tool without `--allow-write-tools` is
+    /// `-32001 Gated` (server-defined), not `-32601`.
+    #[test]
+    fn error_code_gated_for_write_tool_without_allow_flag() {
+        let h = handler(true);
+        let resp = call(
+            &h,
+            "tools/call",
+            serde_json::json!({"name": "up", "arguments": {}}),
+        );
+        assert_eq!(
+            resp["error"]["code"], -32001,
+            "gated tool must be -32001, got: {resp}"
+        );
+    }
+
+    /// #008: unknown method stays `-32601 Method not found` — the
+    /// only path where the pre-fix code was correct.
+    #[test]
+    fn error_code_method_not_found_for_unknown_method() {
+        let h = handler(true);
+        let resp = call(&h, "frobnicate", serde_json::json!({}));
+        assert_eq!(
+            resp["error"]["code"], -32601,
+            "unknown method must remain -32601, got: {resp}"
+        );
+    }
+
+    /// #008: tool-runtime errors (the tool ran and returned an error)
+    /// surface as `result: { isError: true, content: [...] }` per MCP
+    /// spec — NOT as a JSON-RPC envelope error. Pre-fix this routed
+    /// through `Err(message)` → `-32601` (double-violation).
+    #[test]
+    fn tool_runtime_error_routes_through_result_is_error_envelope() {
+        let h = handler_with_error_dispatcher();
+        let resp = call(
+            &h,
+            "tools/call",
+            serde_json::json!({"name": "query", "arguments": {}}),
+        );
+        // No envelope error.
+        assert!(
+            resp.get("error").is_none() || resp["error"].is_null(),
+            "tool runtime error must NOT use JSON-RPC envelope error: {resp}"
+        );
+        assert_eq!(
+            resp["result"]["isError"], true,
+            "tool runtime error must set result.isError=true: {resp}"
+        );
+        let text = resp["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or("");
+        assert!(
+            text.contains("tool blew up"),
+            "result.content must carry the tool error message: {resp}"
         );
     }
 }

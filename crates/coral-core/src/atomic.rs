@@ -99,6 +99,68 @@ pub fn atomic_write_string(path: impl AsRef<Path>, content: &str) -> Result<()> 
     })
 }
 
+/// Atomic-write counterpart to [`atomic_write_string`] for binary payloads.
+///
+/// Same tmp+rename pattern, but accepts `&[u8]` so callers persisting
+/// bincoded / msgpacked / otherwise binary content don't have to
+/// round-trip through `String` (which would also UTF-8-validate and
+/// reject non-UTF-8 bytes outright).
+pub fn atomic_write_bytes(path: impl AsRef<Path>, content: &[u8]) -> Result<()> {
+    let path = path.as_ref();
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent).map_err(|source| CoralError::Io {
+                path: parent.to_path_buf(),
+                source,
+            })?;
+        }
+    }
+
+    let pid = std::process::id();
+    let counter = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let tmp_filename = match path.file_name() {
+        Some(name) => {
+            let mut s = name.to_os_string();
+            s.push(format!(".tmp.{pid}.{counter}"));
+            s
+        }
+        None => {
+            return fs::write(path, content).map_err(|source| CoralError::Io {
+                path: path.to_path_buf(),
+                source,
+            });
+        }
+    };
+    let tmp_path = path.with_file_name(&tmp_filename);
+
+    {
+        let mut f = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&tmp_path)
+            .map_err(|source| CoralError::Io {
+                path: tmp_path.clone(),
+                source,
+            })?;
+        f.write_all(content)
+            .and_then(|_| f.flush())
+            .and_then(|_| f.sync_all())
+            .map_err(|source| CoralError::Io {
+                path: tmp_path.clone(),
+                source,
+            })?;
+    }
+
+    fs::rename(&tmp_path, path).map_err(|source| {
+        let _ = fs::remove_file(&tmp_path);
+        CoralError::Io {
+            path: path.to_path_buf(),
+            source,
+        }
+    })
+}
+
 /// Runs `f` while holding an exclusive `flock(2)` advisory lock on
 /// `<path>.lock`. Race-free under concurrent writers — both threads
 /// within one process AND cooperating processes that go through this
