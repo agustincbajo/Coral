@@ -89,6 +89,15 @@ pub fn search(pages: &[Page], query: &str, limit: usize) -> Vec<SearchResult> {
     results
 }
 
+/// Reciprocal Rank Fusion constant.
+///
+/// `k = 60` is the standard value from Cormack, Clarke & Buettcher (2009).
+/// It prevents the top-ranked documents from dominating the fused score —
+/// rank 1 contributes `1/61 ≈ 0.016` while rank 100 contributes `1/160 ≈
+/// 0.006`, a much gentler ratio than raw `1/rank`. Exposed as `pub const`
+/// so callers can introspect or test against it.
+pub const RRF_K: f64 = 60.0;
+
 /// BM25 term-frequency saturation parameter.
 ///
 /// `1.5` is the standard general-text default. Larger values give linear
@@ -213,6 +222,57 @@ pub fn search_bm25(pages: &[Page], query: &str, limit: usize) -> Vec<SearchResul
             snippet,
         });
     }
+
+    results.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    results.truncate(limit);
+    results
+}
+
+/// Hybrid search combining BM25 + TF-IDF via Reciprocal Rank Fusion.
+///
+/// Runs both `search_bm25` and `search` (TF-IDF), then fuses their
+/// rankings using the RRF formula: `score(d) = Σ 1/(k + rank_i(d))`.
+/// Pages that appear in both result sets get boosted; pages in only one
+/// still participate.
+///
+/// This is the recommended search function for `coral query` and MCP
+/// `search` tool calls — it's more robust than either algorithm alone.
+pub fn search_hybrid(pages: &[Page], query: &str, limit: usize) -> Vec<SearchResult> {
+    if pages.is_empty() || query.is_empty() {
+        return vec![];
+    }
+
+    let bm25_results = search_bm25(pages, query, pages.len());
+    let tfidf_results = search(pages, query, pages.len());
+
+    // Accumulate RRF scores. Rank is 1-based.
+    let mut rrf_scores: HashMap<&str, f64> = HashMap::new();
+    let mut snippets: HashMap<&str, &str> = HashMap::new();
+
+    for (rank, r) in bm25_results.iter().enumerate() {
+        let rank_1based = (rank + 1) as f64;
+        *rrf_scores.entry(r.slug.as_str()).or_insert(0.0) += 1.0 / (RRF_K + rank_1based);
+        snippets.entry(r.slug.as_str()).or_insert(r.snippet.as_str());
+    }
+
+    for (rank, r) in tfidf_results.iter().enumerate() {
+        let rank_1based = (rank + 1) as f64;
+        *rrf_scores.entry(r.slug.as_str()).or_insert(0.0) += 1.0 / (RRF_K + rank_1based);
+        snippets.entry(r.slug.as_str()).or_insert(r.snippet.as_str());
+    }
+
+    let mut results: Vec<SearchResult> = rrf_scores
+        .into_iter()
+        .map(|(slug, score)| SearchResult {
+            slug: slug.to_string(),
+            score,
+            snippet: snippets.get(slug).unwrap_or(&"").to_string(),
+        })
+        .collect();
 
     results.sort_by(|a, b| {
         b.score
@@ -497,6 +557,110 @@ mod tests {
     fn search_and_search_bm25_both_empty_for_empty_corpus() {
         assert_eq!(search(&[], "x", 5), search_bm25(&[], "x", 5));
         assert!(search(&[], "x", 5).is_empty());
+    }
+
+    // ───────────────────────── Hybrid (RRF) tests ─────────────────────────
+
+    #[test]
+    fn rrf_k_constant_is_standard() {
+        assert_eq!(RRF_K, 60.0);
+    }
+
+    #[test]
+    fn search_hybrid_empty_returns_empty() {
+        assert!(search_hybrid(&[], "outbox", 5).is_empty());
+        let pages = vec![page("a", "outbox pattern")];
+        assert!(search_hybrid(&pages, "", 5).is_empty());
+    }
+
+    #[test]
+    fn search_hybrid_combines_both_rankings() {
+        // Same corpus from the existing `search_and_search_bm25_are_not_aliases` test.
+        let short_body = "outbox handler".to_string();
+        let long_body = format!(
+            "outbox stuff {} outbox more {}",
+            "lorem ipsum dolor sit amet ".repeat(30),
+            "consectetur adipiscing elit ".repeat(30)
+        );
+        let pages = vec![page("short", &short_body), page("long", &long_body)];
+
+        let results = search_hybrid(&pages, "outbox", 5);
+        assert!(!results.is_empty());
+        // Both pages should appear since both match at least one algorithm.
+        let slugs: Vec<&str> = results.iter().map(|r| r.slug.as_str()).collect();
+        assert!(slugs.contains(&"short"), "expected 'short' in results");
+        assert!(slugs.contains(&"long"), "expected 'long' in results");
+        // All scores must be positive.
+        for r in &results {
+            assert!(r.score > 0.0, "expected positive RRF score, got {}", r.score);
+        }
+    }
+
+    #[test]
+    fn search_hybrid_boosts_pages_in_both_lists() {
+        // Demonstrate that a page appearing in both result lists gets a
+        // higher RRF score than a page appearing in only one list.
+        //
+        // We use a query ("zebra") that matches some pages in both BM25 and
+        // TF-IDF, and one page ("only_one") that we ensure only appears in
+        // one list by using a different unique term for it.
+        //
+        // Actually, both algorithms use the same tokenization so the same
+        // pages will appear in both. The real RRF advantage comes from
+        // RANK position — a page that's rank 1 in both lists beats a page
+        // that's rank 1 in one but rank 2+ in the other.
+        //
+        // We verify the structural property: pages that appear in both
+        // result lists get score contributions from both, demonstrated by
+        // checking that the hybrid top-1 result has a score that equals the
+        // sum of two reciprocal-rank contributions.
+
+        let pages = vec![
+            page("target", "zebra handler service"),
+            page("partial", "zebra"),
+            page("noise", "lorem ipsum dolor sit amet"),
+        ];
+
+        let bm25 = search_bm25(&pages, "zebra", pages.len());
+        let tfidf = search(&pages, "zebra", pages.len());
+
+        // Both algorithms return "target" and "partial" (both contain "zebra").
+        assert!(bm25.len() >= 2);
+        assert!(tfidf.len() >= 2);
+
+        let results = search_hybrid(&pages, "zebra", 5);
+        assert!(results.len() >= 2);
+
+        // The top result must have an RRF score that is the sum of two
+        // reciprocal-rank contributions (since it appears in both lists).
+        let top = &results[0];
+        let bm25_rank = bm25.iter().position(|r| r.slug == top.slug).unwrap() + 1;
+        let tfidf_rank = tfidf.iter().position(|r| r.slug == top.slug).unwrap() + 1;
+        let expected_score =
+            1.0 / (RRF_K + bm25_rank as f64) + 1.0 / (RRF_K + tfidf_rank as f64);
+        assert!(
+            (top.score - expected_score).abs() < 1e-12,
+            "top result '{}' score {} should equal RRF sum {} (bm25_rank={}, tfidf_rank={})",
+            top.slug,
+            top.score,
+            expected_score,
+            bm25_rank,
+            tfidf_rank
+        );
+
+        // And all results that appear in both lists must have scores that
+        // are strictly greater than a hypothetical page appearing in only
+        // one list at the worst rank.
+        let worst_single_list_score = 1.0 / (RRF_K + pages.len() as f64);
+        for r in &results {
+            assert!(
+                r.score > worst_single_list_score,
+                "result '{}' with score {} should exceed single-list worst-rank score {}",
+                r.slug,
+                r.score,
+                worst_single_list_score
+            );
+        }
     }
 
     #[test]
