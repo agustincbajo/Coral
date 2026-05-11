@@ -19,6 +19,7 @@ use crate::tools::{ToolCatalog, ToolKind};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// MCP protocol version. Coral pins to the 2025-11-25 spec freeze;
 /// future bumps are coordinated via the spec's negotiation flow.
@@ -57,6 +58,14 @@ struct JsonRpcError {
     message: String,
 }
 
+/// v0.25 M3.11: A task stored in the experimental MCP Tasks handle.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpTask {
+    pub task_id: String,
+    pub name: String,
+    pub description: String,
+}
+
 /// Per-request handler that uses the configured `ResourceProvider`
 /// (which the CLI fills in with a real wiki reader) and the static
 /// tool/prompt catalogs.
@@ -71,6 +80,10 @@ pub struct McpHandler {
     subscriptions: Mutex<HashSet<String>>,
     /// Channel for pushing notifications to the transport layer.
     notification_tx: Mutex<Option<std::sync::mpsc::Sender<serde_json::Value>>>,
+    /// v0.25 M3.11: In-memory task store for experimental MCP Tasks.
+    tasks: Mutex<Vec<McpTask>>,
+    /// Monotonic counter for task IDs.
+    task_id_counter: AtomicU64,
 }
 
 /// Tools are dispatched through a trait so the catalog (data) and the
@@ -185,6 +198,8 @@ impl McpHandler {
             tools,
             subscriptions: Mutex::new(HashSet::new()),
             notification_tx: Mutex::new(None),
+            tasks: Mutex::new(Vec::new()),
+            task_id_counter: AtomicU64::new(1),
         }
     }
 
@@ -251,6 +266,8 @@ impl McpHandler {
             "tools/call" => self.method_tools_call(&request.params),
             "prompts/list" => self.method_prompts_list(),
             "prompts/get" => self.method_prompts_get(&request.params),
+            "tasks/create" => self.method_tasks_create(&request.params),
+            "tasks/list" => self.method_tasks_list(),
             "ping" => Ok(serde_json::json!({})),
             _ => Err(format!("unknown method: {}", request.method)),
         };
@@ -474,6 +491,63 @@ impl McpHandler {
         Ok(serde_json::json!({}))
     }
 
+    /// v0.25 M3.11: `tasks/create` — experimental MCP Tasks handle.
+    /// Accepts `{name, description}`, stores in memory, returns `{task_id}`.
+    /// Gated behind `allow_experimental_tasks` config flag.
+    fn method_tasks_create(
+        &self,
+        params: &serde_json::Value,
+    ) -> std::result::Result<serde_json::Value, String> {
+        if !self.config.allow_experimental_tasks {
+            return Err(
+                "unknown method: tasks/create (enable with allow_experimental_tasks)".to_string(),
+            );
+        }
+        let name = params
+            .get("name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "missing required parameter `name`".to_string())?;
+        let description = params
+            .get("description")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        let id = self.task_id_counter.fetch_add(1, Ordering::Relaxed);
+        let task_id = format!("task-{id}");
+
+        let task = McpTask {
+            task_id: task_id.clone(),
+            name: name.to_string(),
+            description: description.to_string(),
+        };
+        self.tasks.lock().unwrap().push(task);
+
+        Ok(serde_json::json!({ "task_id": task_id }))
+    }
+
+    /// v0.25 M3.11: `tasks/list` — experimental MCP Tasks handle.
+    /// Returns the in-memory task list.
+    /// Gated behind `allow_experimental_tasks` config flag.
+    fn method_tasks_list(&self) -> std::result::Result<serde_json::Value, String> {
+        if !self.config.allow_experimental_tasks {
+            return Err(
+                "unknown method: tasks/list (enable with allow_experimental_tasks)".to_string(),
+            );
+        }
+        let tasks = self.tasks.lock().unwrap();
+        let tasks_json: Vec<serde_json::Value> = tasks
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "task_id": t.task_id,
+                    "name": t.name,
+                    "description": t.description
+                })
+            })
+            .collect();
+        Ok(serde_json::json!({ "tasks": tasks_json }))
+    }
+
     /// Push a resource-updated notification for a specific URI.
     /// Called externally when the wiki changes (e.g., after ingest/bootstrap).
     /// Only sends if the URI is in the subscription set.
@@ -630,6 +704,22 @@ mod tests {
             allow_write_tools,
             port: None,
             bind_addr: None,
+            allow_experimental_tasks: false,
+        };
+        let resources = Arc::new(WikiResourceProvider::new(std::path::PathBuf::from("/tmp")));
+        let tools = Arc::new(NoOpDispatcher);
+        McpHandler::new(cfg, resources, tools)
+    }
+
+    /// Helper that creates a handler with experimental tasks enabled.
+    fn handler_with_tasks() -> McpHandler {
+        let cfg = ServerConfig {
+            transport: crate::Transport::Stdio,
+            read_only: true,
+            allow_write_tools: false,
+            port: None,
+            bind_addr: None,
+            allow_experimental_tasks: true,
         };
         let resources = Arc::new(WikiResourceProvider::new(std::path::PathBuf::from("/tmp")));
         let tools = Arc::new(NoOpDispatcher);
@@ -1283,5 +1373,106 @@ mod tests {
             }
             other => panic!("expected Skip from NoOpDispatcher, got: {other:?}"),
         }
+    }
+
+    // ---------------------------------------------------------------
+    // v0.25 M3.11: MCP Tasks handle tests
+    // ---------------------------------------------------------------
+
+    /// tasks/create returns a task_id when experimental tasks are enabled.
+    #[test]
+    fn tasks_create_returns_task_id() {
+        let h = handler_with_tasks();
+        let resp = call(
+            &h,
+            "tasks/create",
+            serde_json::json!({"name": "lint wiki", "description": "Run wiki lint pass"}),
+        );
+        assert!(
+            resp.get("error").is_none(),
+            "tasks/create must not error when enabled: {resp}"
+        );
+        let task_id = resp["result"]["task_id"].as_str().unwrap();
+        assert!(
+            task_id.starts_with("task-"),
+            "task_id must start with 'task-': {task_id}"
+        );
+    }
+
+    /// tasks/list returns tasks that were previously created.
+    #[test]
+    fn tasks_list_returns_stored_tasks() {
+        let h = handler_with_tasks();
+        // Create two tasks.
+        call(
+            &h,
+            "tasks/create",
+            serde_json::json!({"name": "task-a", "description": "First task"}),
+        );
+        call(
+            &h,
+            "tasks/create",
+            serde_json::json!({"name": "task-b", "description": "Second task"}),
+        );
+        let resp = call(&h, "tasks/list", serde_json::json!({}));
+        assert!(
+            resp.get("error").is_none(),
+            "tasks/list must not error when enabled: {resp}"
+        );
+        let tasks = resp["result"]["tasks"].as_array().unwrap();
+        assert_eq!(tasks.len(), 2, "must have 2 tasks: {tasks:?}");
+        assert_eq!(tasks[0]["name"], "task-a");
+        assert_eq!(tasks[1]["name"], "task-b");
+        assert_eq!(tasks[0]["description"], "First task");
+        assert_eq!(tasks[1]["description"], "Second task");
+        // Each task has a unique id.
+        assert_ne!(
+            tasks[0]["task_id"].as_str().unwrap(),
+            tasks[1]["task_id"].as_str().unwrap()
+        );
+    }
+
+    /// tasks/create is rejected when allow_experimental_tasks is false.
+    #[test]
+    fn tasks_create_rejected_when_disabled() {
+        let h = handler(true); // default: tasks disabled
+        let resp = call(
+            &h,
+            "tasks/create",
+            serde_json::json!({"name": "x", "description": "y"}),
+        );
+        let msg = resp["error"]["message"].as_str().unwrap_or("");
+        assert!(
+            msg.contains("allow_experimental_tasks"),
+            "expected gate error, got: {msg}"
+        );
+    }
+
+    /// tasks/list is rejected when allow_experimental_tasks is false.
+    #[test]
+    fn tasks_list_rejected_when_disabled() {
+        let h = handler(true); // default: tasks disabled
+        let resp = call(&h, "tasks/list", serde_json::json!({}));
+        let msg = resp["error"]["message"].as_str().unwrap_or("");
+        assert!(
+            msg.contains("allow_experimental_tasks"),
+            "expected gate error, got: {msg}"
+        );
+    }
+
+    /// tasks/create rejects calls missing the required `name` parameter.
+    #[test]
+    fn tasks_create_rejects_missing_name() {
+        let h = handler_with_tasks();
+        let resp = call(
+            &h,
+            "tasks/create",
+            serde_json::json!({"description": "no name"}),
+        );
+        let msg = resp["error"]["message"].as_str().unwrap_or("");
+        assert!(
+            msg.contains("missing required parameter `name`"),
+            "expected name error: {msg}"
+        );
     }
 }

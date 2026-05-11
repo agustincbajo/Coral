@@ -32,6 +32,7 @@ fn make_handler() -> Arc<McpHandler> {
         allow_write_tools: false,
         port: None,
         bind_addr: None,
+        allow_experimental_tasks: false,
     };
     let resources = Arc::new(WikiResourceProvider::new(std::path::PathBuf::from("/tmp")));
     let tools = Arc::new(NoOpDispatcher);
@@ -45,6 +46,7 @@ fn make_handler_with(allow_write: bool) -> Arc<McpHandler> {
         allow_write_tools: allow_write,
         port: None,
         bind_addr: None,
+        allow_experimental_tasks: false,
     };
     let resources = Arc::new(WikiResourceProvider::new(std::path::PathBuf::from("/tmp")));
     let tools = Arc::new(NoOpDispatcher);

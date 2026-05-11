@@ -30,6 +30,7 @@ fn handler() -> McpHandler {
         allow_write_tools: false,
         port: None,
         bind_addr: None,
+        allow_experimental_tasks: false,
     };
     let resources = Arc::new(WikiResourceProvider::new(std::path::PathBuf::from("/tmp")));
     let tools = Arc::new(NoOpDispatcher);

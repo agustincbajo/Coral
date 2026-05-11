@@ -61,6 +61,7 @@ fn handler_for(root: &Path, read_only: bool) -> McpHandler {
         allow_write_tools: false,
         port: None,
         bind_addr: None,
+        allow_experimental_tasks: false,
     };
     let resources = Arc::new(WikiResourceProvider::new(root.to_path_buf()));
     let tools = Arc::new(NoOpDispatcher);

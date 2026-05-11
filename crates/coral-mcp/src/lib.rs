@@ -45,7 +45,7 @@ pub use card::server_card;
 pub use prompts::{PromptCatalog, PromptDescriptor};
 pub use resources::{Resource, ResourceProvider, WikiResourceProvider};
 pub use server::{
-    ContractToolDispatcher, McpHandler, NoOpDispatcher, PROTOCOL_VERSION, ToolCallResult,
+    ContractToolDispatcher, McpHandler, McpTask, NoOpDispatcher, PROTOCOL_VERSION, ToolCallResult,
     ToolDispatcher,
 };
 pub use state::WikiState;
@@ -96,6 +96,11 @@ pub struct ServerConfig {
     /// docstring left the HTTP transport "deferred". Now first-class.
     #[serde(default)]
     pub bind_addr: Option<std::net::IpAddr>,
+    /// v0.25 M3.11: opt-in for experimental MCP Tasks methods
+    /// (`tasks/create`, `tasks/list`). Default `false` — the methods
+    /// return "unknown method" unless this flag is explicitly set.
+    #[serde(default)]
+    pub allow_experimental_tasks: bool,
 }
 
 /// Transport variants. v0.21.1+ ships both `Stdio` and `HttpSse`.
@@ -117,6 +122,7 @@ impl Default for ServerConfig {
             allow_write_tools: false,
             port: None,
             bind_addr: None,
+            allow_experimental_tasks: false,
         }
     }
 }

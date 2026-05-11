@@ -273,6 +273,7 @@ fn serve(args: ServeArgs) -> Result<ExitCode> {
         allow_write_tools: args.allow_write_tools,
         port,
         bind_addr,
+        allow_experimental_tasks: false,
     };
     let handler = Arc::new(McpHandler::new(config, resources, tools));
     let transport_label = match args.transport {

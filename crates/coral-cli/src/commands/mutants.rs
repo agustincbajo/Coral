@@ -28,6 +28,13 @@ pub struct MutantsArgs {
     /// Minimum mutation score (0.0–1.0) to pass. Exit 1 if below.
     #[arg(long, default_value_t = 0.80)]
     pub threshold: f64,
+
+    /// Total budget in minutes for the entire mutation testing run.
+    /// When set, passes `--timeout <budget*60>` to cargo-mutants as the
+    /// overall run timeout. If the budget expires before all mutants are
+    /// tested, partial results are reported.
+    #[arg(long, value_name = "MINUTES")]
+    pub budget: Option<u32>,
 }
 
 /// A single surviving mutant from the cargo-mutants output.
@@ -46,6 +53,14 @@ pub struct MutantsReport {
     pub killed: u64,
     pub total: u64,
     pub score: f64,
+    /// The budget in minutes that was configured for this run, if any.
+    /// Present when `--budget` was passed to `coral test mutants`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub budget_minutes: Option<u32>,
+    /// Whether the run was terminated early due to the budget expiring
+    /// before all mutants could be tested.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub budget_exceeded: bool,
 }
 
 /// Outcome from cargo-mutants JSON: each mutant has an outcome status.
@@ -83,17 +98,29 @@ pub fn run(args: MutantsArgs) -> Result<ExitCode> {
         return Ok(ExitCode::from(2));
     }
 
+    // Compute effective timeout: if --budget is set, use budget*60 as
+    // the overall run timeout (seconds). Otherwise use the per-mutant
+    // --timeout value.
+    let effective_timeout = budget_to_timeout(args.budget, args.timeout);
+
     // Build the cargo mutants command.
     let mut cmd = Command::new("cargo");
     cmd.arg("mutants");
     cmd.arg("--json");
-    cmd.args(["--timeout", &args.timeout.to_string()]);
+    cmd.args(["--timeout", &effective_timeout.to_string()]);
 
     if let Some(ref crate_name) = args.crate_name {
         cmd.args(["--package", crate_name]);
     }
 
-    eprintln!("Running mutation tests (timeout={}s)...", args.timeout);
+    if let Some(budget) = args.budget {
+        eprintln!(
+            "Running mutation tests (budget={}min, timeout={}s)...",
+            budget, effective_timeout
+        );
+    } else {
+        eprintln!("Running mutation tests (timeout={}s)...", effective_timeout);
+    }
 
     let output = cmd
         .output()
@@ -101,11 +128,28 @@ pub fn run(args: MutantsArgs) -> Result<ExitCode> {
 
     // cargo-mutants may exit non-zero when mutants survive; we still parse.
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let report = parse_cargo_mutants_output(&stdout)?;
+    let mut report = parse_cargo_mutants_output(&stdout)?;
+
+    // Attach budget metadata to the report.
+    report.budget_minutes = args.budget;
+    // Heuristic: if the process was killed (exit code != 0 and no
+    // outcomes parsed) OR if partial results exist and the budget was
+    // set, mark as budget_exceeded.
+    if args.budget.is_some() && !output.status.success() && report.total == 0 {
+        report.budget_exceeded = true;
+    }
 
     // Print summary to stderr.
     let summary = format_summary(&report);
     eprintln!("{}", summary);
+
+    if report.budget_exceeded {
+        eprintln!(
+            "NOTE: budget of {} minutes expired before all mutants were tested. \
+             Results are partial.",
+            args.budget.unwrap_or(0)
+        );
+    }
 
     // Write full report to output path.
     if let Some(parent) = args.output.parent() {
@@ -130,6 +174,15 @@ pub fn run(args: MutantsArgs) -> Result<ExitCode> {
             report.score, args.threshold
         );
         Ok(ExitCode::SUCCESS)
+    }
+}
+
+/// Convert a budget (minutes) to a timeout (seconds) for cargo-mutants.
+/// If no budget is set, returns the per-mutant timeout unchanged.
+pub fn budget_to_timeout(budget: Option<u32>, per_mutant_timeout: u64) -> u64 {
+    match budget {
+        Some(minutes) => (minutes as u64) * 60,
+        None => per_mutant_timeout,
     }
 }
 
@@ -213,6 +266,8 @@ fn build_report_from_outcomes(outcomes: &[CargoMutantOutcome]) -> Result<Mutants
         killed,
         total,
         score,
+        budget_minutes: None,
+        budget_exceeded: false,
     })
 }
 
@@ -358,6 +413,8 @@ mod tests {
             killed: 9,
             total: 10,
             score: 0.9,
+            budget_minutes: None,
+            budget_exceeded: false,
         };
         // 0.9 >= 0.80 threshold → pass
         assert!(report.score >= 0.80);
@@ -390,6 +447,8 @@ mod tests {
             killed: 7,
             total: 10,
             score: 0.7,
+            budget_minutes: None,
+            budget_exceeded: false,
         };
         // 0.7 < 0.80 threshold → fail
         assert!(report.score < 0.80);
@@ -408,6 +467,8 @@ mod tests {
             killed: 4,
             total: 5,
             score: 0.8,
+            budget_minutes: None,
+            budget_exceeded: false,
         };
         let summary = format_summary(&report);
         assert!(summary.contains("4/5 mutants killed"));
@@ -444,5 +505,62 @@ mod tests {
         assert_eq!(report.survivors.len(), 1);
         // Score: 1 killed / (1 killed + 1 survived) = 0.5
         assert!((report.score - 0.5).abs() < f64::EPSILON);
+    }
+
+    // ---------------------------------------------------------------
+    // M3.11 Part A: Mutation budget gate tests
+    // ---------------------------------------------------------------
+
+    // Test 9: Budget flag is included in report JSON
+    #[test]
+    fn mutants_budget_field_in_report() {
+        let report = MutantsReport {
+            survivors: vec![],
+            killed: 5,
+            total: 5,
+            score: 1.0,
+            budget_minutes: Some(10),
+            budget_exceeded: false,
+        };
+        let json = serde_json::to_string_pretty(&report).expect("serialize");
+        assert!(
+            json.contains("\"budget_minutes\": 10"),
+            "report JSON must contain budget_minutes when set: {json}"
+        );
+        // When budget is None, the field should be absent (skip_serializing_if)
+        let report_no_budget = MutantsReport {
+            budget_minutes: None,
+            ..report.clone()
+        };
+        let json2 = serde_json::to_string_pretty(&report_no_budget).expect("serialize");
+        assert!(
+            !json2.contains("budget_minutes"),
+            "report JSON must omit budget_minutes when None: {json2}"
+        );
+    }
+
+    // Test 10: Budget timeout calculation
+    #[test]
+    fn mutants_budget_timeout_calculation() {
+        // 10 minutes budget → 600s timeout
+        assert_eq!(budget_to_timeout(Some(10), 300), 600);
+        // 1 minute budget → 60s timeout
+        assert_eq!(budget_to_timeout(Some(1), 300), 60);
+        // No budget → per-mutant timeout unchanged
+        assert_eq!(budget_to_timeout(None, 300), 300);
+        // Large budget
+        assert_eq!(budget_to_timeout(Some(120), 300), 7200);
+    }
+
+    // Test 11: CLI arg parsing — budget flag
+    #[test]
+    fn mutants_cli_budget_flag() {
+        let parsed = ShimCli::try_parse_from(["test", "--budget", "15"])
+            .expect("parse with budget flag");
+        assert_eq!(parsed.args.budget, Some(15));
+
+        // Default: no budget
+        let parsed_default = ShimCli::try_parse_from(["test"]).expect("parse defaults");
+        assert_eq!(parsed_default.args.budget, None);
     }
 }
