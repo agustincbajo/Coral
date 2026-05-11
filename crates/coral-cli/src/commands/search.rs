@@ -464,6 +464,7 @@ mod tests {
                 generated_at: None,
                 valid_from: None,
                 valid_to: None,
+                superseded_by: None,
                 extra: Default::default(),
             },
             body: body.to_string(),

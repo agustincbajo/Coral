@@ -87,6 +87,7 @@ fn frontmatter_strategy() -> impl Strategy<Value = Frontmatter> {
                     generated_at: None,
                     valid_from: None,
                     valid_to: None,
+                    superseded_by: None,
                     extra: BTreeMap::new(),
                 }
             },

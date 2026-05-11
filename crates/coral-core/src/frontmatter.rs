@@ -90,6 +90,10 @@ pub struct Frontmatter {
     /// If None, the page is currently valid.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub valid_to: Option<String>,
+    /// Slug of the page that replaces this one. When set, this page is
+    /// considered dead/superseded and excluded from `--at` query results.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub superseded_by: Option<String>,
     /// Catch-all for additional fields the consumer's SCHEMA may add.
     /// Uses `BTreeMap` (deterministic ordering, derives Serialize/Deserialize natively)
     /// instead of `AHashMap` which would require extra serde feature work.
@@ -98,9 +102,10 @@ pub struct Frontmatter {
 }
 
 impl Frontmatter {
-    /// Returns true if this page is currently valid (no valid_to set).
+    /// Returns true if this page is currently valid (no valid_to set and
+    /// not superseded by another page).
     pub fn is_current(&self) -> bool {
-        self.valid_to.is_none()
+        self.valid_to.is_none() && self.superseded_by.is_none()
     }
 
     /// Returns true if this page was valid at the given timestamp.
@@ -528,6 +533,7 @@ body line 2
             generated_at: None,
             valid_from: None,
             valid_to: None,
+            superseded_by: None,
             extra: BTreeMap::new(),
         };
         let out = serialize(&fm, "body\n").expect("serialize");
@@ -543,6 +549,10 @@ body line 2
         );
         assert!(
             !out.contains("valid_to:"),
+            "should not contain optional none: {out}"
+        );
+        assert!(
+            !out.contains("superseded_by:"),
             "should not contain optional none: {out}"
         );
     }
@@ -667,6 +677,118 @@ body
         let (fm, _) = parse(minimal_fm_yaml(), "test.md").expect("parse ok");
         assert!(fm.valid_from.is_none());
         assert!(fm.valid_to.is_none());
+        assert!(fm.superseded_by.is_none());
         assert!(fm.is_current());
+    }
+
+    // ── superseded_by (M2.16) ───────────────────────────────────────────
+
+    #[test]
+    fn parse_superseded_by_from_yaml() {
+        let content = "\
+---
+slug: old-auth
+type: module
+last_updated_commit: abc
+confidence: 0.7
+status: archived
+superseded_by: new-auth
+---
+
+This module has been superseded.
+";
+        let (fm, body) = parse(content, "test.md").expect("parse ok");
+        assert_eq!(fm.slug, "old-auth");
+        assert_eq!(fm.superseded_by.as_deref(), Some("new-auth"));
+        assert!(body.starts_with("This module has been superseded."));
+    }
+
+    #[test]
+    fn is_current_false_when_superseded_by_is_set() {
+        let content = "\
+---
+slug: old-auth
+type: module
+last_updated_commit: abc
+confidence: 0.7
+status: archived
+superseded_by: new-auth
+---
+
+body
+";
+        let (fm, _) = parse(content, "test.md").expect("parse ok");
+        assert!(
+            !fm.is_current(),
+            "page with superseded_by should not be current"
+        );
+    }
+
+    #[test]
+    fn is_current_false_when_both_valid_to_and_superseded_by_set() {
+        let content = "\
+---
+slug: old-auth
+type: module
+last_updated_commit: abc
+confidence: 0.7
+status: archived
+valid_to: 2024-06-01T00:00:00Z
+superseded_by: new-auth
+---
+
+body
+";
+        let (fm, _) = parse(content, "test.md").expect("parse ok");
+        assert!(!fm.is_current());
+    }
+
+    #[test]
+    fn superseded_by_serialization_roundtrip() {
+        let content = "\
+---
+slug: old-auth
+type: module
+last_updated_commit: abc
+confidence: 0.7
+status: archived
+superseded_by: new-auth
+---
+
+body content
+";
+        let (fm1, body1) = parse(content, "test.md").expect("parse 1");
+        assert_eq!(fm1.superseded_by.as_deref(), Some("new-auth"));
+        let serialized = serialize(&fm1, &body1).expect("serialize");
+        assert!(
+            serialized.contains("superseded_by: new-auth"),
+            "serialized output must contain superseded_by: {serialized}"
+        );
+        let (fm2, body2) = parse(&serialized, "test.md").expect("parse 2");
+        assert_eq!(fm1.superseded_by, fm2.superseded_by);
+        assert_eq!(body1, body2);
+    }
+
+    #[test]
+    fn superseded_by_none_not_serialized() {
+        let fm = Frontmatter {
+            slug: "order".to_string(),
+            page_type: PageType::Module,
+            last_updated_commit: "abc".to_string(),
+            confidence: Confidence::try_new(0.5).unwrap(),
+            sources: vec![],
+            backlinks: vec![],
+            status: Status::Draft,
+            generated_at: None,
+            valid_from: None,
+            valid_to: None,
+            superseded_by: None,
+            extra: BTreeMap::new(),
+        };
+        let out = serialize(&fm, "body\n").expect("serialize");
+        assert!(
+            !out.contains("superseded_by"),
+            "None superseded_by should be omitted: {out}"
+        );
     }
 }

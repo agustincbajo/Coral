@@ -1596,6 +1596,7 @@ mod tests {
                 generated_at: None,
                 valid_from: None,
                 valid_to: None,
+                superseded_by: None,
                 extra: Default::default(),
             },
             body: "Original body.".into(),
@@ -1666,6 +1667,7 @@ mod tests {
                 generated_at: None,
                 valid_from: None,
                 valid_to: None,
+                superseded_by: None,
                 extra: Default::default(),
             },
             body: "going away".into(),
@@ -1725,6 +1727,7 @@ mod tests {
                 generated_at: None,
                 valid_from: None,
                 valid_to: None,
+                superseded_by: None,
                 extra: Default::default(),
             },
             body: "Original body.".into(),
@@ -2177,6 +2180,7 @@ mod tests {
             generated_at: None,
             valid_from: None,
             valid_to: None,
+            superseded_by: None,
             extra: Default::default(),
         }
     }
@@ -2506,6 +2510,7 @@ mod tests {
             generated_at: None,
             valid_from: None,
             valid_to: None,
+            superseded_by: None,
             extra: BTreeMap::new(),
         };
         let changed = downgrade_confidence_for_missing_sources(&mut fm, tmp.path());
@@ -2531,6 +2536,7 @@ mod tests {
             generated_at: None,
             valid_from: None,
             valid_to: None,
+            superseded_by: None,
             extra: BTreeMap::new(),
         };
         let changed = downgrade_confidence_for_missing_sources(&mut fm, tmp.path());
@@ -2555,6 +2561,7 @@ mod tests {
             generated_at: None,
             valid_from: None,
             valid_to: None,
+            superseded_by: None,
             extra: BTreeMap::new(),
         };
         let changed = downgrade_confidence_for_missing_sources(&mut fm, tmp.path());
@@ -2584,6 +2591,7 @@ mod tests {
             generated_at: None,
             valid_from: None,
             valid_to: None,
+            superseded_by: None,
             extra: BTreeMap::new(),
         };
         let changed = downgrade_confidence_for_missing_sources(&mut fm, tmp.path());
@@ -2613,6 +2621,7 @@ mod tests {
             generated_at: None,
             valid_from: None,
             valid_to: None,
+            superseded_by: None,
             extra: BTreeMap::new(),
         };
         // First call: already at floor — must not change.
@@ -2646,6 +2655,7 @@ mod tests {
             generated_at: None,
             valid_from: None,
             valid_to: None,
+            superseded_by: None,
             extra: BTreeMap::new(),
         };
         let changed = downgrade_confidence_for_missing_sources(&mut fm, tmp.path());

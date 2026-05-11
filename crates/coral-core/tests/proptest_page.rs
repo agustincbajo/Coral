@@ -90,6 +90,7 @@ fn frontmatter_strategy() -> impl Strategy<Value = Frontmatter> {
                     generated_at: None,
                     valid_from: None,
                     valid_to: None,
+                    superseded_by: None,
                     extra: BTreeMap::new(),
                 }
             },
@@ -224,6 +225,7 @@ fn page_write_via_walk_read_pages() {
             generated_at: None,
             valid_from: None,
             valid_to: None,
+            superseded_by: None,
             extra: BTreeMap::new(),
         },
         body: "body line\n".to_string(),

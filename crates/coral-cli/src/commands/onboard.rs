@@ -157,6 +157,7 @@ pub(crate) fn persist_onboarding_page(
             generated_at: Some(chrono::Utc::now().to_rfc3339()),
             valid_from: None,
             valid_to: None,
+            superseded_by: None,
             extra: Default::default(),
         },
         body,

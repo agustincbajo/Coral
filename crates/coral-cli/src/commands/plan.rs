@@ -124,6 +124,7 @@ pub fn build_page(entry: &PlanEntry, head_sha: &str, wiki_root: &Path) -> CoralR
         generated_at: Some(chrono::Utc::now().to_rfc3339()),
         valid_from: None,
         valid_to: None,
+        superseded_by: None,
         extra: BTreeMap::new(),
     };
 

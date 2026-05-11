@@ -196,8 +196,12 @@ pub fn read_pages(root: impl AsRef<Path>) -> Result<Vec<Page>> {
 
 /// Filter pages to only those valid at a given point in time.
 /// Used by `coral query --at <timestamp>` for bi-temporal queries.
+/// Pages with `superseded_by` set are excluded — they are effectively dead.
 pub fn pages_valid_at<'a>(pages: &'a [Page], at: &str) -> Vec<&'a Page> {
-    pages.iter().filter(|p| p.frontmatter.is_valid_at(at)).collect()
+    pages
+        .iter()
+        .filter(|p| p.frontmatter.superseded_by.is_none() && p.frontmatter.is_valid_at(at))
+        .collect()
 }
 
 #[cfg(test)]
@@ -390,6 +394,7 @@ source:\n  runner: claude-sonnet-4-5\n\
             generated_at: None,
             valid_from: None,
             valid_to: None,
+            superseded_by: None,
             extra,
         };
         let mut poisoned = WalkCache {
@@ -438,5 +443,56 @@ source:\n  runner: claude-sonnet-4-5\n\
         let pages = read_pages(root).expect("read");
         assert_eq!(pages.len(), 1);
         assert_eq!(pages[0].frontmatter.slug, "good");
+    }
+
+    // ── pages_valid_at + superseded_by (M2.16) ──────────────────────────
+
+    fn write_page_with_frontmatter(path: &Path, yaml: &str) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let content = format!("---\n{yaml}---\n\nbody\n");
+        fs::write(path, content).unwrap();
+    }
+
+    #[test]
+    fn pages_valid_at_excludes_superseded_pages() {
+        let dir = TempDir::new().expect("tempdir");
+        let root = dir.path();
+
+        // A normal page valid in the range
+        write_page_with_frontmatter(
+            &root.join("modules/current.md"),
+            "slug: current\ntype: module\nlast_updated_commit: abc\nconfidence: 0.5\nstatus: draft\nvalid_from: 2024-01-01T00:00:00Z\n",
+        );
+        // A superseded page also valid in the range
+        write_page_with_frontmatter(
+            &root.join("modules/old.md"),
+            "slug: old\ntype: module\nlast_updated_commit: abc\nconfidence: 0.5\nstatus: archived\nvalid_from: 2024-01-01T00:00:00Z\nsuperseded_by: current\n",
+        );
+
+        let pages = read_pages(root).expect("read");
+        assert_eq!(pages.len(), 2, "both pages should be read");
+
+        let filtered = pages_valid_at(&pages, "2024-06-15T00:00:00Z");
+        assert_eq!(filtered.len(), 1, "superseded page should be excluded");
+        assert_eq!(filtered[0].frontmatter.slug, "current");
+    }
+
+    #[test]
+    fn pages_valid_at_includes_non_superseded_pages() {
+        let dir = TempDir::new().expect("tempdir");
+        let root = dir.path();
+
+        write_page_with_frontmatter(
+            &root.join("modules/a.md"),
+            "slug: a\ntype: module\nlast_updated_commit: abc\nconfidence: 0.5\nstatus: draft\nvalid_from: 2024-01-01T00:00:00Z\n",
+        );
+        write_page_with_frontmatter(
+            &root.join("modules/b.md"),
+            "slug: b\ntype: module\nlast_updated_commit: abc\nconfidence: 0.5\nstatus: draft\nvalid_from: 2024-01-01T00:00:00Z\n",
+        );
+
+        let pages = read_pages(root).expect("read");
+        let filtered = pages_valid_at(&pages, "2024-06-15T00:00:00Z");
+        assert_eq!(filtered.len(), 2);
     }
 }

@@ -954,6 +954,7 @@ fn build_merged_frontmatter(
         generated_at,
         valid_from: None,
         valid_to: None,
+        superseded_by: None,
         extra,
     })
 }
@@ -1033,6 +1034,7 @@ fn apply_split(
             generated_at: Some(now.to_string()),
             valid_from: None,
             valid_to: None,
+            superseded_by: None,
             extra: BTreeMap::new(),
         };
         let body = format!(
@@ -1120,6 +1122,7 @@ mod tests {
                 generated_at: None,
                 valid_from: None,
                 valid_to: None,
+                superseded_by: None,
                 extra: Default::default(),
             },
             body: format!("# {slug}\n\nbody."),
@@ -1161,6 +1164,7 @@ mod tests {
                 generated_at: None,
                 valid_from: None,
                 valid_to: None,
+                superseded_by: None,
                 extra: Default::default(),
             },
             body: body.into(),
@@ -2329,6 +2333,7 @@ splits:
                 generated_at: None,
                 valid_from: None,
                 valid_to: None,
+                superseded_by: None,
                 extra: Default::default(),
             },
             body: "Original orphan body".into(),
