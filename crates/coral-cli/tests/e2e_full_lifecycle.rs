@@ -131,6 +131,8 @@ fn full_lifecycle_with_mock_runner() {
             provider: None,
             dry_run: false,
             apply: true,
+            from_symbols: false,
+            path: None,
         },
         Some(&wiki),
         &runner_b,
