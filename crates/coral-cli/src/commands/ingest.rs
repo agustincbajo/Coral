@@ -12,6 +12,27 @@ use std::process::ExitCode;
 
 use super::plan::{Action, Plan, build_page, page_type_subdir};
 
+/// v0.30.x audit #B8: 32 MiB cap on `read_to_string` of user-supplied
+/// content, matching `coral_core::walk::read_pages` (v0.19.5 N3),
+/// `coral_test::discover::parse_openapi_value`, and
+/// `coral_session::capture::ensure_within_size_cap`. Pre-fix the
+/// `.wiki/index.md` reads here were uncapped, so a multi-GiB index.md
+/// (malicious or accidental) would OOM the process.
+const MAX_INDEX_BYTES: u64 = 32 * 1024 * 1024;
+
+fn read_index_md_capped(path: &Path) -> Result<String> {
+    if let Ok(meta) = std::fs::metadata(path)
+        && meta.len() > MAX_INDEX_BYTES
+    {
+        anyhow::bail!(
+            ".wiki/index.md exceeds 32 MiB cap ({} bytes); refusing to read {}",
+            meta.len(),
+            path.display()
+        );
+    }
+    std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))
+}
+
 #[derive(Args, Debug, Default)]
 pub struct IngestArgs {
     /// Override start commit. If not provided, reads `last_commit` from .wiki/index.md.
@@ -65,8 +86,7 @@ pub fn run_with_runner(
         Some(f) => f,
         None => {
             let idx_path = root.join("index.md");
-            let idx_content =
-                std::fs::read_to_string(&idx_path).context("reading .wiki/index.md")?;
+            let idx_content = read_index_md_capped(&idx_path)?;
             let idx = WikiIndex::parse(&idx_content)?;
             idx.last_commit
         }
@@ -237,6 +257,17 @@ pub fn run_with_runner(
     // was applied to that stale snapshot, and the write inside the
     // lock clobbered concurrent additions.
     coral_core::atomic::with_exclusive_lock(&idx_path, || {
+        // v0.30.x audit #B8: cap read at 32 MiB before pulling the
+        // file into RAM. Mirror the cap from `coral_core::walk::read_pages`.
+        if let Ok(meta) = std::fs::metadata(&idx_path)
+            && meta.len() > MAX_INDEX_BYTES
+        {
+            return Err(coral_core::error::CoralError::Walk(format!(
+                ".wiki/index.md exceeds 32 MiB cap ({} bytes); refusing to read {}",
+                meta.len(),
+                idx_path.display()
+            )));
+        }
         let raw =
             std::fs::read_to_string(&idx_path).map_err(|e| coral_core::error::CoralError::Io {
                 path: idx_path.clone(),
@@ -275,6 +306,20 @@ pub fn run_with_runner(
         );
     } else {
         println!("Ingest applied: {created} created, {updated} updated, {retired} retired.");
+    }
+    // v0.30.x audit #B7: if the runner returned a plan with entries but
+    // every entry was skipped via warnings (e.g., update/retire pointing
+    // at missing pages, or every create failing build_page()), CI must
+    // observe a non-zero exit. We additionally require that the plan
+    // wasn't empty in the first place — an empty plan against an empty
+    // diff is a legitimate no-op, not a failure.
+    let total_applied = created + updated + retired + docs_created;
+    if total_applied == 0 && !warnings.is_empty() && !plan.plan.is_empty() {
+        eprintln!(
+            "ingest: no pages created/updated/retired; {} warnings — surfacing as failure",
+            warnings.len()
+        );
+        return Ok(ExitCode::FAILURE);
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -779,6 +824,55 @@ mod tests {
         assert!(
             !warnings.is_empty(),
             "expected at least one warning for fake PDF or missing pdftotext"
+        );
+    }
+
+    /// v0.30.x audit #B8 regression: a `.wiki/index.md` exceeding the
+    /// 32 MiB cap must surface a clear error rather than being loaded
+    /// into RAM. We write a 33 MiB index and assert ingest errors.
+    /// The test is gated by tempfile size: we skip if writing the
+    /// large file fails (e.g., a tight tmpfs).
+    #[test]
+    fn ingest_rejects_oversize_index_md() {
+        let _guard = CWD_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = TempDir::new().unwrap();
+        let cur = std::env::current_dir().unwrap();
+        let wiki = tmp.path().join(".wiki");
+        std::fs::create_dir_all(&wiki).unwrap();
+        // 33 MiB of padding past a minimal valid header. The cap is
+        // 32 * 1024 * 1024, so 33 MiB trips the size check before any
+        // content parsing happens.
+        let oversize = 33 * 1024 * 1024;
+        let mut content = String::with_capacity(oversize + 256);
+        content.push_str(
+            "---\nlast_commit: abc\ngenerated_at: 2026-04-30T10:00:00Z\n---\n\n# pad\n\n",
+        );
+        content.push_str(&"x".repeat(oversize));
+        if std::fs::write(wiki.join("index.md"), &content).is_err() {
+            // tmpfs too small — skip the test rather than flake.
+            return;
+        }
+        write_log(&wiki);
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let runner = MockRunner::new();
+        runner.push_ok("plan: []");
+        // `args.from` is None so the auto-discover path reads
+        // index.md, which trips the cap and surfaces an error.
+        let res = run_with_runner(
+            IngestArgs {
+                from: None,
+                ..Default::default()
+            },
+            Some(wiki.as_path()),
+            &runner,
+        );
+        std::env::set_current_dir(&cur).unwrap();
+        let err = res.expect_err("oversize index.md must error");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("32 MiB") || msg.contains("cap"),
+            "error must mention the cap; got: {msg}"
         );
     }
 
