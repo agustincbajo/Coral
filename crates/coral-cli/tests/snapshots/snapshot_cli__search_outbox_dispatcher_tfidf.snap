@@ -1,5 +1,6 @@
 ---
 source: crates/coral-cli/tests/snapshot_cli.rs
+assertion_line: 255
 expression: stdout
 ---
 # Search results for: outbox dispatcher
@@ -22,4 +23,4 @@ service uses [[outbox]] for the OrderCreated event downstream.
 See [[checkout-flow]] for end-to-end behavior.
 
 
-_(Offline tfidf ranking. Pass `--algorithm bm25` (or `tfidf`) to switch ranking, or `--engine embeddings` for semantic search via Voyage AI.)_
+_(Offline tfidf ranking. Pass `--algorithm hybrid` for best results, `bm25` or `tfidf` for single-ranker, or `--engine embeddings` for semantic search.)_

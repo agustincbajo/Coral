@@ -53,14 +53,27 @@ pub fn run_with_runner(
     use super::common::untrusted_fence::{UNTRUSTED_CONTENT_NOTICE, fence_body};
 
     // Rank pages by BM25 relevance to the question, then take top-40.
-    // Fall back to arbitrary first-40 if search returns empty (e.g.,
-    // query is all stopwords or single-char tokens).
+    // When the wiki has ≤40 pages total, include ALL of them (relevant
+    // first, then remainder) so small wikis don't lose context. The
+    // optimization only filters when there are >40 pages.
     let ranked = search::search_bm25(&pages, &args.question, 40);
-    let context_pages: Vec<&coral_core::page::Page> = if ranked.is_empty() {
-        pages.iter().take(40).collect()
+    let context_pages: Vec<&coral_core::page::Page> = if ranked.is_empty() || pages.len() <= 40 {
+        // Small wiki or all-stopword query: include every page, but put
+        // BM25-ranked ones first for better prompt ordering.
+        let ranked_slugs: Vec<&str> = ranked.iter().map(|r| r.slug.as_str()).collect();
+        let mut ordered: Vec<&coral_core::page::Page> = ranked
+            .iter()
+            .filter_map(|r| pages.iter().find(|p| p.frontmatter.slug == r.slug))
+            .collect();
+        // Append remaining pages not in BM25 results.
+        for p in pages.iter() {
+            if !ranked_slugs.contains(&p.frontmatter.slug.as_str()) {
+                ordered.push(p);
+            }
+        }
+        ordered.into_iter().take(40).collect()
     } else {
-        // Map SearchResult slugs back to full Page references,
-        // preserving BM25 ranking order.
+        // Large wiki: only include the top-40 most relevant pages.
         ranked
             .iter()
             .filter_map(|r| pages.iter().find(|p| p.frontmatter.slug == r.slug))
