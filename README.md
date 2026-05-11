@@ -207,7 +207,21 @@ Either of these is a one-time step per release. To skip it entirely, install via
 
 ---
 
-## Quickstart — single-repo (2 minutes)
+## Quickstart
+
+Five entry points, in increasing scope. Each is a copy-paste sequence that
+ends in something you can show your team. Start at the one that matches
+your project shape; the rest layer on top.
+
+| Scope | Section | Time |
+|---|---|---|
+| One repo, just the wiki | [Single-repo](#quickstart--single-repo-2-minutes) | 2 min |
+| N repos with a manifest | [Multi-repo](#quickstart--multi-repo-5-minutes) | 5 min |
+| Wiki + dev env + tests | [Environments + tests](#quickstart--environments--tests) | 10 min |
+| Plug into a coding agent | [MCP server](#quickstart--mcp-server-for-coding-agents) | 3 min |
+| Curate sessions into the wiki | [Session capture + distill](#quickstart--capture-and-distill-agent-sessions) | 10 min |
+
+### Quickstart — single-repo (2 minutes)
 
 The v0.15 workflow still works exactly as before — no `coral.toml` needed.
 
@@ -224,7 +238,7 @@ Full reference: [docs/USAGE.md](docs/USAGE.md), [docs/TUTORIAL.md](docs/TUTORIAL
 
 ---
 
-## Quickstart — multi-repo (5 minutes)
+### Quickstart — multi-repo (5 minutes)
 
 ```bash
 mkdir orchestra && cd orchestra
@@ -276,7 +290,7 @@ The `[remotes.<name>]` template + `defaults.remote` pattern (borrowed from Googl
 
 ---
 
-## Quickstart — environments + tests
+### Quickstart — environments + tests
 
 After `coral project new`, declare a `[[environments]]` block:
 
@@ -433,7 +447,7 @@ For Pact-style consumer-driven contracts with a `coral.contracts.lock` and `--ca
 
 ---
 
-## Quickstart — MCP server for coding agents
+### Quickstart — MCP server for coding agents
 
 Coral exposes the wiki + manifest + lockfile + test results as a [Model Context Protocol](https://modelcontextprotocol.io/) server — any MCP-speaking agent (Claude Code, Cursor, Continue, Cline, Goose, Codex, Copilot, …) can read it cross-session.
 
@@ -477,7 +491,7 @@ The loader uses TF-IDF ranking + backlink BFS + greedy fill under your token bud
 
 ---
 
-## Quickstart — capture and distill agent sessions
+### Quickstart — capture and distill agent sessions
 
 **Shipped in v0.20.0** ([#16](https://github.com/agustincbajo/Coral/issues/16)). Coral can now fold the conversations that produced your wiki *back into* the wiki — agent transcripts (Claude Code today; Cursor and ChatGPT tracked) become curated synthesis pages. The flow is opt-in at every step and gated by the same trust-by-curation contract that governs `coral test generate` output.
 
@@ -1936,7 +1950,19 @@ Both serialize via `flock(2)` on `.wiki/index.md`. Both writes land. No data los
 
 ### Can I use Coral on Windows?
 
-Compilation works (Rust targets Windows). Day-to-day commands work in WSL. Native Windows `cmd.exe` / PowerShell support is best-effort; some path-handling edge cases may surface (CRLF in cache fast path was fixed in v0.19.6, but expect more rough edges than macOS / Linux). File a bug if you hit one.
+Yes, with prereqs. v0.30.0+ ships a `windows-latest` CI smoke build and
+the audit branch verified the full workspace compiles and the new
+audit-fix regression tests pass on `stable-x86_64-pc-windows-gnu`.
+See [Install → Windows](#windows--extra-prereqs-before-cargo-build) for
+the two toolchain paths (MSVC + VS Build Tools, or GNU + MinGW-w64
+binutils) and the common Git Bash `link.exe` PATH-shadow gotcha.
+
+Day-to-day commands work natively on PowerShell and cmd.exe. WSL is
+fine too. A small number of integration tests are inherently Unix-only
+(they shell out to `/bin/echo`, bash scripts, `pdftotext`, etc.) and
+are gated with `#[cfg(unix)]`; the audit-fix branch's 29 new
+regression tests all pass cross-platform. File a bug if you hit a
+case-of-broken-paths.
 
 ### Is the wiki-as-context approach better than embedding the whole codebase?
 
@@ -1944,7 +1970,7 @@ Per [Anthropic's context-engineering guidance](https://www.anthropic.com/enginee
 
 ### What's the SLA / support model?
 
-Hobby project. No SLA. Issues filed at [github.com/agustincbajo/Coral/issues](https://github.com/agustincbajo/Coral/issues) get triaged in best-effort timeframes. The codebase has 1124 tests + 4-cycle multi-agent audit history; quality bar is high but support cadence isn't.
+Hobby project. No SLA. Issues filed at [github.com/agustincbajo/Coral/issues](https://github.com/agustincbajo/Coral/issues) get triaged in best-effort timeframes. Quality bar is high (five multi-agent audit cycles through v0.30.0; full workspace test suite runs `--all-features` on Ubuntu CI) but support cadence isn't.
 
 ### Can I use Coral's wiki schema with a different tool?
 
