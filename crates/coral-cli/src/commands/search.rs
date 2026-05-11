@@ -23,10 +23,9 @@ pub struct SearchArgs {
     /// (semantic, requires the selected provider's API key).
     #[arg(long, default_value = "tfidf")]
     pub engine: String,
-    /// Ranking algorithm for the TF-IDF/BM25 family. `tfidf` (default) or `bm25`.
-    /// Both work offline, no API key. BM25 has better precision on 100+ page wikis.
-    /// Ignored when `--engine embeddings` is set (the embeddings engine has its
-    /// own ranking).
+    /// Ranking algorithm for the TF-IDF/BM25 family. `tfidf` (default), `bm25`,
+    /// or `hybrid` (RRF fusion of both — recommended for best precision).
+    /// All work offline, no API key. Ignored when `--engine embeddings` is set.
     #[arg(long, default_value = "tfidf")]
     pub algorithm: String,
     /// Force a re-embed of all pages, ignoring the cached vectors.
@@ -126,8 +125,9 @@ fn run_tfidf(pages: &[coral_core::page::Page], args: &SearchArgs) -> Result<Exit
     let results = match args.algorithm.as_str() {
         "tfidf" => search::search(pages, &args.query, args.limit),
         "bm25" => search::search_bm25(pages, &args.query, args.limit),
+        "hybrid" => search::search_hybrid(pages, &args.query, args.limit),
         other => anyhow::bail!(
-            "unknown --algorithm: {other}. Choose: tfidf | bm25 (or pass --engine embeddings for semantic search)"
+            "unknown --algorithm: {other}. Choose: tfidf | bm25 | hybrid (or pass --engine embeddings for semantic search)"
         ),
     };
 
@@ -159,7 +159,7 @@ fn run_tfidf(pages: &[coral_core::page::Page], args: &SearchArgs) -> Result<Exit
             );
         }
         println!(
-            "\n_(Offline {} ranking. Pass `--algorithm bm25` (or `tfidf`) to switch ranking, or `--engine embeddings` for semantic search via Voyage AI.)_",
+            "\n_(Offline {} ranking. Pass `--algorithm hybrid` for best results, `bm25` or `tfidf` for single-ranker, or `--engine embeddings` for semantic search.)_",
             args.algorithm
         );
     }
