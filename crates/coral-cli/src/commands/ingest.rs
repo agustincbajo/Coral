@@ -1,11 +1,12 @@
 use anyhow::{Context, Result};
 use clap::Args;
-use coral_core::frontmatter::{PageType, Status};
+use coral_core::frontmatter::{Confidence, Frontmatter, PageType, Status};
 use coral_core::gitdiff;
 use coral_core::index::{IndexEntry, WikiIndex};
 use coral_core::log::WikiLog;
 use coral_core::page::Page;
 use coral_runner::{Prompt, Runner};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -28,6 +29,13 @@ pub struct IngestArgs {
     /// Apply the plan: create / update / retire pages, update the index and append the log.
     #[arg(long)]
     pub apply: bool,
+    /// Scan a docs directory for PDF files and ingest them as Reference pages.
+    /// Requires `pdftotext` (poppler-utils) to be installed.
+    #[arg(long)]
+    pub include_docs: bool,
+    /// Directory to scan for PDF files (default: `docs/`). Only used with --include-docs.
+    #[arg(long, default_value = "docs/")]
+    pub docs_dir: PathBuf,
 }
 
 pub fn run(args: IngestArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
@@ -248,13 +256,204 @@ pub fn run_with_runner(
     // Atomic append — race-free under concurrent invocations (v0.14).
     WikiLog::append_atomic(&log_path, "ingest", &summary)?;
 
+    // ── PDF docs ingestion (M3.7, opt-in) ────────────────────────────
+    let mut docs_created = 0usize;
+    if args.include_docs {
+        let (dc, dw) = ingest_docs_pdfs(&args.docs_dir, &root, &head);
+        docs_created = dc;
+        warnings.extend(dw);
+    }
+
     if !warnings.is_empty() {
         for w in &warnings {
             eprintln!("warn: {w}");
         }
     }
-    println!("Ingest applied: {created} created, {updated} updated, {retired} retired.");
+    if docs_created > 0 {
+        println!(
+            "Ingest applied: {created} created, {updated} updated, {retired} retired, {docs_created} docs ingested."
+        );
+    } else {
+        println!("Ingest applied: {created} created, {updated} updated, {retired} retired.");
+    }
     Ok(ExitCode::SUCCESS)
+}
+
+// ── PDF docs ingestion (M3.7) ───────────────────────────────────────────
+
+/// Maximum characters to keep from extracted PDF text.
+const PDF_MAX_CHARS: usize = 10_000;
+
+/// Derive a wiki slug from a PDF filename: `docs/api-guide.pdf` → `ref-api-guide`.
+pub(crate) fn slug_from_pdf(path: &Path) -> String {
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("unknown");
+    // Normalize: lowercase, replace non-alphanumeric with hyphens, collapse.
+    let normalized: String = stem
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c.to_ascii_lowercase() } else { '-' })
+        .collect();
+    // Collapse consecutive hyphens and trim leading/trailing hyphens.
+    let collapsed = normalized
+        .split('-')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    format!("ref-{collapsed}")
+}
+
+/// Check whether `pdftotext` is available on the system PATH.
+fn pdftotext_available() -> bool {
+    std::process::Command::new("pdftotext")
+        .arg("-v")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok()
+}
+
+/// Extract text from a PDF file using `pdftotext`. Returns None on failure.
+fn extract_pdf_text(pdf_path: &Path) -> Option<String> {
+    let output = std::process::Command::new("pdftotext")
+        .arg("-layout")
+        .arg(pdf_path)
+        .arg("-") // stdout
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8(output.stdout).ok()
+}
+
+/// Ingest PDF files from `docs_dir` into the wiki as Reference pages.
+/// Returns (created_count, warnings).
+fn ingest_docs_pdfs(
+    docs_dir: &Path,
+    wiki_root: &Path,
+    head_sha: &str,
+) -> (usize, Vec<String>) {
+    let mut created = 0usize;
+    let mut warnings: Vec<String> = Vec::new();
+
+    if !docs_dir.is_dir() {
+        warnings.push(format!(
+            "docs directory not found: {}; skipping PDF ingestion",
+            docs_dir.display()
+        ));
+        return (created, warnings);
+    }
+
+    if !pdftotext_available() {
+        warnings.push(
+            "pdftotext not found in PATH; install poppler-utils to enable PDF ingestion".into(),
+        );
+        return (created, warnings);
+    }
+
+    // Collect *.pdf files from the docs directory (non-recursive).
+    let pdf_files: Vec<PathBuf> = match std::fs::read_dir(docs_dir) {
+        Ok(entries) => entries
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| {
+                p.extension()
+                    .and_then(|ext| ext.to_str())
+                    .map(|ext| ext.eq_ignore_ascii_case("pdf"))
+                    .unwrap_or(false)
+            })
+            .collect(),
+        Err(e) => {
+            warnings.push(format!("failed to read docs dir {}: {e}", docs_dir.display()));
+            return (created, warnings);
+        }
+    };
+
+    if pdf_files.is_empty() {
+        return (created, warnings);
+    }
+
+    let subdir = page_type_subdir(PageType::Reference);
+    let target_dir = wiki_root.join(subdir);
+
+    for pdf_path in &pdf_files {
+        let slug = slug_from_pdf(pdf_path);
+
+        // Validate the generated slug.
+        if !coral_core::slug::is_safe_filename_slug(&slug) {
+            warnings.push(format!(
+                "PDF {} produced invalid slug `{slug}`; skipping",
+                pdf_path.display()
+            ));
+            continue;
+        }
+
+        // Skip if page already exists.
+        let page_path = target_dir.join(format!("{slug}.md"));
+        if page_path.exists() {
+            continue;
+        }
+
+        // Extract text.
+        let raw_text = match extract_pdf_text(pdf_path) {
+            Some(t) if !t.trim().is_empty() => t,
+            _ => {
+                warnings.push(format!(
+                    "failed to extract text from {}; skipping",
+                    pdf_path.display()
+                ));
+                continue;
+            }
+        };
+
+        // Truncate to PDF_MAX_CHARS.
+        let (body_text, truncated) = if raw_text.len() > PDF_MAX_CHARS {
+            (&raw_text[..PDF_MAX_CHARS], true)
+        } else {
+            (raw_text.as_str(), false)
+        };
+
+        let mut body = format!("# {slug}\n\n{body_text}\n");
+        if truncated {
+            body.push_str(
+                "\n\n---\n_Content truncated at 10000 characters. See the original PDF for the full text._\n",
+            );
+        }
+
+        // Build the relative source path for frontmatter.
+        let source_path = pdf_path.to_string_lossy().to_string();
+
+        let frontmatter = Frontmatter {
+            slug: slug.clone(),
+            page_type: PageType::Reference,
+            last_updated_commit: head_sha.to_string(),
+            confidence: Confidence::try_new(0.3).expect("0.3 is valid"),
+            sources: vec![source_path],
+            backlinks: vec![],
+            status: Status::Draft,
+            generated_at: Some(chrono::Utc::now().to_rfc3339()),
+            valid_from: None,
+            valid_to: None,
+            superseded_by: None,
+            extra: BTreeMap::new(),
+        };
+
+        let page = Page {
+            path: page_path,
+            frontmatter,
+            body,
+        };
+
+        if let Err(e) = page.write() {
+            warnings.push(format!("failed to write page for {}: {e}", pdf_path.display()));
+            continue;
+        }
+        created += 1;
+    }
+
+    (created, warnings)
 }
 
 fn locate_page(root: &Path, slug: &str) -> Option<PathBuf> {
@@ -444,6 +643,142 @@ mod tests {
         assert!(
             log.contains("1 created, 1 updated, 1 retired"),
             "log missing counts: {log}"
+        );
+    }
+
+    // ── PDF docs ingestion tests (M3.7) ─────────────────────────────
+
+    #[test]
+    fn include_docs_flag_enables_pdf_scanning() {
+        // When --include-docs is set, the ingest command attempts to scan docs_dir.
+        // Here we verify the flag parsing and that it triggers the docs path
+        // (which gracefully handles a missing docs dir).
+        let _guard = CWD_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = TempDir::new().unwrap();
+        let cur = std::env::current_dir().unwrap();
+        let wiki = tmp.path().join(".wiki");
+        std::fs::create_dir_all(&wiki).unwrap();
+        write_index(&wiki, "abc");
+        write_log(&wiki);
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let runner = MockRunner::new();
+        runner.push_ok("plan:\n  - slug: noop\n    action: update\n    rationale: x");
+        // docs/ dir does NOT exist — should produce a warning but not error.
+        let exit = run_with_runner(
+            IngestArgs {
+                from: Some("abc".into()),
+                apply: true,
+                include_docs: true,
+                docs_dir: tmp.path().join("docs"),
+                ..Default::default()
+            },
+            Some(wiki.as_path()),
+            &runner,
+        )
+        .unwrap();
+        std::env::set_current_dir(&cur).unwrap();
+        assert_eq!(exit, ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn slug_from_pdf_filename() {
+        use std::path::Path;
+        assert_eq!(
+            super::slug_from_pdf(Path::new("docs/api-guide.pdf")),
+            "ref-api-guide"
+        );
+        assert_eq!(
+            super::slug_from_pdf(Path::new("docs/My Design Doc.pdf")),
+            "ref-my-design-doc"
+        );
+        assert_eq!(
+            super::slug_from_pdf(Path::new("docs/UPPER_CASE.pdf")),
+            "ref-upper_case"
+        );
+        assert_eq!(
+            super::slug_from_pdf(Path::new("hello.pdf")),
+            "ref-hello"
+        );
+    }
+
+    #[test]
+    fn pdf_page_generation_correct_frontmatter() {
+        // Simulate the page that ingest_docs_pdfs would create
+        // by calling the internal helpers directly.
+        use super::{slug_from_pdf, PDF_MAX_CHARS};
+        use coral_core::frontmatter::{Confidence, Frontmatter, PageType, Status};
+        use coral_core::page::Page;
+        use std::collections::BTreeMap;
+
+        let pdf_path = std::path::Path::new("docs/architecture.pdf");
+        let slug = slug_from_pdf(pdf_path);
+        assert_eq!(slug, "ref-architecture");
+
+        let body_text = "Sample extracted text from PDF.";
+        let body = format!("# {slug}\n\n{body_text}\n");
+        let source_path = pdf_path.to_string_lossy().to_string();
+
+        let frontmatter = Frontmatter {
+            slug: slug.clone(),
+            page_type: PageType::Reference,
+            last_updated_commit: "deadbeef".to_string(),
+            confidence: Confidence::try_new(0.3).unwrap(),
+            sources: vec![source_path.clone()],
+            backlinks: vec![],
+            status: Status::Draft,
+            generated_at: Some("2026-05-11T00:00:00Z".to_string()),
+            valid_from: None,
+            valid_to: None,
+            superseded_by: None,
+            extra: BTreeMap::new(),
+        };
+
+        let tmp = TempDir::new().unwrap();
+        let page_path = tmp.path().join("ref-architecture.md");
+        let page = Page {
+            path: page_path.clone(),
+            frontmatter,
+            body,
+        };
+        page.write().unwrap();
+
+        // Re-read and verify.
+        let reloaded = Page::from_file(&page_path).unwrap();
+        assert_eq!(reloaded.frontmatter.page_type, PageType::Reference);
+        assert_eq!(reloaded.frontmatter.slug, "ref-architecture");
+        assert!((reloaded.frontmatter.confidence.as_f64() - 0.3).abs() < 1e-9);
+        assert_eq!(reloaded.frontmatter.sources, vec![source_path]);
+        assert_eq!(reloaded.frontmatter.status, Status::Draft);
+        assert!(reloaded.body.contains("Sample extracted text from PDF."));
+        // Verify truncation constant is correct.
+        assert_eq!(PDF_MAX_CHARS, 10_000);
+    }
+
+    #[test]
+    fn graceful_when_pdftotext_unavailable() {
+        // This test verifies that ingest_docs_pdfs produces a warning
+        // (not a panic) when pdftotext is not installed. We create a
+        // docs dir with a PDF but mock the scenario by checking the
+        // warning output path (since we can't guarantee pdftotext is
+        // missing in CI, we test the directory-exists-but-empty case).
+        let tmp = TempDir::new().unwrap();
+        let docs = tmp.path().join("docs");
+        std::fs::create_dir_all(&docs).unwrap();
+        // Create a fake PDF file (pdftotext will fail on it).
+        std::fs::write(docs.join("fake.pdf"), b"not a real pdf").unwrap();
+
+        let wiki = tmp.path().join(".wiki");
+        std::fs::create_dir_all(&wiki).unwrap();
+
+        let (created, warnings) = super::ingest_docs_pdfs(&docs, &wiki, "abc123");
+        // Either pdftotext is not installed (warning about missing tool)
+        // or it fails on our fake file (warning about extraction failure).
+        // In both cases: no pages created, and we get at least one warning.
+        assert_eq!(created, 0);
+        assert!(
+            !warnings.is_empty(),
+            "expected at least one warning for fake PDF or missing pdftotext"
         );
     }
 

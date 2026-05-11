@@ -89,6 +89,7 @@ fn full_lifecycle_with_mock_runner() {
             provider: None,
             dry_run: true,
             apply: false,
+            ..Default::default()
         },
         Some(&wiki),
         &runner2,
@@ -109,6 +110,7 @@ fn full_lifecycle_with_mock_runner() {
             provider: None,
             dry_run: false,
             apply: true,
+            ..Default::default()
         },
         Some(&wiki),
         &runner3,
