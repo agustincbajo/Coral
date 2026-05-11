@@ -3,7 +3,7 @@ members = ["crates/*"]
 resolver = "2"
 
 [workspace.package]
-version = "0.25.0"
+version = "0.30.0"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT"
@@ -82,14 +82,14 @@ mimalloc = { version = "0.1", default-features = false }
 # 5000+ page wikis. Single-purpose, pure-Rust, ~20 KB; no new transitives
 # beyond byteorder (already in the tree via rusqlite).
 bincode = "1"
-coral-core = { path = "crates/coral-core", version = "0.25.0" }
-coral-env = { path = "crates/coral-env", version = "0.25.0" }
-coral-lint = { path = "crates/coral-lint", version = "0.25.0" }
-coral-runner = { path = "crates/coral-runner", version = "0.25.0" }
-coral-session = { path = "crates/coral-session", version = "0.25.0" }
-coral-stats = { path = "crates/coral-stats", version = "0.25.0" }
-coral-test = { path = "crates/coral-test", version = "0.25.0" }
-coral-mcp = { path = "crates/coral-mcp", version = "0.25.0" }
+coral-core = { path = "crates/coral-core", version = "0.30.0" }
+coral-env = { path = "crates/coral-env", version = "0.30.0" }
+coral-lint = { path = "crates/coral-lint", version = "0.30.0" }
+coral-runner = { path = "crates/coral-runner", version = "0.30.0" }
+coral-session = { path = "crates/coral-session", version = "0.30.0" }
+coral-stats = { path = "crates/coral-stats", version = "0.30.0" }
+coral-test = { path = "crates/coral-test", version = "0.30.0" }
+coral-mcp = { path = "crates/coral-mcp", version = "0.30.0" }
 
 [profile.release]
 lto = "thin"
