@@ -5,6 +5,7 @@ pub mod cache;
 pub mod embeddings;
 pub mod embeddings_sqlite;
 pub mod error;
+pub mod eval;
 pub mod frontmatter;
 pub mod gc;
 pub mod git_remote;

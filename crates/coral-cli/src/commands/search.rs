@@ -11,7 +11,8 @@ use std::process::ExitCode;
 
 #[derive(Args, Debug)]
 pub struct SearchArgs {
-    /// Search query.
+    /// Search query (ignored in --eval mode).
+    #[arg(default_value = "")]
     pub query: String,
     /// Max results to display (default: 5).
     #[arg(long, default_value_t = 5)]
@@ -42,6 +43,12 @@ pub struct SearchArgs {
     /// PLACEHOLDER_ANTHROPIC_MODEL (anthropic, until Anthropic ships).
     #[arg(long)]
     pub embeddings_model: Option<String>,
+    /// Run evaluation mode against a goldset file.
+    #[arg(long)]
+    pub eval: bool,
+    /// Path to goldset JSON file (array of {query, expected_slugs}).
+    #[arg(long)]
+    pub goldset: Option<String>,
 }
 
 pub fn run(args: SearchArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
@@ -57,6 +64,11 @@ pub fn run(args: SearchArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
     let pages = walk::read_pages(&root)
         .with_context(|| format!("reading pages from {}", root.display()))?;
 
+    // Evaluation mode: load goldset, run queries, report metrics.
+    if args.eval {
+        return run_eval(&pages, &args);
+    }
+
     match args.engine.as_str() {
         "tfidf" => run_tfidf(&pages, &args),
         "embeddings" => {
@@ -65,6 +77,41 @@ pub fn run(args: SearchArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
         }
         other => anyhow::bail!("unknown engine: {other}. Choose: tfidf | embeddings"),
     }
+}
+
+fn run_eval(pages: &[coral_core::page::Page], args: &SearchArgs) -> Result<ExitCode> {
+    use coral_core::eval;
+
+    let goldset_path = args
+        .goldset
+        .as_ref()
+        .context("--goldset <file> is required when --eval is set")?;
+    let path = PathBuf::from(goldset_path);
+    let goldset =
+        eval::load_goldset(&path).map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    let k = args.limit;
+    let algorithm = args.algorithm.clone();
+    let report = eval::evaluate(&goldset, k, |query| {
+        let results = match algorithm.as_str() {
+            "bm25" => search::search_bm25(pages, query, k),
+            "hybrid" => search::search_hybrid(pages, query, k),
+            _ => search::search(pages, query, k),
+        };
+        results.into_iter().map(|r| r.slug).collect()
+    });
+
+    if args.format == "json" {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report)
+                .context("serializing eval report")?
+        );
+    } else {
+        print!("{}", eval::render_markdown(&report));
+    }
+
+    Ok(ExitCode::SUCCESS)
 }
 
 fn build_embeddings_provider(args: &SearchArgs) -> Result<Box<dyn EmbeddingsProvider>> {
