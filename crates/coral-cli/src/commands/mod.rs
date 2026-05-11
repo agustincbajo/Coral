@@ -12,6 +12,7 @@ pub mod filters;
 pub mod guarantee;
 pub mod history;
 pub mod init;
+pub mod interface;
 pub mod lint;
 pub mod mcp;
 pub mod monitor;

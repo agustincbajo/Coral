@@ -146,6 +146,10 @@ enum Cmd {
     /// let you search (`--search`) or filter (`--filter`) individual
     /// pages from that historical snapshot.
     Wiki(commands::wiki::WikiArgs),
+    /// **v0.24 M2.3**: Watch `.wiki/` for changes to Interface-typed
+    /// pages and emit structured notifications. Daemon command for
+    /// real-time interface contract drift detection.
+    Interface(commands::interface::InterfaceArgs),
     /// **Hidden** test-only helper: acquires `with_exclusive_lock(path)`,
     /// reads the file as a u64 counter, increments by 1, writes back.
     /// Used by `tests/cross_process_lock.rs` to verify the v0.15
@@ -231,6 +235,7 @@ fn main() -> ExitCode {
         Cmd::Ci(args) => commands::ci::run(args),
         Cmd::Monitor(args) => commands::monitor::run(args, cli.wiki_root.as_deref()),
         Cmd::Wiki(args) => commands::wiki::run(args, cli.wiki_root.as_deref()),
+        Cmd::Interface(args) => commands::interface::run(args, cli.wiki_root.as_deref()),
         Cmd::TestLockIncr { path } => run_test_lock_incr(&path),
     };
 
