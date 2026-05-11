@@ -18,10 +18,20 @@
 //! with the patch index + git stderr verbatim. This is the same
 //! all-or-nothing contract the option (a) flow has always provided.
 //!
-//! Validation rationale for `git apply --unsafe-paths`: the flag
-//! permits patches with paths outside the index, NOT untrusted paths
-//! in any meaningful sense. The actual safety property comes from
-//! the slug allow-list check that runs BEFORE git ever sees the
+//! Validation rationale (post-audit-003 hardening): every
+//! `---`/`+++` header in the patch is validated to equal
+//! `<target_slug>.md`; multi-file patches are rejected (the design
+//! is one-slug-per-patch — we make that explicit at the parse gate).
+//! As defense in depth, headers containing `..` components or
+//! starting with `/` are rejected before `git apply` is ever spawned.
+//! We no longer pass `--unsafe-paths` to the real apply step — git's
+//! default reject-on-escape behaviour, combined with `--directory=.wiki`,
+//! refuses any path that would resolve outside the wiki tree. The
+//! `--check` invocation also drops the flag for the same reason
+//! (the slug allow-list + per-header validation already rule out
+//! every legitimate use of `--unsafe-paths`).
+//!
+//! The slug allow-list check still runs BEFORE git ever sees the
 //! diff: each path component of `target_slug` must pass
 //! [`coral_core::slug::is_safe_filename_slug`], and the resolved
 //! page must already exist in `list_page_paths(.wiki)`. By the time
@@ -205,37 +215,71 @@ fn is_safe_path_slug(slug: &str) -> bool {
     true
 }
 
-/// Verifies the `--- a/<X>.md` and `+++ b/<X>.md` headers in `diff`
-/// agree with `target_slug`. Headers MUST be present (otherwise
-/// `git apply` would still accept a `+++ /dev/null` deletion against
-/// our intent — and even with --check it might guess).
+/// Verifies that EVERY `--- a/<X>.md` / `+++ b/<X>.md` header pair in
+/// `diff` agrees with `target_slug`. Headers MUST be present, and the
+/// patch is one-slug-per-file by design — any patch carrying more than
+/// one `---`/`+++` pair is rejected outright (audit-003: a multi-pair
+/// diff could smuggle a second-pair traversal past a first-pair check).
 ///
-/// Both headers must reference the same path; we accept any prefix
-/// (`a/...` and `b/...` are conventional but not enforced — git accepts
-/// both with and without prefix). The path with the `.md` suffix
-/// stripped must equal `target_slug`.
+/// Per pair, after stripping the conventional `a/`/`b/` prefix:
+/// - the path must equal `{target_slug}.md`,
+/// - the path must NOT contain any `..` component (defense in depth
+///   against creative `a/foo/../../escape.md` shapes that strip to a
+///   different value than git would resolve), and
+/// - the path must NOT start with `/` (absolute paths are rejected).
+///
+/// Both headers in the single allowed pair must reference the same
+/// path. We accept either `a/`/`b/` prefixes or no prefix at all —
+/// git accepts both shapes.
 fn diff_targets_slug(diff: &str, target_slug: &str) -> bool {
+    let expected = format!("{target_slug}.md");
     let mut minus_path: Option<String> = None;
     let mut plus_path: Option<String> = None;
     for line in diff.lines() {
-        if let Some(rest) = line.strip_prefix("--- ")
-            && minus_path.is_none()
-        {
-            minus_path = Some(strip_diff_prefix(rest.trim()).to_string());
-        } else if let Some(rest) = line.strip_prefix("+++ ")
-            && plus_path.is_none()
-        {
-            plus_path = Some(strip_diff_prefix(rest.trim()).to_string());
-            // After we've seen both headers, no need to keep parsing.
-            break;
+        if let Some(rest) = line.strip_prefix("--- ") {
+            // Reject a second `---` header — one-slug-per-patch.
+            if minus_path.is_some() {
+                return false;
+            }
+            let stripped = strip_diff_prefix(rest.trim());
+            if !is_safe_diff_header_path(stripped) || stripped != expected {
+                return false;
+            }
+            minus_path = Some(stripped.to_string());
+        } else if let Some(rest) = line.strip_prefix("+++ ") {
+            // Reject a second `+++` header — one-slug-per-patch.
+            if plus_path.is_some() {
+                return false;
+            }
+            let stripped = strip_diff_prefix(rest.trim());
+            if !is_safe_diff_header_path(stripped) || stripped != expected {
+                return false;
+            }
+            plus_path = Some(stripped.to_string());
         }
     }
     let (Some(minus), Some(plus)) = (minus_path, plus_path) else {
         return false;
     };
-    let expected = format!("{target_slug}.md");
-    if minus != expected || plus != expected {
+    minus == expected && plus == expected
+}
+
+/// Defense-in-depth check on a diff header path AFTER `strip_diff_prefix`.
+/// Rejects absolute paths and any `..` component. Empty paths are also
+/// rejected (we want a non-empty `<slug>.md` to follow).
+fn is_safe_diff_header_path(p: &str) -> bool {
+    if p.is_empty() {
         return false;
+    }
+    if p.starts_with('/') {
+        return false;
+    }
+    // Reject `..` as a path component (start, middle, or end), but allow
+    // `..` inside a single component (e.g. a literal `foo..bar`).
+    for seg in p.split('/') {
+        if seg == ".." {
+            return false;
+        }
     }
     true
 }
@@ -462,9 +506,9 @@ fn page_path_to_slug(wiki_root: &std::path::Path, p: &std::path::Path) -> Option
     Some(stripped.to_string())
 }
 
-/// Runs `git apply --check --unsafe-paths --directory=.wiki <patch>`
-/// against `project_root`. Returns Ok on success; Err carries git's
-/// stderr verbatim so the caller can include it in the user-visible
+/// Runs `git apply --check --directory=.wiki <patch>` against
+/// `project_root`. Returns Ok on success; Err carries git's stderr
+/// verbatim so the caller can include it in the user-visible
 /// `DistillMalformed`.
 ///
 /// `--directory=.wiki` is critical: the patch headers come from the
@@ -473,6 +517,11 @@ fn page_path_to_slug(wiki_root: &std::path::Path, p: &std::path::Path) -> Option
 /// relative to the CWD (= `project_root`), look for
 /// `<project_root>/<target>.md`, and 404. With `--directory=.wiki`,
 /// every diff path gets that prefix prepended at apply time.
+///
+/// audit-003: We deliberately do NOT pass `--unsafe-paths`. The slug
+/// allow-list + per-header validation (`diff_targets_slug`) already
+/// rule out anything outside `.wiki/<slug>.md`, and dropping the flag
+/// gives git's default reject-on-escape behaviour as a final backstop.
 fn git_apply_check(
     project_root: &std::path::Path,
     patch_path: &std::path::Path,
@@ -480,10 +529,12 @@ fn git_apply_check(
     git_apply_inner(project_root, patch_path, true)
 }
 
-/// Runs `git apply --unsafe-paths --directory=.wiki <patch>` against
-/// `project_root` — actually mutating the working tree. Used after
-/// every patch in the set has passed `--check` (pre-apply atomicity,
-/// spec D6).
+/// Runs `git apply --directory=.wiki <patch>` against `project_root`
+/// — actually mutating the working tree. Used after every patch in
+/// the set has passed `--check` (pre-apply atomicity, spec D6).
+///
+/// audit-003: `--unsafe-paths` is intentionally absent. See the doc
+/// on [`git_apply_check`].
 fn git_apply_real(
     project_root: &std::path::Path,
     patch_path: &std::path::Path,
@@ -501,7 +552,12 @@ fn git_apply_inner(
     if check_only {
         cmd.arg("--check");
     }
-    cmd.arg("--unsafe-paths");
+    // audit-003: NO `--unsafe-paths`. The slug allow-list +
+    // `diff_targets_slug` per-header validation already rule out any
+    // path outside `.wiki/<slug>.md`; without `--unsafe-paths` git
+    // refuses any patch whose resolved path escapes the working tree,
+    // giving us a final backstop.
+    //
     // Prepend `.wiki/` to every path in the diff. The LLM emits diffs
     // shaped `--- a/<target>.md` where `<target>` is relative to the
     // wiki root; this flag makes git resolve those against `.wiki/`
@@ -972,5 +1028,124 @@ mod tests {
             }
             other => panic!("expected DistillMalformed, got {other:?}"),
         }
+    }
+
+    /// audit-003 regression: a unified diff carrying two file-pair
+    /// headers — even when BOTH pairs target the legitimate slug — is
+    /// rejected. The design contract is one-slug-per-patch; allowing a
+    /// second pair would re-open the multi-file bypass even with a
+    /// per-header equality check (a future audit change could weaken
+    /// the equality and silently let a second pair through).
+    #[test]
+    fn diff_with_two_file_pairs_is_rejected() {
+        let two_pairs = "--- a/foo.md\n\
++++ b/foo.md\n\
+@@ -1 +1 @@\n\
+-old\n\
++new\n\
+--- a/foo.md\n\
++++ b/foo.md\n\
+@@ -1 +1 @@\n\
+-old2\n\
++new2\n";
+        assert!(
+            !diff_targets_slug(two_pairs, "foo"),
+            "multi-pair diff must be rejected (one-slug-per-patch)"
+        );
+    }
+
+    /// audit-003 regression: the classic exploit shape — first pair
+    /// is the benign legitimate target, second pair is a traversal
+    /// escape. Pre-fix this returned true because we only inspected
+    /// the first pair.
+    #[test]
+    fn diff_with_traversal_in_second_pair_is_rejected() {
+        let exploit = "--- a/foo.md\n\
++++ b/foo.md\n\
+@@ -1 +1 @@\n\
+-old\n\
++new\n\
+--- a/../../etc/passwd\n\
++++ b/../../etc/passwd\n\
+@@ -0,0 +1 @@\n\
++attacker:x:0:0::/root:/bin/sh\n";
+        assert!(
+            !diff_targets_slug(exploit, "foo"),
+            "second-pair traversal must be rejected"
+        );
+    }
+
+    /// audit-003 regression: even a single-pair patch whose header
+    /// strips to a `..`-bearing path is rejected (defense in depth).
+    /// `strip_diff_prefix` leaves `../escape.md`; `is_safe_diff_header_path`
+    /// must catch it.
+    #[test]
+    fn diff_with_dotdot_in_only_pair_is_rejected() {
+        let escape = "--- a/../escape.md\n+++ b/../escape.md\n@@ -1 +1 @@\n-x\n+y\n";
+        assert!(
+            !diff_targets_slug(escape, "../escape"),
+            "single-pair `..` traversal must be rejected"
+        );
+        // Even if the caller passed the literal target the LLM emitted,
+        // the path-component check still fires.
+        assert!(
+            !diff_targets_slug(escape, "escape"),
+            "single-pair `..` traversal must be rejected vs any slug"
+        );
+    }
+
+    /// audit-003 regression: a header starting with `/` is absolute
+    /// and is rejected outright by the defense-in-depth check.
+    #[test]
+    fn diff_with_absolute_path_is_rejected() {
+        // `strip_diff_prefix` does not strip a leading `/`; the
+        // result is `/etc/passwd`.
+        let abs = "--- /etc/passwd\n+++ /etc/passwd\n@@ -1 +1 @@\n-x\n+y\n";
+        assert!(
+            !diff_targets_slug(abs, "/etc/passwd"),
+            "absolute header path must be rejected"
+        );
+        assert!(
+            !diff_targets_slug(abs, "etc/passwd"),
+            "absolute header path must be rejected vs any slug"
+        );
+    }
+
+    /// audit-003 regression at the higher `parse_patches` gate: a
+    /// patch whose `diff` carries a benign first pair + a traversal
+    /// second pair is rejected before any `git apply` could run. This
+    /// is the end-to-end protection guarantee — even if the runner
+    /// blindly forwards what the LLM emits, the validation gate in
+    /// `parse_patches` (which calls `diff_targets_slug`) short-circuits
+    /// the whole pipeline before the spawn.
+    #[test]
+    fn parse_patches_rejects_multi_pair_traversal() {
+        // Build the YAML by concatenation so the embedded `---` lines
+        // don't confuse a YAML block-scalar.
+        let yaml = String::from(
+            "patches:\n  - target: foo\n    rationale: r\n    diff: |\n      --- a/foo.md\n      +++ b/foo.md\n      @@ -1 +1 @@\n      -x\n      +y\n      --- a/../../etc/passwd\n      +++ b/../../etc/passwd\n      @@ -0,0 +1 @@\n      +pwned\n",
+        );
+        let err = parse_patches(&yaml).unwrap_err();
+        match err {
+            SessionError::DistillMalformed(m) => {
+                assert!(m.contains("headers do not match"), "got: {m}");
+            }
+            other => panic!("expected DistillMalformed, got {other:?}"),
+        }
+    }
+
+    /// audit-003 sanity: `is_safe_diff_header_path` directly.
+    #[test]
+    fn is_safe_diff_header_path_rejects_dotdot_and_absolute() {
+        assert!(is_safe_diff_header_path("foo.md"));
+        assert!(is_safe_diff_header_path("modules/auth.md"));
+        // A `..` inside a single component (no separators) is fine —
+        // it isn't a path-traversal component.
+        assert!(is_safe_diff_header_path("foo..bar.md"));
+        assert!(!is_safe_diff_header_path(""));
+        assert!(!is_safe_diff_header_path("/etc/passwd"));
+        assert!(!is_safe_diff_header_path("../escape.md"));
+        assert!(!is_safe_diff_header_path("modules/../escape.md"));
+        assert!(!is_safe_diff_header_path("modules/auth/.."));
     }
 }
