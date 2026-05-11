@@ -14,6 +14,7 @@ pub mod governance;
 pub mod llms_txt;
 pub mod index;
 pub mod log;
+pub mod narrative;
 pub mod page;
 pub mod path;
 pub mod project;

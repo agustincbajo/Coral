@@ -15,6 +15,7 @@
 
 use anyhow::{Context, Result};
 use clap::Args;
+use coral_core::narrative;
 use coral_core::page::Page;
 use coral_core::walk;
 use coral_core::wikilinks;
@@ -50,6 +51,17 @@ pub struct DiffArgs {
     /// Or set CORAL_PROVIDER env. Silently ignored without `--semantic`.
     #[arg(long)]
     pub provider: Option<String>,
+    /// Generate a narrative summarising what changed between two git refs
+    /// instead of comparing two pages. When set, `slug_a` / `slug_b` are
+    /// ignored and `--base` / `--head` control the two refs.
+    #[arg(long)]
+    pub narrative: bool,
+    /// Base git ref for `--narrative` (default: HEAD~1).
+    #[arg(long, default_value = "HEAD~1")]
+    pub base: String,
+    /// Head git ref for `--narrative` (default: HEAD).
+    #[arg(long, default_value = "HEAD")]
+    pub head: String,
 }
 
 /// Entry point wired to `Cmd::Diff`. Loads the two pages, runs the
@@ -70,6 +82,12 @@ pub fn run(args: DiffArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
             root.display()
         );
     }
+
+    // --narrative mode: compare wiki state between two git refs.
+    if args.narrative {
+        return run_narrative(&root, &args.base, &args.head, &args.format);
+    }
+
     let pages = walk::read_pages(&root)
         .with_context(|| format!("reading pages from {}", root.display()))?;
 
@@ -153,6 +171,95 @@ fn render_output(
         ),
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Run the `--narrative` code path: read wiki pages at the base and head
+/// refs by listing wiki files at each ref via `git ls-tree` and reading
+/// each page via `git show`, then diff and render.
+fn run_narrative(wiki_root: &Path, base: &str, head: &str, format: &str) -> Result<ExitCode> {
+    let pages_before = read_pages_at_ref(wiki_root, base)?;
+    let pages_after = read_pages_at_ref(wiki_root, head)?;
+
+    let diffs = narrative::diff_wiki_states(&pages_before, &pages_after);
+    let output = match format {
+        "json" => serde_json::to_string_pretty(&narrative_to_json(&diffs))?,
+        _ => narrative::generate_narrative(&diffs),
+    };
+    println!("{output}");
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Build a JSON value from the narrative diffs for `--format json`.
+fn narrative_to_json(diffs: &[narrative::PageDiff]) -> serde_json::Value {
+    let items: Vec<serde_json::Value> = diffs
+        .iter()
+        .map(|d| {
+            serde_json::json!({
+                "slug": d.slug,
+                "change_type": format!("{}", d.change_type),
+                "confidence_delta": d.confidence_delta,
+                "body_delta_chars": d.body_delta_chars,
+            })
+        })
+        .collect();
+    serde_json::json!({ "changes": items })
+}
+
+/// Read all wiki pages at a given git ref by listing `.md` files under
+/// the wiki root via `git ls-tree` and then reading each with `git show`.
+fn read_pages_at_ref(wiki_root: &Path, git_ref: &str) -> Result<Vec<Page>> {
+    let repo_root = wiki_root.parent().unwrap_or(wiki_root);
+    let rel_wiki = wiki_root
+        .strip_prefix(repo_root)
+        .unwrap_or(wiki_root);
+
+    // List all .md files under the wiki root at the given ref.
+    let output = std::process::Command::new("git")
+        .args([
+            "ls-tree",
+            "-r",
+            "--name-only",
+            git_ref,
+            &format!("{}/", rel_wiki.display()),
+        ])
+        .current_dir(repo_root)
+        .output()
+        .context("running git ls-tree")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("git ls-tree failed for ref {git_ref}: {stderr}");
+    }
+
+    let file_list = String::from_utf8(output.stdout)
+        .context("git ls-tree output is not valid UTF-8")?;
+
+    let mut pages = Vec::new();
+    for line in file_list.lines() {
+        let line = line.trim();
+        if !line.ends_with(".md") {
+            continue;
+        }
+        let show_output = std::process::Command::new("git")
+            .args(["show", &format!("{git_ref}:{line}")])
+            .current_dir(repo_root)
+            .output()
+            .with_context(|| format!("git show {git_ref}:{line}"))?;
+
+        if !show_output.status.success() {
+            continue; // skip files that can't be read (e.g. binary)
+        }
+        let content = match String::from_utf8(show_output.stdout) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        let path = repo_root.join(line);
+        match Page::from_content(&content, &path) {
+            Ok(p) => pages.push(p),
+            Err(_) => continue, // skip non-wiki .md files (no frontmatter)
+        }
+    }
+    Ok(pages)
 }
 
 /// Retrieve the content of a wiki page at a historical git ref.
@@ -889,6 +996,9 @@ mod tests {
             semantic: false,
             model: None,
             provider: None,
+            narrative: false,
+            base: "HEAD~1".into(),
+            head: "HEAD".into(),
         };
         let r = run(args, Some(&wiki));
         assert!(r.is_err(), "must reject --ref combined with slug_b");
@@ -916,6 +1026,9 @@ mod tests {
             semantic: false,
             model: None,
             provider: None,
+            narrative: false,
+            base: "HEAD~1".into(),
+            head: "HEAD".into(),
         };
         let r = run(args, Some(&wiki));
         assert!(r.is_err(), "must error when slug_b is missing and --ref is not set");
