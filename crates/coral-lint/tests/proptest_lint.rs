@@ -109,6 +109,7 @@ fn page_type_subdir(pt: PageType) -> &'static str {
         PageType::Schema => ".",
         PageType::Readme => ".",
         PageType::Reference => "references",
+        PageType::Interface => "interfaces",
     }
 }
 
@@ -346,6 +347,7 @@ fn property_orphan_skips_system_page_types() {
         PageType::Log,
         PageType::Schema,
         PageType::Readme,
+        PageType::Interface,
     ];
     for pt in system_types {
         let slug = match pt {
@@ -353,6 +355,7 @@ fn property_orphan_skips_system_page_types() {
             PageType::Log => "log",
             PageType::Schema => "schema",
             PageType::Readme => "readme",
+            PageType::Interface => "interface",
             _ => unreachable!(),
         };
         let page = Page {

@@ -23,6 +23,10 @@ pub enum PageType {
     Schema,
     Readme,
     Reference,
+    /// v0.24: Interface pages describe API contracts (OpenAPI, protobuf,
+    /// GraphQL schemas). They're linked to `.coral/contracts/` and
+    /// monitored for semantic drift by `coral contract check`.
+    Interface,
 }
 
 /// Status of a page in its lifecycle.
@@ -501,5 +505,14 @@ body line 2
             !out.contains("generated_at:"),
             "should not contain optional none: {out}"
         );
+    }
+
+    #[test]
+    fn interface_page_type_round_trips() {
+        let yaml = "interface";
+        let parsed: PageType = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(parsed, PageType::Interface);
+        let back = serde_yaml_ng::to_string(&parsed).unwrap();
+        assert!(back.trim() == "interface");
     }
 }

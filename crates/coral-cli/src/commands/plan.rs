@@ -152,6 +152,7 @@ pub fn page_type_subdir(t: PageType) -> &'static str {
         Schema => ".",
         Readme => ".",
         Reference => "examples",
+        Interface => "interfaces",
     }
 }
 

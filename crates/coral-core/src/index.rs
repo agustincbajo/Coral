@@ -231,6 +231,7 @@ fn page_type_key(pt: &PageType) -> &'static str {
         PageType::Schema => "schema",
         PageType::Readme => "readme",
         PageType::Reference => "reference",
+        PageType::Interface => "interface",
     }
 }
 

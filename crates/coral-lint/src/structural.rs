@@ -56,7 +56,7 @@ pub fn check_orphan_pages(pages: &[Page], links: &[Vec<String>]) -> Vec<LintIssu
     for page in pages {
         if matches!(
             page.frontmatter.page_type,
-            PageType::Index | PageType::Log | PageType::Schema | PageType::Readme
+            PageType::Index | PageType::Log | PageType::Schema | PageType::Readme | PageType::Interface
         ) {
             continue;
         }

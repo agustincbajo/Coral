@@ -144,6 +144,7 @@ fn page_type_name(fm: &coral_core::frontmatter::Frontmatter) -> &'static str {
         Schema => "schema",
         Readme => "readme",
         Reference => "reference",
+        Interface => "interface",
     }
 }
 
