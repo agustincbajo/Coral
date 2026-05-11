@@ -25,6 +25,7 @@ coral-env = { workspace = true }
 # dep in v0.23.3 so the runtime pieces in this crate can pull it in
 # without re-versioning.
 proptest = { workspace = true }
+rayon = { workspace = true }
 
 [features]
 default = ["healthcheck", "user_defined"]

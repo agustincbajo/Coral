@@ -21,9 +21,10 @@ use crate::recorded_runner::RecordedRunner;
 use crate::report::TestReport;
 use crate::spec::{TestCase, TestKind};
 use crate::user_defined_runner::UserDefinedRunner;
-use crate::{TestRunner, discover_openapi_in_project};
+use crate::{ParallelismHint, TestRunner, discover_openapi_in_project};
 use coral_env::{EnvBackend, EnvHandle, EnvPlan, EnvironmentSpec};
-use std::collections::BTreeSet;
+use rayon::prelude::*;
+use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -163,10 +164,45 @@ pub fn run_test_suite_filtered(
         })
         .collect();
 
-    let mut reports = Vec::with_capacity(filtered.len());
-    for (case, runner) in filtered {
-        let report = runner.run(&case, env_handle)?;
-        reports.push(report);
+    // Partition by parallelism hint.
+    let (isolated, rest): (Vec<_>, Vec<_>) = filtered
+        .into_iter()
+        .partition(|(_, runner)| runner.parallelism_hint() == ParallelismHint::Isolated);
+    let (sequential, per_service): (Vec<_>, Vec<_>) = rest
+        .into_iter()
+        .partition(|(_, runner)| runner.parallelism_hint() == ParallelismHint::Sequential);
+
+    // Run isolated cases in parallel.
+    let isolated_reports: Vec<TestReport> = isolated
+        .par_iter()
+        .map(|(case, runner)| runner.run(case, env_handle))
+        .collect::<TestResult<Vec<_>>>()?;
+
+    // Run sequential cases in order.
+    let mut sequential_reports = Vec::with_capacity(sequential.len());
+    for (case, runner) in &sequential {
+        let report = runner.run(case, env_handle)?;
+        sequential_reports.push(report);
     }
+
+    // Run per-service cases: parallel across services, sequential within.
+    let mut service_groups: HashMap<String, Vec<&(TestCase, &dyn TestRunner)>> = HashMap::new();
+    for item in &per_service {
+        let svc = item.0.service.clone().unwrap_or_default();
+        service_groups.entry(svc).or_default().push(item);
+    }
+    let per_service_reports: Vec<TestReport> = service_groups
+        .into_par_iter()
+        .flat_map(|(_, cases)| {
+            cases
+                .into_iter()
+                .map(|(case, runner)| runner.run(case, env_handle))
+                .collect::<Vec<_>>()
+        })
+        .collect::<TestResult<Vec<_>>>()?;
+
+    let mut reports = isolated_reports;
+    reports.extend(sequential_reports);
+    reports.extend(per_service_reports);
     Ok(reports)
 }

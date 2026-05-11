@@ -491,6 +491,7 @@ dependencies = [
  "coral-core",
  "coral-env",
  "proptest",
+ "rayon",
  "serde",
  "serde_json",
  "serde_yaml_ng",
