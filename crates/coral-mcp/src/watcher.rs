@@ -13,8 +13,9 @@
 //! to enable in-process cache invalidation.
 
 use crate::server::McpHandler;
+use crate::state::WikiState;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime};
 
 /// Configuration for the wiki watcher.
@@ -48,6 +49,19 @@ impl Default for WatcherConfig {
 /// handler.serve_stdio()?;
 /// ```
 pub fn start_watcher(config: WatcherConfig, handler: Arc<McpHandler>) -> WatcherHandle {
+    start_watcher_with_state(config, handler, None)
+}
+
+/// Start the watcher with an optional `WikiState`. When a change is
+/// detected, the watcher calls `mark_dirty()` on the state (if
+/// provided) AND sends the MCP `notifications/resources/list_changed`
+/// signal. The MCP request handler can then call `refresh()` on the
+/// state when the next `resources/read` arrives.
+pub fn start_watcher_with_state(
+    config: WatcherConfig,
+    handler: Arc<McpHandler>,
+    wiki_state: Option<Arc<RwLock<WikiState>>>,
+) -> WatcherHandle {
     let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
 
     let thread = std::thread::spawn(move || {
@@ -67,6 +81,13 @@ pub fn start_watcher(config: WatcherConfig, handler: Arc<McpHandler>) -> Watcher
                     wiki_root = %config.wiki_root.display(),
                     "wiki change detected, sending notification"
                 );
+                // Mark the in-memory cache as stale so the next
+                // resources/read triggers a refresh.
+                if let Some(ref state) = wiki_state {
+                    if let Ok(mut s) = state.write() {
+                        s.mark_dirty();
+                    }
+                }
                 handler.notify_resources_list_changed();
                 last_mtime = current_mtime;
             }
@@ -188,6 +209,37 @@ mod tests {
 
         let msg = rx.try_recv().expect("watcher must send notification on change");
         assert_eq!(msg["method"], "notifications/resources/list_changed");
+    }
+
+    #[test]
+    fn watcher_marks_wiki_state_dirty_on_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let wiki_root = dir.path().to_path_buf();
+        fs::write(wiki_root.join("initial.md"), "v1").unwrap();
+
+        let handler = make_handler(&wiki_root);
+        let state = crate::state::shared_state(wiki_root.clone());
+
+        assert!(!state.read().unwrap().is_dirty());
+
+        let config = WatcherConfig {
+            wiki_root: wiki_root.clone(),
+            interval: Duration::from_millis(50),
+        };
+        let _handle =
+            start_watcher_with_state(config, Arc::clone(&handler), Some(Arc::clone(&state)));
+
+        // Wait, then modify a file.
+        std::thread::sleep(Duration::from_millis(80));
+        fs::write(wiki_root.join("new.md"), "new content").unwrap();
+
+        // Give the watcher time to detect the change.
+        std::thread::sleep(Duration::from_millis(150));
+
+        assert!(
+            state.read().unwrap().is_dirty(),
+            "watcher must mark WikiState dirty on filesystem change"
+        );
     }
 
     #[test]

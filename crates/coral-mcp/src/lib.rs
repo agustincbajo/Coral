@@ -36,6 +36,7 @@ pub mod card;
 pub mod prompts;
 pub mod resources;
 pub mod server;
+pub mod state;
 pub mod tools;
 pub mod transport;
 pub mod watcher;
@@ -47,6 +48,7 @@ pub use server::{
     ContractToolDispatcher, McpHandler, NoOpDispatcher, PROTOCOL_VERSION, ToolCallResult,
     ToolDispatcher,
 };
+pub use state::WikiState;
 pub use tools::{Tool, ToolCatalog, ToolKind};
 
 use serde::{Deserialize, Serialize};
