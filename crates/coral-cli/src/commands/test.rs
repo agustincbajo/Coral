@@ -55,6 +55,10 @@ pub enum TestSubcommand {
     /// TestCases and report coverage gaps. Answers: "which endpoints
     /// have tests, which don't?"
     Coverage(CoverageArgs),
+    /// Report flaky tests from historical test-run data stored in
+    /// `.coral/test-history.jsonl`. Shows tests that pass/fail
+    /// inconsistently and flags those above the quarantine threshold.
+    Flakes(FlakesArgs),
 }
 
 #[derive(Args, Debug)]
@@ -88,6 +92,23 @@ pub struct CoverageArgs {
 
 #[derive(clap::ValueEnum, Clone, Debug)]
 pub enum CoverageFormat {
+    Markdown,
+    Json,
+}
+
+#[derive(Args, Debug)]
+pub struct FlakesArgs {
+    /// Output format for the flakes report.
+    #[arg(long, default_value = "markdown")]
+    pub format: FlakesFormat,
+
+    /// Only consider test runs from the last N days (default: 30).
+    #[arg(long, default_value_t = 30)]
+    pub max_age_days: u64,
+}
+
+#[derive(clap::ValueEnum, Clone, Debug)]
+pub enum FlakesFormat {
     Markdown,
     Json,
 }
@@ -184,6 +205,7 @@ pub fn run(args: TestArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
     match args.command {
         Some(TestSubcommand::Record(rec)) => run_record(rec, wiki_root),
         Some(TestSubcommand::Coverage(cov)) => run_coverage(cov, wiki_root),
+        Some(TestSubcommand::Flakes(flk)) => run_flakes(flk, wiki_root),
         None => run_inner(args.run, wiki_root),
     }
 }
@@ -486,6 +508,38 @@ fn run_coverage(args: CoverageArgs, wiki_root: Option<&Path>) -> Result<ExitCode
             "{}",
             serde_json::to_string_pretty(&coral_test::render_coverage_json(&report))
                 .context("serializing coverage report")?
+        ),
+    }
+
+    Ok(ExitCode::SUCCESS)
+}
+
+// ----------------------------------------------------------------------
+// v0.24.2: `coral test flakes` — historical flake-rate report (M2.7).
+// ----------------------------------------------------------------------
+
+fn run_flakes(args: FlakesArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
+    let project = resolve_project(wiki_root)?;
+    let records = coral_test::read_history(&project.root);
+
+    if records.is_empty() {
+        println!("No test history found. Run `coral test` to start building history.");
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    let max_age = if args.max_age_days > 0 {
+        Some(args.max_age_days)
+    } else {
+        None
+    };
+    let flakes = coral_test::compute_flakes(&records, max_age);
+
+    match args.format {
+        FlakesFormat::Markdown => print!("{}", coral_test::render_flakes_markdown(&flakes)),
+        FlakesFormat::Json => println!(
+            "{}",
+            serde_json::to_string_pretty(&coral_test::render_flakes_json(&flakes))
+                .context("serializing flakes report")?
         ),
     }
 

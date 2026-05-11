@@ -17,6 +17,7 @@ pub mod discover;
 pub mod emit_k6;
 pub mod error;
 pub mod healthcheck_runner;
+pub mod history;
 pub mod hurl_runner;
 pub mod mock;
 pub mod orchestrator;
@@ -39,6 +40,10 @@ pub use coverage::{
     render_json as render_coverage_json, render_markdown as render_coverage_markdown,
 };
 pub use discover::{DiscoveredCase, discover_openapi_in_project};
+pub use history::{
+    FlakeEntry, TestRecord, append_records, compute_flakes, read_history,
+    render_json as render_flakes_json, render_markdown as render_flakes_markdown,
+};
 pub use emit_k6::{EmitOutput, SkipNote, SkipReason, emit_k6};
 pub use error::{TestError, TestResult};
 pub use healthcheck_runner::HealthcheckRunner;
