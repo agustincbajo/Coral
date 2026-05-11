@@ -396,7 +396,7 @@ impl CoralToolDispatcher {
             }
         };
         let pages = self.read_pages();
-        let hits = search::search(&pages, q, 10);
+        let hits = search::search_hybrid(&pages, q, 10);
         let json: Vec<serde_json::Value> = hits
             .into_iter()
             .map(|h| {
