@@ -6,6 +6,7 @@ pub mod embeddings;
 pub mod embeddings_sqlite;
 pub mod error;
 pub mod frontmatter;
+pub mod gc;
 pub mod git_remote;
 pub mod gitdiff;
 pub mod index;

@@ -43,9 +43,32 @@ pub struct ConsolidateArgs {
     /// approximate `tokens_used`. No effect on non-tiered runs.
     #[arg(long)]
     pub verbose: bool,
+    /// v0.24.2: run garbage collection analysis — detects orphan pages,
+    /// stale/broken backlinks, and archived pages still referenced by
+    /// live pages. Outputs a read-only report (no mutations).
+    #[arg(long)]
+    pub gc: bool,
+    /// Output format for `--gc` report: `markdown` (default) or `json`.
+    #[arg(long, default_value = "markdown")]
+    pub format: GcFormat,
+}
+
+/// Output format for the `--gc` report.
+#[derive(Debug, Clone, Default, PartialEq, Eq, clap::ValueEnum)]
+pub enum GcFormat {
+    #[default]
+    Markdown,
+    Json,
 }
 
 pub fn run(args: ConsolidateArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
+    // ── GC mode (v0.24.2) ─────────────────────────────────────────────
+    // When `--gc` is passed, we skip the LLM consolidation entirely and
+    // run a fast, purely local garbage-collection analysis.
+    if args.gc {
+        return run_gc(&args, wiki_root);
+    }
+
     // v0.21.4: discover the project manifest so we can read
     // `[runner.tiered]`. If no manifest exists (legacy single-repo
     // case) Project::discover synthesizes a default project whose
@@ -82,6 +105,40 @@ pub fn run(args: ConsolidateArgs, wiki_root: Option<&Path>) -> Result<ExitCode> 
             .map_err(|e| anyhow::anyhow!(e))?;
         let runner = super::runner_helper::make_runner(provider);
         run_with_runner(args, wiki_root, runner.as_ref())
+    }
+}
+
+/// v0.24.2: runs the `--gc` garbage collection analysis and prints
+/// the report in the requested format. No LLM calls, no disk mutations.
+fn run_gc(args: &ConsolidateArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
+    let root: PathBuf = wiki_root
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from(".wiki"));
+    if !root.exists() {
+        anyhow::bail!(
+            "wiki root not found: {}. Run `coral init` first.",
+            root.display()
+        );
+    }
+    let pages = walk::read_pages(&root)
+        .with_context(|| format!("reading pages from {}", root.display()))?;
+
+    let report = coral_core::gc::analyze(&pages);
+
+    match args.format {
+        GcFormat::Markdown => print!("{}", report.to_markdown()),
+        GcFormat::Json => {
+            let json = serde_json::to_string_pretty(&report)
+                .context("serializing GC report to JSON")?;
+            println!("{json}");
+        }
+    }
+
+    if report.is_clean() {
+        Ok(ExitCode::SUCCESS)
+    } else {
+        // Non-zero exit so CI scripts can gate on wiki cleanliness.
+        Ok(ExitCode::from(1))
     }
 }
 
