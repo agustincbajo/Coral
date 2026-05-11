@@ -537,6 +537,153 @@ fn well_known_card_endpoint_returns_200_with_valid_json() {
     );
 }
 
+/// v0.30 audit #B5 — POST with non-JSON Content-Type is rejected as
+/// 415 Unsupported Media Type. The MCP "Streamable HTTP" spec
+/// requires `application/json` on POST; anything else is a
+/// transport-shape error.
+#[test]
+fn post_with_text_plain_content_type_returns_415() {
+    let addr = spawn_server(make_handler());
+    let body = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#;
+    let req = format!(
+        "POST /mcp HTTP/1.1\r\n\
+         Host: {addr}\r\n\
+         Content-Type: text/plain\r\n\
+         Accept: application/json\r\n\
+         Content-Length: {}\r\n\
+         Connection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let (status, _, resp_body) = send_request(addr, req.as_bytes());
+    assert_eq!(status, 415, "text/plain Content-Type must be 415");
+    let json: serde_json::Value =
+        serde_json::from_slice(&resp_body).expect("415 body must be JSON");
+    assert!(
+        json["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("application/json"),
+        "415 body should mention application/json: {json}"
+    );
+}
+
+/// v0.30 audit #B5 — POST with `application/json; charset=utf-8` is
+/// accepted (RFC 7231 allows the charset parameter).
+#[test]
+fn post_with_json_content_type_and_charset_param_is_accepted() {
+    let addr = spawn_server(make_handler());
+    let body = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#;
+    let req = format!(
+        "POST /mcp HTTP/1.1\r\n\
+         Host: {addr}\r\n\
+         Content-Type: application/json; charset=utf-8\r\n\
+         Accept: application/json\r\n\
+         Content-Length: {}\r\n\
+         Connection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let (status, _, _) = send_request(addr, req.as_bytes());
+    assert_eq!(
+        status, 200,
+        "application/json with charset must be accepted"
+    );
+}
+
+/// v0.30 audit #B5 — POST without any Content-Type header is rejected
+/// as 415 (the MCP spec requires the header to be present).
+#[test]
+fn post_with_missing_content_type_returns_415() {
+    let addr = spawn_server(make_handler());
+    let body = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#;
+    let req = format!(
+        "POST /mcp HTTP/1.1\r\n\
+         Host: {addr}\r\n\
+         Accept: application/json\r\n\
+         Content-Length: {}\r\n\
+         Connection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let (status, _, _) = send_request(addr, req.as_bytes());
+    assert_eq!(status, 415, "missing Content-Type must be 415");
+}
+
+/// v0.30 audit #B6 — a `tools/call` whose arguments contain the
+/// literal token `"initialize"` MUST NOT mint a new session. Pre-fix
+/// the substring sniff false-positived here, churning new session
+/// IDs on every tool call that happened to mention the word.
+#[test]
+fn tools_call_with_initialize_in_arguments_does_not_mint_session() {
+    let addr = spawn_server(make_handler());
+    // Arguments embed `"command":"initialize"` — the OLD sniff would
+    // match `"initialize"` and mint a session. Post-fix the parsed
+    // `method` field is `tools/call`, so no session header on the
+    // response.
+    let body = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"query","arguments":{"command":"initialize"}}}"#;
+    let req = build_post(addr, body, &[]);
+    let (status, headers, _) = send_request(addr, &req);
+    assert_eq!(status, 200);
+    assert!(
+        header(&headers, "Mcp-Session-Id").is_none(),
+        "tools/call with 'initialize' in args must NOT mint a session header: {headers:?}"
+    );
+}
+
+/// v0.30 audit #010 — GET /mcp streams notifications pushed through
+/// `notify_resources_list_changed`. The dispatcher thread spawned in
+/// `bind()` re-publishes mpsc events into the shared replay ring;
+/// GET /mcp drains them. Pre-fix the GET stream was keep-alive-only.
+#[test]
+fn get_mcp_emits_sse_frame_for_pushed_notification() {
+    let handler = make_handler();
+    let addr = spawn_server(Arc::clone(&handler));
+    // Subscribe so the notify_resource_updated path also fires for
+    // an exact URI match (resources_list_changed is unconditional,
+    // we use it for simplicity).
+    let mut stream = TcpStream::connect(addr).expect("connect");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .expect("rt");
+    let req = format!(
+        "GET /mcp HTTP/1.1\r\n\
+         Host: {addr}\r\n\
+         Accept: text/event-stream\r\n\
+         Connection: keep-alive\r\n\r\n"
+    );
+    stream.write_all(req.as_bytes()).expect("write");
+    stream.flush().expect("flush");
+    // Read the initial chunk (HTTP head + ': connected\n\n').
+    let mut prelude = vec![0u8; 1024];
+    let n = stream.read(&mut prelude).expect("initial read");
+    prelude.truncate(n);
+    let text = String::from_utf8_lossy(&prelude);
+    assert!(
+        text.starts_with("HTTP/1.1 200") && text.contains(": connected"),
+        "expected SSE prelude: {text}"
+    );
+
+    // Push a notification through the handler — the dispatcher
+    // thread inside HttpSseTransport::bind republishes it into the
+    // shared replay ring, which our GET stream drains.
+    handler.notify_resources_list_changed();
+
+    // Read until we see a `data:` frame containing the method name.
+    let mut buf = vec![0u8; 4096];
+    let n = stream.read(&mut buf).expect("notification read");
+    buf.truncate(n);
+    let text = String::from_utf8_lossy(&buf);
+    assert!(
+        text.contains("data:"),
+        "expected SSE data frame: {text:?}"
+    );
+    assert!(
+        text.contains("notifications/resources/list_changed"),
+        "SSE frame must carry the list_changed notification: {text:?}"
+    );
+    // Frame must carry an `id:` line so clients can resume via
+    // Last-Event-ID.
+    assert!(text.contains("id:"), "SSE frame must include id: {text:?}");
+}
+
 /// v0.22.5 — anything else under `/.well-known/mcp/*` (or a non-GET
 /// method on the card path) returns 404. Pins the contract that the
 /// card is the only well-known resource we publish, and that the new

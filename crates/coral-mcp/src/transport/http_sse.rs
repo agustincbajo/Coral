@@ -32,11 +32,11 @@
 //!   trivially. The 127.0.0.1 default is the load-bearing defense.
 
 use crate::server::McpHandler;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::{self, Read, Write};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 /// Maximum POST body size before the server returns 413. The MCP wire
@@ -62,6 +62,49 @@ pub const SESSION_TTL: Duration = Duration::from_secs(60 * 60);
 /// enough to avoid spamming the wire.
 pub const SSE_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
 
+/// v0.30 audit #010: bounded replay buffer for SSE `Last-Event-ID`
+/// resumption. The MCP spec doesn't pin a size; 128 covers a few
+/// minutes of typical wiki-edit chatter at one notification/sec while
+/// keeping the buffer's memory footprint tiny (a `Value` per slot).
+/// Older events are dropped — clients that resume after a long
+/// disconnect get whatever is still in the ring.
+pub const SSE_REPLAY_BUFFER_SIZE: usize = 128;
+
+/// v0.30 audit #010: shared notification ring buffer + a Condvar to
+/// wake parked SSE writers when a new event arrives. Multiple
+/// concurrent `GET /mcp` connections all read from the same buffer
+/// (broadcast semantics), so the underlying notification mpsc only
+/// needs one consumer (the dispatcher thread in
+/// [`HttpSseTransport::bind`]).
+pub(crate) struct NotificationHub {
+    pub(crate) buffer: Mutex<VecDeque<(u64, serde_json::Value)>>,
+    pub(crate) cond: Condvar,
+    pub(crate) next_id: AtomicU64,
+}
+
+impl NotificationHub {
+    pub(crate) fn new() -> Self {
+        Self {
+            buffer: Mutex::new(VecDeque::with_capacity(SSE_REPLAY_BUFFER_SIZE)),
+            cond: Condvar::new(),
+            next_id: AtomicU64::new(1),
+        }
+    }
+
+    /// Push a notification into the ring, evicting the oldest entry
+    /// when the cap is exceeded. Wakes all parked SSE writers.
+    pub(crate) fn publish(&self, value: serde_json::Value) {
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let mut buf = self.buffer.lock().expect("notification buffer mutex");
+        if buf.len() >= SSE_REPLAY_BUFFER_SIZE {
+            buf.pop_front();
+        }
+        buf.push_back((id, value));
+        drop(buf);
+        self.cond.notify_all();
+    }
+}
+
 /// Public handle for the bound HTTP/SSE transport. Tests use
 /// [`Self::local_addr`] when binding to port 0.
 pub struct HttpSseTransport {
@@ -70,6 +113,10 @@ pub struct HttpSseTransport {
     sessions: Arc<Mutex<HashMap<String, Instant>>>,
     active: Arc<AtomicUsize>,
     local_addr: SocketAddr,
+    /// v0.30 audit #010: shared replay ring + condvar broadcast hub
+    /// for SSE notifications. Populated by the dispatcher thread
+    /// spawned in [`Self::bind`].
+    notifications: Arc<NotificationHub>,
 }
 
 impl HttpSseTransport {
@@ -94,12 +141,37 @@ impl HttpSseTransport {
                 ));
             }
         };
+        // v0.30 audit #010: wire a notification hub. The handler's
+        // existing `notification_tx` is an mpsc; we own the rx end on
+        // a dispatcher thread that re-publishes every incoming
+        // notification into the shared replay ring + condvar broadcast.
+        // SSE connections poll the ring directly, so multiple GET /mcp
+        // streams all see every event (true broadcast).
+        let notifications = Arc::new(NotificationHub::new());
+        let (tx, rx) = std::sync::mpsc::channel::<serde_json::Value>();
+        handler.set_notification_sender(tx);
+        {
+            let hub = Arc::clone(&notifications);
+            std::thread::Builder::new()
+                .name("coral-mcp-sse-dispatcher".to_string())
+                .spawn(move || {
+                    while let Ok(value) = rx.recv() {
+                        hub.publish(value);
+                    }
+                })
+                .map_err(|e| {
+                    io::Error::other(format!(
+                        "could not spawn SSE notification dispatcher: {e}"
+                    ))
+                })?;
+        }
         Ok(Self {
             server,
             handler,
             sessions: Arc::new(Mutex::new(HashMap::new())),
             active: Arc::new(AtomicUsize::new(0)),
             local_addr,
+            notifications,
         })
     }
 
@@ -119,12 +191,14 @@ impl HttpSseTransport {
             handler,
             sessions,
             active,
+            notifications,
             ..
         } = self;
         for request in server.incoming_requests() {
             let handler = Arc::clone(&handler);
             let sessions = Arc::clone(&sessions);
             let active = Arc::clone(&active);
+            let notifications = Arc::clone(&notifications);
             // Enforce the concurrent-handler cap. We pre-increment
             // and check, then decrement either when the handler
             // returns or in the "too many" branch.
@@ -144,7 +218,8 @@ impl HttpSseTransport {
                 .name("coral-mcp-http".to_string())
                 .spawn(move || {
                     let _guard = ActiveGuard(active_for_guard);
-                    if let Err(e) = handle_request(request, &handler, &sessions) {
+                    if let Err(e) = handle_request(request, &handler, &sessions, &notifications)
+                    {
                         tracing::warn!(error = %e, "MCP HTTP request handler error");
                     }
                 });
@@ -180,6 +255,7 @@ fn handle_request(
     request: tiny_http::Request,
     handler: &McpHandler,
     sessions: &Arc<Mutex<HashMap<String, Instant>>>,
+    notifications: &Arc<NotificationHub>,
 ) -> io::Result<()> {
     reap_expired_sessions(sessions);
 
@@ -268,7 +344,7 @@ fn handle_request(
                     "Accept must include text/event-stream for GET /mcp",
                 );
             }
-            handle_get_sse(request)
+            handle_get_sse(request, notifications)
         }
         tiny_http::Method::Delete => handle_delete(request, sessions),
         _ => respond_simple(
@@ -287,6 +363,20 @@ fn handle_post(
     handler: &McpHandler,
     sessions: &Arc<Mutex<HashMap<String, Instant>>>,
 ) -> io::Result<()> {
+    // v0.30 audit #B5: validate Content-Type before reading the body.
+    // The MCP "Streamable HTTP" spec requires `application/json` on
+    // POST; anything else is a transport-shape error → 415. We accept
+    // an optional `charset=` parameter (per RFC 7231 §3.1.1.5).
+    if !content_type_is_json(&header_value(request.headers(), "Content-Type").unwrap_or_default())
+    {
+        return respond_simple(
+            request,
+            415,
+            "application/json",
+            r#"{"error":"Content-Type must be application/json"}"#,
+        );
+    }
+
     // Body size check. tiny_http exposes `body_length()` — preferred
     // when Content-Length is set; fall back to a streaming read with
     // a hard cap.
@@ -341,15 +431,16 @@ fn handle_post(
     // `None` for notifications.
     let response_value = handler.handle_line(body_str);
 
-    // Mint a session ID on every successful initialize. We can't
-    // peek at the parsed request here (handle_line consumed it), so
-    // we sniff the request body for `"method":"initialize"` — cheap
-    // and side-effect-free since it's plain string matching.
+    // v0.30 audit #B6: mint a session ID on initialize. Pre-fix this
+    // substring-sniffed `"initialize"` from the raw body, which false-
+    // positived on `tools/call` arguments containing that literal
+    // token (e.g. a prompt mentioning the word). Parse the envelope's
+    // `method` field cheaply (we already parsed it inside
+    // `handle_line`, but its parsed form isn't exposed; re-parsing
+    // just the top-level shape is microseconds).
     let mut response_headers: Vec<(String, String)> = Vec::new();
-    let body_norm = body_str.trim_start_matches('\u{feff}');
-    if body_norm.contains("\"method\"")
-        && (body_norm.contains("\"initialize\"") || body_norm.contains("\"initialize \""))
-    {
+    let parsed_method = parse_jsonrpc_method(body_str);
+    if parsed_method.as_deref() == Some("initialize") {
         let session_id = new_session_id();
         sessions
             .lock()
@@ -377,16 +468,35 @@ fn handle_post(
     }
 }
 
-/// GET /mcp — open an empty SSE stream and emit `: keep-alive\n\n`
-/// every 15s until the client disconnects. The MCP spec uses the
-/// SSE channel for server-pushed notifications; v0.21.1 ships the
-/// channel but doesn't wire any push events through it yet.
-fn handle_get_sse(request: tiny_http::Request) -> io::Result<()> {
-    // tiny_http's `into_writer()` returns a writer directly (the
-    // implementation already handled status + headers when we set up
-    // the writer). We hand-write the response head so we can keep the
-    // connection open for the keep-alive loop without the response
-    // object trying to add a Content-Length.
+/// GET /mcp — open an SSE stream, replay any buffered notifications
+/// whose event-id is greater than `Last-Event-ID` (if present), then
+/// drain the shared notification hub for the lifetime of the
+/// connection. Emit `: keep-alive\n\n` every [`SSE_KEEPALIVE_INTERVAL`].
+///
+/// v0.30 audit #010: pre-fix this stream was keep-alive-only, so
+/// HTTP/SSE clients never saw `notifications/resources/updated` /
+/// `notifications/resources/list_changed` even though the server's
+/// `initialize` advertised `subscribe: true`. The hub is populated by
+/// the dispatcher thread spawned in [`HttpSseTransport::bind`].
+///
+/// Limitations:
+/// - The replay ring is bounded ([`SSE_REPLAY_BUFFER_SIZE`] entries).
+///   Clients that disconnect for longer than the buffer's lifespan
+///   will miss events whose ids fall below the oldest buffered id —
+///   they should fall back to `resources/list` on reconnect.
+/// - Event IDs are per-transport-process and monotonic from 1; they
+///   do NOT survive process restart. A new process emits id=1 again,
+///   so clients MUST tolerate id resets across server reboots.
+fn handle_get_sse(
+    request: tiny_http::Request,
+    notifications: &Arc<NotificationHub>,
+) -> io::Result<()> {
+    // Snapshot Last-Event-ID before consuming the request. Invalid /
+    // missing → 0 (replay everything still in the buffer).
+    let last_event_id: u64 = header_value(request.headers(), "Last-Event-ID")
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .unwrap_or(0);
+
     let mut writer = request.into_writer();
     let head = b"HTTP/1.1 200 OK\r\n\
                  Content-Type: text/event-stream\r\n\
@@ -397,25 +507,91 @@ fn handle_get_sse(request: tiny_http::Request) -> io::Result<()> {
     if writer.write_all(head).is_err() {
         return Ok(());
     }
-    // Initial flush — proxies (nginx, traefik) sometimes buffer until
-    // the first byte lands. Send an empty comment immediately.
     if writer.write_all(b": connected\n\n").is_err() {
         return Ok(());
     }
     if writer.flush().is_err() {
         return Ok(());
     }
-    // Keep-alive loop. Bail on the first write/flush error — that
-    // means the client closed the socket.
-    loop {
-        std::thread::sleep(SSE_KEEPALIVE_INTERVAL);
-        if writer.write_all(b": keep-alive\n\n").is_err() {
-            break;
-        }
-        if writer.flush().is_err() {
-            break;
+
+    // v0.30 audit #010: replay buffered events with id > Last-Event-ID.
+    let mut cursor: u64 = last_event_id;
+    let mut replay_batch: Vec<(u64, serde_json::Value)> = Vec::new();
+    {
+        let buf = notifications.buffer.lock().expect("notification buffer");
+        for (id, value) in buf.iter() {
+            if *id > last_event_id {
+                replay_batch.push((*id, value.clone()));
+            }
         }
     }
+    for (id, value) in replay_batch {
+        if write_sse_event(&mut writer, id, &value).is_err() {
+            return Ok(());
+        }
+        cursor = cursor.max(id);
+    }
+
+    // Main loop: park on the condvar until either a new event arrives
+    // or the keep-alive interval elapses. On wake, drain any new
+    // events past `cursor`; on timeout, emit a comment so proxies
+    // don't drop the connection.
+    loop {
+        // Collect events past `cursor` into a local Vec while holding
+        // the lock briefly. We use Condvar::wait_timeout to block
+        // efficiently — no busy-spin.
+        let new_events: Vec<(u64, serde_json::Value)> = {
+            let buf = notifications.buffer.lock().expect("notification buffer");
+            // If there's nothing new, park.
+            let has_new = buf.iter().any(|(id, _)| *id > cursor);
+            if has_new {
+                buf.iter()
+                    .filter(|(id, _)| *id > cursor)
+                    .map(|(id, v)| (*id, v.clone()))
+                    .collect()
+            } else {
+                let (buf, _) = notifications
+                    .cond
+                    .wait_timeout(buf, SSE_KEEPALIVE_INTERVAL)
+                    .expect("condvar wait");
+                buf.iter()
+                    .filter(|(id, _)| *id > cursor)
+                    .map(|(id, v)| (*id, v.clone()))
+                    .collect()
+            }
+        };
+
+        if new_events.is_empty() {
+            // Timeout path → keep-alive comment.
+            if writer.write_all(b": keep-alive\n\n").is_err() {
+                break;
+            }
+            if writer.flush().is_err() {
+                break;
+            }
+            continue;
+        }
+
+        for (id, value) in new_events {
+            if write_sse_event(&mut writer, id, &value).is_err() {
+                return Ok(());
+            }
+            cursor = cursor.max(id);
+        }
+    }
+    Ok(())
+}
+
+/// Serialize one SSE `id: <n>\ndata: <json>\n\n` frame to `writer`.
+fn write_sse_event(
+    writer: &mut dyn Write,
+    id: u64,
+    value: &serde_json::Value,
+) -> io::Result<()> {
+    let data = serde_json::to_string(value).unwrap_or_else(|_| "{}".to_string());
+    let frame = format!("id: {id}\ndata: {data}\n\n");
+    writer.write_all(frame.as_bytes())?;
+    writer.flush()?;
     Ok(())
 }
 
@@ -615,6 +791,34 @@ pub fn is_jsonrpc_batch(body: &str) -> bool {
     s.starts_with('[')
 }
 
+/// v0.30 audit #B5: returns true if the `Content-Type` header is
+/// `application/json`, with an optional charset / media-type
+/// parameter (per RFC 7231). Case-insensitive on the media type.
+pub fn content_type_is_json(content_type: &str) -> bool {
+    let primary = content_type
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    primary == "application/json"
+}
+
+/// v0.30 audit #B6: parse the JSON-RPC envelope to extract the
+/// `method` field, returning `None` for non-JSON bodies or envelopes
+/// missing `method`. Pre-fix the HTTP transport substring-sniffed
+/// `"initialize"` from the raw body, false-positiving on tool
+/// arguments that contain the literal token.
+pub fn parse_jsonrpc_method(body: &str) -> Option<String> {
+    #[derive(serde::Deserialize)]
+    struct Envelope {
+        method: Option<String>,
+    }
+    serde_json::from_str::<Envelope>(body)
+        .ok()
+        .and_then(|e| e.method)
+}
+
 /// Mint an opaque 36-char UUID-shaped session ID. This is NOT
 /// cryptographically random — the spec doesn't require it, and
 /// pulling `uuid` for one helper would inflate the dep tree.
@@ -788,5 +992,65 @@ mod tests {
         let a = new_session_id();
         let b = new_session_id();
         assert_ne!(a, b, "two consecutive session IDs collided: {a} == {b}");
+    }
+
+    /// v0.30 audit #B5 — Content-Type allowlist accepts `application/json`
+    /// with or without parameters, case-insensitive on the media type.
+    #[test]
+    fn content_type_allowlist_matches_json_only() {
+        assert!(content_type_is_json("application/json"));
+        assert!(content_type_is_json("application/json; charset=utf-8"));
+        assert!(content_type_is_json("Application/JSON"));
+        assert!(content_type_is_json("APPLICATION/JSON; charset=UTF-8"));
+        // Other media types rejected.
+        assert!(!content_type_is_json("text/plain"));
+        assert!(!content_type_is_json("text/json"));
+        assert!(!content_type_is_json("application/xml"));
+        assert!(!content_type_is_json(""));
+        assert!(!content_type_is_json("application/jsonish"));
+    }
+
+    /// v0.30 audit #B6 — parsed-method extraction picks the actual
+    /// JSON-RPC `method` field rather than substring-sniffing.
+    #[test]
+    fn parse_jsonrpc_method_extracts_top_level_method_only() {
+        assert_eq!(
+            parse_jsonrpc_method(r#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#),
+            Some("initialize".to_string())
+        );
+        assert_eq!(
+            parse_jsonrpc_method(
+                r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"query","arguments":{"command":"initialize"}}}"#
+            ),
+            Some("tools/call".to_string()),
+            "embedded 'initialize' in arguments must NOT shadow the real method"
+        );
+        // No method field → None.
+        assert_eq!(
+            parse_jsonrpc_method(r#"{"jsonrpc":"2.0","id":1}"#),
+            None
+        );
+        // Garbage → None (not a panic).
+        assert_eq!(parse_jsonrpc_method("not json"), None);
+    }
+
+    /// v0.30 audit #010 — NotificationHub assigns monotonic ids and
+    /// evicts the oldest entry when the cap is exceeded.
+    #[test]
+    fn notification_hub_assigns_monotonic_ids_and_evicts_on_overflow() {
+        let hub = NotificationHub::new();
+        for i in 0..(SSE_REPLAY_BUFFER_SIZE + 10) {
+            hub.publish(serde_json::json!({ "i": i }));
+        }
+        let buf = hub.buffer.lock().unwrap();
+        assert_eq!(buf.len(), SSE_REPLAY_BUFFER_SIZE, "ring must be capped");
+        let ids: Vec<u64> = buf.iter().map(|(id, _)| *id).collect();
+        // IDs are strictly increasing.
+        for w in ids.windows(2) {
+            assert!(w[0] < w[1], "ids must be strictly increasing: {ids:?}");
+        }
+        // The oldest entries were evicted — the first id in the
+        // buffer is past the original first 10 inserts.
+        assert!(ids[0] > 1, "oldest entries should have been evicted: {ids:?}");
     }
 }
