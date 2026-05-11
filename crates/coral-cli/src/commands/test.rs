@@ -211,8 +211,13 @@ pub enum Emit {
 
 #[derive(clap::ValueEnum, Clone, Debug, Copy, PartialEq, Eq)]
 pub enum KindArg {
+    /// Probe `[[environments.<env>.services.<svc>.healthcheck]]` against
+    /// the live env — TCP/HTTP/exec/gRPC.
     Healthcheck,
+    /// Replay HTTP suites from `.coral/tests/*.yaml` (Coral YAML) or
+    /// `.coral/tests/*.hurl`.
     UserDefined,
+    /// Convenience: union of `healthcheck` + `user-defined`.
     Smoke,
     /// v0.23.2: replay Keploy-captured exchanges from
     /// `.coral/tests/recorded/<service>/*.yaml`.
@@ -221,6 +226,26 @@ pub enum KindArg {
     /// `(path, method)` operation declared in the OpenAPI spec
     /// pinned by `[[environments.<env>.property_tests]]`.
     PropertyBased,
+    /// [reserved — not yet wired] LLM-generated test cases. Schema
+    /// exists for forward-compat; no runner implementation. Tracked at
+    /// <https://github.com/agustincbajo/Coral#roadmap>.
+    LlmGenerated,
+    /// [reserved — not yet wired] Pact-style consumer/provider contract
+    /// validation. Stub runner emits Skip; live HTTP validation deferred.
+    /// Tracked at <https://github.com/agustincbajo/Coral#roadmap>.
+    Contract,
+    /// [reserved — not yet wired] AsyncAPI/Kafka event-schema assertions.
+    /// Stub runner emits Skip; live message consumption deferred.
+    /// Tracked at <https://github.com/agustincbajo/Coral#roadmap>.
+    Event,
+    /// [reserved — not yet wired] OpenTelemetry trace/span assertions.
+    /// Stub runner emits Skip; live OTLP query deferred.
+    /// Tracked at <https://github.com/agustincbajo/Coral#roadmap>.
+    Trace,
+    /// [reserved — not yet wired] Playwright E2E browser flows.
+    /// Stub runner emits Skip; live Playwright execution deferred.
+    /// Tracked at <https://github.com/agustincbajo/Coral#roadmap>.
+    E2eBrowser,
 }
 
 #[derive(clap::ValueEnum, Clone, Debug)]
@@ -378,6 +403,37 @@ fn run_inner(args: TestRunArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
                     // gate in `run_test_suite_filtered` enforces this.
                     if !out.contains(&TestKind::PropertyBased) {
                         out.push(TestKind::PropertyBased);
+                    }
+                }
+                // v0.31.1: reserved-kind passthrough. These five
+                // variants exist on the value-enum (so `--help` can
+                // surface them) but have no live execution path.
+                // Forwarding them to the orchestrator triggers a
+                // synthetic Skip report (see
+                // `orchestrator::reserved_kind_skip_reason`).
+                KindArg::LlmGenerated => {
+                    if !out.contains(&TestKind::LlmGenerated) {
+                        out.push(TestKind::LlmGenerated);
+                    }
+                }
+                KindArg::Contract => {
+                    if !out.contains(&TestKind::Contract) {
+                        out.push(TestKind::Contract);
+                    }
+                }
+                KindArg::Event => {
+                    if !out.contains(&TestKind::Event) {
+                        out.push(TestKind::Event);
+                    }
+                }
+                KindArg::Trace => {
+                    if !out.contains(&TestKind::Trace) {
+                        out.push(TestKind::Trace);
+                    }
+                }
+                KindArg::E2eBrowser => {
+                    if !out.contains(&TestKind::E2eBrowser) {
+                        out.push(TestKind::E2eBrowser);
                     }
                 }
             }

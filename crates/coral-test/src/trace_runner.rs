@@ -84,7 +84,7 @@ impl TestRunner for TraceRunner {
                 }
                 evidence.stdout_tail = Some(desc);
                 TestStatus::Skip {
-                    reason: "trace runner: live OTLP query deferred to future release".into(),
+                    reason: "trace runner: live OTLP query deferred to future release; tracked at https://github.com/agustincbajo/Coral#roadmap".into(),
                 }
             }
             None => {

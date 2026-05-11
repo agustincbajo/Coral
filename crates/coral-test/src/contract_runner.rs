@@ -64,7 +64,7 @@ impl TestRunner for ContractRunner {
             // v0.24: structural schema validation only.
             // v0.25+: live HTTP + JSON Schema assertion against running service.
             TestStatus::Skip {
-                reason: "contract runner: live validation deferred to v0.25".into(),
+                reason: "contract runner: live validation deferred to v0.25; tracked at https://github.com/agustincbajo/Coral#roadmap".into(),
             }
         } else {
             evidence.stdout_tail = Some("skip_reason: no expected_schema in spec".into());

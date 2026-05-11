@@ -90,7 +90,7 @@ Plus:
 - **11 structural lint checks** (incl. `unreviewed-distilled` v0.20 + `injection-suspected` v0.19.5 default-on since v0.20.2) + 1 LLM-driven semantic check + auto-fix routing.
 - **5 export formats** for the wiki (`markdown-bundle`, `json`, `notion-json`, `jsonl`, `html`).
 - **5 export formats** for AI agent instructions (`agents-md`, `claude-md`, `cursor-rules`, `copilot`, `llms-txt`) — manifest-driven, NOT LLM-driven.
-- **3 user-reachable test kinds today** (`Healthcheck`, `UserDefined`, `MockTestRunner` for tests) **+ 6 reserved variants** (`LlmGenerated`, `Contract`, `PropertyBased`, `Recorded`, `Event`, `Trace`, `E2eBrowser`) on the `TestKind` enum for forward-compat. Only the first three are wired to a `TestRunner` impl; the reserved variants exist on the data type so the wire format stays stable when their runners ship.
+- **4 fully wired test kinds today** (`Healthcheck`, `UserDefined`, `PropertyBased`, `Recorded`) **+ 4 stub runners** (`Contract`, `Event`, `Trace`, `E2eBrowser` — return `Skip` with a roadmap URL) **+ 1 reserved schema-only variant** (`LlmGenerated` — synthetic `Skip` emitted by the orchestrator, no runner impl). The `TestKind` enum carries all 9 variants so the wire format stays stable when their runners ship; `coral test --help` flags reserved kinds with `[reserved — not yet wired]`.
 - **8 MCP resources + 7 read-only tools (3 more behind `--allow-write-tools`) + 3 prompts** exposed via JSON-RPC 2.0 stdio. MCP `mimeType` matches actual payload per resource (catalog-driven). `.coral/audit.log` rotates at 16 MiB. Notification methods (no `id`) silently no-op per JSON-RPC 2.0 §4.1.
 - **End-to-end concurrency safety**: atomic writes (`tmp + rename`), cross-process `flock(2)` locking, race-free parallel `coral ingest` AND `coral project sync`. `WikiLog::append_atomic` is race-free under contending writers (header+entry sequence cannot be reordered).
 - **Hardened against adversarial inputs**: slug allowlist (`is_safe_filename_slug` + `is_safe_repo_name`) at every interpolation site; `--` separator before user-controlled positionals in every `git` invocation (CVE-2017-1000117 / CVE-2024-32004 family); 32 MiB cap on every `read_to_string` of user-supplied content; secret scrubbing in every `RunnerError` Display.
@@ -1751,8 +1751,9 @@ crates/
 ├── coral-env/        # EnvBackend trait + ComposeBackend (compose YAML render + subprocess);
 │                     # Healthcheck model (Http/Tcp/Exec/Grpc + timing); EnvPlan + status;
 │                     # MockBackend for upstream tests; runtime detection (docker/podman).
-├── coral-test/       # TestRunner trait + 9 TestKind variants (3 wired today: Healthcheck, UserDefined,
-│                     # MockTestRunner; 6 reserved for future runners); HurlRunner + OpenAPI Discovery;
+├── coral-test/       # TestRunner trait + 9 TestKind variants (4 wired: Healthcheck, UserDefined,
+│                     # PropertyBased, Recorded; 4 stub Skip-only: Contract, Event, Trace, E2eBrowser;
+│                     # 1 reserved schema-only: LlmGenerated); HurlRunner + OpenAPI Discovery;
 │                     # probe (TCP/HTTP/exec/gRPC); JUnit emit.
 ├── coral-mcp/        # JSON-RPC 2.0 stdio MCP server; ResourceProvider trait; static catalogs
 │                     # (resources, tools, prompts); read-only enforcement; protocol 2025-11-25.
@@ -2041,7 +2042,7 @@ Coral-specific terminology used throughout this README and in the source.
 - **Service** — a single container in an environment. Declared at `[environments.services.<name>]`.
 - **Healthcheck** — declarative liveness probe on a service. `kind = "http" | "tcp" | "exec" | "grpc"` + timing.
 - **Mode** — `managed` (Coral generates compose YAML) or `adopt` (user brings their own; v0.20+ only).
-- **TestKind** — discriminator for `TestCase`. The enum carries 9 variants for forward-compat (`Healthcheck`, `UserDefined`, `LlmGenerated`, `Contract`, `PropertyBased`, `Recorded`, `Event`, `Trace`, `E2eBrowser`); only **3 are user-reachable today** (`Healthcheck`, `UserDefined`, plus `MockTestRunner` for tests). The remaining 6 are reserved markers — their runners ship in later cycles.
+- **TestKind** — discriminator for `TestCase`. The enum carries 9 variants for forward-compat (`Healthcheck`, `UserDefined`, `LlmGenerated`, `Contract`, `PropertyBased`, `Recorded`, `Event`, `Trace`, `E2eBrowser`); **4 are wired to a live runner today** (`Healthcheck`, `UserDefined`, `PropertyBased`, `Recorded`), **4 are stub runners** that emit `Skip` with a roadmap URL (`Contract`, `Event`, `Trace`, `E2eBrowser`), and **1 is reserved schema-only** (`LlmGenerated` — orchestrator emits a synthetic `Skip` when requested). All reserved kinds surface in `coral test --help` flagged `[reserved — not yet wired]`.
 - **Runner** — the `Runner` trait in `coral-runner` plus its 5 implementations (`Claude`, `Gemini`, `Local`, `Http`, `Mock`). Provider-agnostic LLM call abstraction.
 - **EnvBackend** — the `EnvBackend` trait in `coral-env`. Wraps the env-orchestration tool; `ComposeBackend` is the only impl today.
 - **TestRunner** — the `TestRunner` trait in `coral-test`. Multiple impls: `HealthcheckRunner`, `UserDefinedRunner`, `HurlRunner`, `DiscoveryRunner`.

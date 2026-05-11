@@ -104,7 +104,7 @@ impl TestRunner for BrowserRunner {
         ));
 
         let status = TestStatus::Skip {
-            reason: "browser runner: Playwright execution deferred to v0.26".into(),
+            reason: "browser runner: Playwright execution deferred to v0.26; tracked at https://github.com/agustincbajo/Coral#roadmap".into(),
         };
 
         let mut report = TestReport::new(case.clone(), status, started.elapsed());

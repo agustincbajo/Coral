@@ -7,15 +7,33 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// 9 test kinds, mirroring the PRD §3.3 taxonomy. v0.18 ships
-/// `Healthcheck` + `UserDefined`; the rest are reserved schema (so a
-/// manifest using `kind = "contract"` doesn't break v0.18, it just
-/// returns `Skip { reason = "v0.19 feature" }`).
+/// 9 test kinds, mirroring the PRD §3.3 taxonomy.
+///
+/// **Wiring status as of v0.31.0 (audit-validated):**
+///
+/// - **Wired to a live runner** (4): `Healthcheck`, `UserDefined`,
+///   `PropertyBased`, `Recorded`. These execute against the env and
+///   produce real Pass/Fail/Skip outcomes.
+/// - **Stub runners** (4): `Contract`, `Event`, `Trace`, `E2eBrowser`
+///   exist as `TestRunner` impls but only perform structural validation
+///   of the spec; live execution returns `Skip` with a tracking URL
+///   pointing at the roadmap.
+/// - **Reserved schema only** (1): `LlmGenerated` — no `TestRunner`
+///   impl exists; the orchestrator emits a synthetic `Skip` report when
+///   `--kind llm-generated` is requested.
+///
+/// All 9 variants stay on the enum for forward-compat: a future
+/// `coral.tests.yaml` declaring `kind = "contract"` deserializes
+/// successfully today; the runtime path produces a clear `Skip` rather
+/// than a parse error or silent drop. Resolution path for each reserved
+/// kind is tracked at <https://github.com/agustincbajo/Coral#roadmap>.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TestKind {
     Healthcheck,
     UserDefined,
+    // Reserved: no runner implementation. Schema-only so manifest
+    // parsing doesn't break. See README §Roadmap.
     LlmGenerated,
     Contract,
     PropertyBased,

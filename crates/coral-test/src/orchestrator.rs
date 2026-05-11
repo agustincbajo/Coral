@@ -18,8 +18,8 @@ use crate::healthcheck_runner::HealthcheckRunner;
 use crate::hurl_runner::HurlRunner;
 use crate::property_runner::{PropertyRunner, cases_from_property_specs};
 use crate::recorded_runner::RecordedRunner;
-use crate::report::TestReport;
-use crate::spec::{TestCase, TestKind};
+use crate::report::{TestReport, TestStatus};
+use crate::spec::{TestCase, TestKind, TestSource, TestSpec};
 use crate::user_defined_runner::UserDefinedRunner;
 use crate::{ParallelismHint, TestRunner, discover_openapi_in_project};
 use coral_env::{EnvBackend, EnvHandle, EnvPlan, EnvironmentSpec};
@@ -204,5 +204,90 @@ pub fn run_test_suite_filtered(
     let mut reports = isolated_reports;
     reports.extend(sequential_reports);
     reports.extend(per_service_reports);
+
+    // v0.31.1: reserved-kind transparency. The five kinds without a
+    // discovery path (LlmGenerated; plus Contract/Event/Trace/E2eBrowser
+    // whose runners exist but don't auto-discover cases yet) would
+    // otherwise silently produce zero reports when explicitly
+    // requested via `--kind <reserved>` — indistinguishable from "no
+    // matching cases". Emit one synthetic Skip per requested reserved
+    // kind so the user sees a clear "deferred" signal with a tracking
+    // URL. Implemented kinds are skipped here (their normal runner
+    // pipeline above already emitted their reports).
+    for kind in filters.kinds.iter().copied() {
+        if let Some(reason) = reserved_kind_skip_reason(kind) {
+            // De-dup: only emit a synthetic skip when the runner
+            // pipeline above produced zero reports for this kind.
+            if !reports.iter().any(|r| r.case.kind == kind) {
+                reports.push(synthetic_reserved_skip(kind, reason));
+            }
+        }
+    }
+
     Ok(reports)
+}
+
+/// Returns `Some(reason)` for `TestKind` variants that are declared in
+/// the schema but have no live execution path in v0.31.0. `None` for
+/// kinds whose runner is wired (Healthcheck, UserDefined, PropertyBased,
+/// Recorded). Resolution path for each reserved kind is tracked in the
+/// README §Roadmap.
+fn reserved_kind_skip_reason(kind: TestKind) -> Option<&'static str> {
+    match kind {
+        TestKind::Healthcheck
+        | TestKind::UserDefined
+        | TestKind::PropertyBased
+        | TestKind::Recorded => None,
+        TestKind::LlmGenerated => Some(
+            "kind 'llm_generated' is reserved schema, no runner implementation; \
+             tracked at https://github.com/agustincbajo/Coral#roadmap",
+        ),
+        TestKind::Contract => Some(
+            "kind 'contract' runner: live validation deferred to v0.25; \
+             tracked at https://github.com/agustincbajo/Coral#roadmap",
+        ),
+        TestKind::Event => Some(
+            "kind 'event' runner: live validation deferred to v0.25; \
+             tracked at https://github.com/agustincbajo/Coral#roadmap",
+        ),
+        TestKind::Trace => Some(
+            "kind 'trace' runner: live OTLP query deferred to future release; \
+             tracked at https://github.com/agustincbajo/Coral#roadmap",
+        ),
+        TestKind::E2eBrowser => Some(
+            "kind 'e2e_browser' runner: Playwright execution deferred to v0.26; \
+             tracked at https://github.com/agustincbajo/Coral#roadmap",
+        ),
+    }
+}
+
+/// Build a placeholder `TestReport` for a reserved kind that no runner
+/// would otherwise emit. The synthesized TestCase carries enough
+/// metadata (id, name, kind) for downstream formatters (markdown/JSON/
+/// JUnit) to render a coherent row.
+fn synthetic_reserved_skip(kind: TestKind, reason: &str) -> TestReport {
+    let slug = match kind {
+        TestKind::LlmGenerated => "llm_generated",
+        TestKind::Contract => "contract",
+        TestKind::Event => "event",
+        TestKind::Trace => "trace",
+        TestKind::E2eBrowser => "e2e_browser",
+        _ => "reserved",
+    };
+    let case = TestCase {
+        id: format!("reserved-kind:{slug}"),
+        name: format!("[reserved] kind = {slug}"),
+        kind,
+        service: None,
+        tags: vec!["reserved".to_string()],
+        source: TestSource::Inline,
+        spec: TestSpec::empty(),
+    };
+    TestReport::new(
+        case,
+        TestStatus::Skip {
+            reason: reason.to_string(),
+        },
+        std::time::Duration::from_millis(0),
+    )
 }

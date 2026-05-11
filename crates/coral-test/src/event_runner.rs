@@ -63,7 +63,7 @@ impl TestRunner for EventRunner {
             // v0.24: structural schema validation only.
             // v0.25+: live message consumption via Kafka/AMQP client.
             TestStatus::Skip {
-                reason: "event runner: live validation deferred to v0.25".into(),
+                reason: "event runner: live validation deferred to v0.25; tracked at https://github.com/agustincbajo/Coral#roadmap".into(),
             }
         } else {
             evidence.stdout_tail = Some(format!(
