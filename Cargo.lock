@@ -357,6 +357,7 @@ dependencies = [
  "serde_yaml_ng",
  "signal-hook",
  "tempfile",
+ "tiny_http",
  "toml",
  "tracing",
  "tracing-subscriber",

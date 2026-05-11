@@ -31,6 +31,8 @@ pub mod up;
 pub mod validate_pin;
 pub mod verify;
 pub mod wiki;
+#[cfg(feature = "webui")]
+pub mod serve;
 
 pub mod bootstrap;
 pub mod consolidate;
