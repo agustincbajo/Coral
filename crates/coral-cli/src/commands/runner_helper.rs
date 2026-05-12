@@ -1,3 +1,4 @@
+use coral_core::config::{CredentialProvider, resolve_provider_credentials};
 use coral_runner::{ClaudeRunner, GeminiRunner, HttpRunner, LocalRunner, Runner};
 use std::path::Path;
 
@@ -5,6 +6,14 @@ use std::path::Path;
 const HTTP_ENDPOINT_ENV: &str = "CORAL_HTTP_ENDPOINT";
 /// Env var holding the optional bearer token for `--provider http`.
 const HTTP_API_KEY_ENV: &str = "CORAL_HTTP_API_KEY";
+
+/// Env var the `claude` CLI consults for direct-API auth (bypasses
+/// `claude setup-token`). When `[provider.anthropic].api_key` is set
+/// in `.coral/config.toml`, we forward it under this name.
+const ANTHROPIC_API_KEY_ENV: &str = "ANTHROPIC_API_KEY";
+/// Env var the `gemini` CLI consults for Google AI Studio auth. When
+/// `[provider.gemini].api_key` is set, we forward it under this name.
+const GEMINI_API_KEY_ENV: &str = "GEMINI_API_KEY";
 
 /// OpenAI-compatible chat-completions path Ollama serves at since the
 /// 2024-02 compat-shim release. `[provider.ollama].endpoint` in the
@@ -184,9 +193,30 @@ fn resolve_http_or_die() -> HttpResolution {
 }
 
 pub fn make_runner(provider: ProviderName) -> Box<dyn Runner> {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     match provider {
-        ProviderName::Claude => Box::new(ClaudeRunner::new()),
-        ProviderName::Gemini => Box::new(GeminiRunner::new()),
+        ProviderName::Claude => {
+            // v0.34.x provider bridge: if `[provider.anthropic]` is set in
+            // `.coral/config.toml`, forward `api_key` to the subprocess as
+            // `ANTHROPIC_API_KEY`. Config wins over env — same precedence
+            // the `resolve_http_endpoint` (Ollama) path adopted in v0.34.1.
+            // When no config is present, the subprocess inherits the
+            // parent process env unchanged, preserving v0.33 BC.
+            let mut runner = ClaudeRunner::new();
+            for (k, v) in resolve_runner_env_overrides(ProviderName::Claude, &cwd) {
+                runner = runner.with_env_var(k, v);
+            }
+            Box::new(runner)
+        }
+        ProviderName::Gemini => {
+            // Same bridge for the Gemini CLI — `[provider.gemini].api_key`
+            // → `GEMINI_API_KEY` env var on the subprocess.
+            let mut runner = GeminiRunner::new();
+            for (k, v) in resolve_runner_env_overrides(ProviderName::Gemini, &cwd) {
+                runner = runner.with_env_var(k, v);
+            }
+            Box::new(runner)
+        }
         ProviderName::Local => Box::new(LocalRunner::new()),
         ProviderName::Http => {
             let resolved = resolve_http_or_die();
@@ -196,6 +226,49 @@ pub fn make_runner(provider: ProviderName) -> Box<dyn Runner> {
             }
             Box::new(runner)
         }
+    }
+}
+
+/// v0.34.x bridge: resolve the env overrides that
+/// [`make_runner`] would apply for `provider` given the repo cwd.
+///
+/// This is the test seam for the bridge — callers that want to
+/// inspect what `make_runner` would inject (without actually
+/// constructing a `Box<dyn Runner>`) can call this directly. The
+/// output is a `Vec<(String, String)>` of env var assignments; the
+/// usual shape for Claude / Gemini is zero or one entry.
+///
+/// Precedence: config wins. If a `[provider.anthropic]` /
+/// `[provider.gemini]` block exists in `<cwd>/.coral/config.toml`,
+/// the returned override **replaces** what the subprocess would have
+/// inherited from the parent process env. When no config is present,
+/// the returned vec is empty and the subprocess inherits the parent
+/// env unchanged (the v0.33 BC path — every legacy
+/// `ANTHROPIC_API_KEY=…` / `GEMINI_API_KEY=…` shell export keeps
+/// working).
+///
+/// Providers that don't take config-resolved env vars (Local, Http)
+/// always return an empty vec.
+pub(crate) fn resolve_runner_env_overrides(
+    provider: ProviderName,
+    cwd: &Path,
+) -> Vec<(String, String)> {
+    match provider {
+        ProviderName::Claude => {
+            match resolve_provider_credentials(CredentialProvider::Anthropic, cwd) {
+                Some(creds) => vec![(ANTHROPIC_API_KEY_ENV.to_string(), creds.api_key)],
+                None => Vec::new(),
+            }
+        }
+        ProviderName::Gemini => match resolve_provider_credentials(CredentialProvider::Gemini, cwd)
+        {
+            Some(creds) => vec![(GEMINI_API_KEY_ENV.to_string(), creds.api_key)],
+            None => Vec::new(),
+        },
+        // Local + Http don't have a config-resolved subprocess env path.
+        // (HttpRunner takes the api_key directly via its constructor,
+        // not via env injection — see `resolve_http_or_die`.)
+        ProviderName::Local | ProviderName::Http => Vec::new(),
     }
 }
 
@@ -542,6 +615,186 @@ endpoint = "http://my-proxy.local/v1/chat/completions"
         assert_eq!(
             ollama_endpoint_with_chat_path("http://localhost:11434/v1"),
             "http://localhost:11434/v1"
+        );
+    }
+
+    // ── resolve_runner_env_overrides tests (v0.34.x A2 bridge) ───────
+    //
+    // The Claude + Gemini config → subprocess-env bridge. Same
+    // precedence model as the Ollama → HttpRunner path above:
+    // - config in `.coral/config.toml` wins over the legacy env var.
+    // - absence of config returns an empty override list, leaving the
+    //   subprocess to inherit the parent process env (the v0.33 BC
+    //   path — every `ANTHROPIC_API_KEY=…` / `GEMINI_API_KEY=…`
+    //   pipeline keeps working).
+    //
+    // The bridge is exercised at the env-override layer (rather than
+    // through a spawned subprocess) because the inheritance is the
+    // job of `coral-runner::ClaudeRunner::with_env_var`, which has
+    // its own end-to-end tests in the runner crate. Here we pin the
+    // CLI-side resolution logic.
+
+    /// Anthropic config wins over env: even if `ANTHROPIC_API_KEY` is
+    /// set in the parent process, the override list includes the
+    /// config-derived value so the subprocess sees that one. This
+    /// matches what users expect after `coral doctor --wizard`: the
+    /// key they just typed wins, not the stale shell export they
+    /// forgot about.
+    #[test]
+    fn resolve_runner_env_overrides_anthropic_config_wins_over_env() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        // Stale shell-level env var that should be eclipsed by config.
+        let _g = EnvVarGuard::set("ANTHROPIC_API_KEY", "stale-shell-value");
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_config(
+            tmp.path(),
+            r#"schema_version = 1
+[provider.anthropic]
+api_key = "sk-ant-from-config"
+model = "claude-haiku-4-5"
+"#,
+        );
+
+        let overrides = resolve_runner_env_overrides(ProviderName::Claude, tmp.path());
+        assert_eq!(
+            overrides,
+            vec![(
+                "ANTHROPIC_API_KEY".to_string(),
+                "sk-ant-from-config".to_string()
+            )],
+            "config-derived ANTHROPIC_API_KEY must beat the stale shell env"
+        );
+    }
+
+    /// BC for v0.33 users: no `.coral/config.toml` → empty override
+    /// list → subprocess inherits whatever was in the parent env.
+    /// This is the path every v0.33 user upgrading to v0.34.x hits.
+    #[test]
+    fn resolve_runner_env_overrides_anthropic_falls_back_to_env_when_no_config() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        // Env present, no config — overrides empty so the subprocess
+        // inherits ANTHROPIC_API_KEY=legacy-env unchanged. The
+        // override-list-is-empty assertion is the load-bearing one;
+        // we don't assert on the env-var value because the bridge
+        // explicitly does NOT copy from env to overrides (the parent
+        // env is the fallback, not a source the override layer needs
+        // to know about).
+        let _g = EnvVarGuard::set("ANTHROPIC_API_KEY", "legacy-env-value");
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        // No `.coral/config.toml` — `load_from_repo` returns Default.
+
+        let overrides = resolve_runner_env_overrides(ProviderName::Claude, tmp.path());
+        assert!(
+            overrides.is_empty(),
+            "no config → no overrides; subprocess inherits parent env: got {overrides:?}"
+        );
+    }
+
+    /// Gemini config wins over env: same precedence as Anthropic,
+    /// pinned independently because the two providers have separate
+    /// config blocks and separate env vars (`GEMINI_API_KEY` vs
+    /// `ANTHROPIC_API_KEY`) — a copy-paste regression in one wouldn't
+    /// be caught by the other's test.
+    #[test]
+    fn resolve_runner_env_overrides_gemini_config_wins_over_env() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _g = EnvVarGuard::set("GEMINI_API_KEY", "stale-shell-value");
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_config(
+            tmp.path(),
+            r#"schema_version = 1
+[provider.gemini]
+api_key = "AIza-from-config"
+"#,
+        );
+
+        let overrides = resolve_runner_env_overrides(ProviderName::Gemini, tmp.path());
+        assert_eq!(
+            overrides,
+            vec![("GEMINI_API_KEY".to_string(), "AIza-from-config".to_string())],
+            "config-derived GEMINI_API_KEY must beat the stale shell env"
+        );
+    }
+
+    /// BC for v0.33 Gemini users: no config → empty override list.
+    #[test]
+    fn resolve_runner_env_overrides_gemini_falls_back_to_env_when_no_config() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _g = EnvVarGuard::set("GEMINI_API_KEY", "legacy-env-value");
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let overrides = resolve_runner_env_overrides(ProviderName::Gemini, tmp.path());
+        assert!(
+            overrides.is_empty(),
+            "no config → no overrides for Gemini: got {overrides:?}"
+        );
+    }
+
+    /// Both providers in a single config.toml resolve independently:
+    /// asking for Claude reads `[provider.anthropic]`, asking for
+    /// Gemini reads `[provider.gemini]`, neither leaks into the
+    /// other. This is the multi-provider user shape — pick Anthropic
+    /// today, add Gemini next week.
+    #[test]
+    fn resolve_runner_env_overrides_reads_both_providers_independently() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _g1 = EnvVarGuard::unset("ANTHROPIC_API_KEY");
+        let _g2 = EnvVarGuard::unset("GEMINI_API_KEY");
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_config(
+            tmp.path(),
+            r#"schema_version = 1
+[provider.anthropic]
+api_key = "sk-ant-A"
+
+[provider.gemini]
+api_key = "gem-B"
+"#,
+        );
+
+        let claude_o = resolve_runner_env_overrides(ProviderName::Claude, tmp.path());
+        assert_eq!(
+            claude_o,
+            vec![("ANTHROPIC_API_KEY".to_string(), "sk-ant-A".to_string())]
+        );
+        let gemini_o = resolve_runner_env_overrides(ProviderName::Gemini, tmp.path());
+        assert_eq!(
+            gemini_o,
+            vec![("GEMINI_API_KEY".to_string(), "gem-B".to_string())]
+        );
+    }
+
+    /// Local + Http providers never inject config-derived env vars,
+    /// regardless of what other blocks the config has. (HttpRunner
+    /// takes `api_key` via its constructor in `resolve_http_or_die`;
+    /// LocalRunner has no auth surface.)
+    #[test]
+    fn resolve_runner_env_overrides_local_and_http_always_empty() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_config(
+            tmp.path(),
+            r#"schema_version = 1
+[provider.anthropic]
+api_key = "sk-ant-noise"
+
+[provider.gemini]
+api_key = "gem-noise"
+"#,
+        );
+
+        assert!(
+            resolve_runner_env_overrides(ProviderName::Local, tmp.path()).is_empty(),
+            "Local must never inject env vars — auth flows through llama-cli's own state"
+        );
+        assert!(
+            resolve_runner_env_overrides(ProviderName::Http, tmp.path()).is_empty(),
+            "Http auth lives in HttpRunner constructor (see resolve_http_or_die), \
+             not in the env-override list"
         );
     }
 

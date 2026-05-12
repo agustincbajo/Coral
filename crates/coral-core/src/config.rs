@@ -603,12 +603,8 @@ max_tokens_per_page = 4096
     #[test]
     fn resolve_credentials_returns_none_when_no_config() {
         let dir = TempDir::new().unwrap();
-        assert!(
-            resolve_provider_credentials(CredentialProvider::Anthropic, dir.path()).is_none()
-        );
-        assert!(
-            resolve_provider_credentials(CredentialProvider::Gemini, dir.path()).is_none()
-        );
+        assert!(resolve_provider_credentials(CredentialProvider::Anthropic, dir.path()).is_none());
+        assert!(resolve_provider_credentials(CredentialProvider::Gemini, dir.path()).is_none());
     }
 
     /// `[provider.anthropic]` block in config returns the key + model.
@@ -689,8 +685,8 @@ model = "gemini-2.0-flash"
 
         let a = resolve_provider_credentials(CredentialProvider::Anthropic, dir.path())
             .expect("anthropic");
-        let g = resolve_provider_credentials(CredentialProvider::Gemini, dir.path())
-            .expect("gemini");
+        let g =
+            resolve_provider_credentials(CredentialProvider::Gemini, dir.path()).expect("gemini");
         assert_eq!(a.api_key, "sk-ant-1");
         assert_eq!(a.model, "claude-sonnet-4-5");
         assert_eq!(g.api_key, "gem-2");
@@ -732,12 +728,13 @@ model = "claude-haiku-4-5"
         let dir = TempDir::new().unwrap();
         let coral = dir.path().join(".coral");
         std::fs::create_dir_all(&coral).unwrap();
-        std::fs::write(coral.join("config.toml"), "schema_version = 1\n[provider.anthropic\n")
-            .unwrap();
+        std::fs::write(
+            coral.join("config.toml"),
+            "schema_version = 1\n[provider.anthropic\n",
+        )
+        .unwrap();
         // No panic, returns None — caller will fall through to env var.
-        assert!(
-            resolve_provider_credentials(CredentialProvider::Anthropic, dir.path()).is_none()
-        );
+        assert!(resolve_provider_credentials(CredentialProvider::Anthropic, dir.path()).is_none());
     }
 
     /// Unix-only: post-write the file is chmod 600 (owner rw, group/
