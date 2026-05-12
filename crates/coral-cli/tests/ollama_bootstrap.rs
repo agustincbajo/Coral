@@ -22,10 +22,14 @@
 //!    with ~30 LOC across `lib.rs` + `main.rs`) is copied into a
 //!    tempdir + initialised as a git repo (Coral requires a git HEAD).
 //! 2. `coral init` writes `.wiki/`, CLAUDE.md template, `.coral/`.
-//! 3. `coral bootstrap --apply --provider=http --max-cost=0` runs the
-//!    wiki generation against `CORAL_HTTP_ENDPOINT=http://localhost:
-//!    11434/v1/chat/completions` (Ollama's OpenAI-compatible endpoint).
-//! 4. Assertion: at least one wiki page lands under `.wiki/` and the
+//! 3. The test writes `[provider.ollama]` into `.coral/config.toml`
+//!    (the same shape `coral doctor --wizard` writes — v0.34.x bridge
+//!    landed in the runner_helper, so env-var-free is the canonical
+//!    path).
+//! 4. `coral bootstrap --apply --provider=http --max-cost=0` runs the
+//!    wiki generation. The runner reads the Ollama endpoint from
+//!    config and appends `/v1/chat/completions` automatically.
+//! 5. Assertion: at least one wiki page lands under `.wiki/` and the
 //!    body is non-empty and not an error string.
 //!
 //! ## Acceptable behavior on Ollama
@@ -51,12 +55,11 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
-/// Default Ollama endpoint when the user is running `ollama serve` on
-/// localhost with the OpenAI-compatible chat-completions route. Coral's
-/// `HttpRunner` expects an OpenAI-shaped endpoint, which Ollama serves
-/// at `/v1/chat/completions` since the OpenAI compatibility shim
-/// shipped in 2024-02.
-const OLLAMA_ENDPOINT: &str = "http://localhost:11434/v1/chat/completions";
+/// Ollama server root. v0.34.x: written into `[provider.ollama]
+/// endpoint =` of `.coral/config.toml` (matches the wizard); the
+/// runner appends `/v1/chat/completions` automatically. Pre-v0.34.x
+/// this string was the full URL passed via `CORAL_HTTP_ENDPOINT` env.
+const OLLAMA_ENDPOINT_ROOT: &str = "http://localhost:11434";
 
 /// Model expected to be pulled. Matches the wizard default in
 /// `coral_cli::commands::doctor::wizard_ollama`.
@@ -165,6 +168,24 @@ fn git_init_and_commit(repo: &Path) {
     }
 }
 
+/// Write `[provider.ollama]` to `<repo>/.coral/config.toml` — the
+/// same shape `coral doctor --wizard` writes. v0.34.x runner_helper
+/// reads this section and appends `/v1/chat/completions` automatically,
+/// so we no longer need the `CORAL_HTTP_ENDPOINT` env var path.
+fn write_ollama_config(repo: &Path) {
+    let coral = repo.join(".coral");
+    std::fs::create_dir_all(&coral).expect("create .coral");
+    let body = format!(
+        r#"schema_version = 1
+
+[provider.ollama]
+endpoint = "{OLLAMA_ENDPOINT_ROOT}"
+model = "{OLLAMA_MODEL}"
+"#
+    );
+    std::fs::write(coral.join("config.toml"), body).expect("write .coral/config.toml");
+}
+
 /// Spawn `coral bootstrap --apply` and wait up to `BOOTSTRAP_TIMEOUT`.
 /// On timeout, kills the child + returns an Err so the test fails with
 /// a clear message rather than hanging the CI worker.
@@ -181,11 +202,11 @@ fn run_bootstrap(repo: &Path) -> Result<(), String> {
             // refactor flips the semantics to "strict zero" this assertion
             // catches it.
         ])
-        .env("CORAL_HTTP_ENDPOINT", OLLAMA_ENDPOINT)
-        .env("CORAL_HTTP_MODEL", OLLAMA_MODEL)
-        // Make the failure mode obvious if Ollama needs auth (default
-        // install does NOT) — we don't pass CORAL_HTTP_API_KEY so the
-        // bearer header is absent.
+        // v0.34.x: endpoint + model come from .coral/config.toml
+        // (written by write_ollama_config). Make the failure mode
+        // obvious if Ollama needs auth (default install does NOT) —
+        // we don't pass CORAL_HTTP_API_KEY so the bearer header is
+        // absent.
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
@@ -267,7 +288,7 @@ fn bootstrap_with_ollama_writes_wiki_pages() {
     }
     if !ollama_endpoint_alive() {
         eprintln!(
-            "SKIP: Ollama endpoint {OLLAMA_ENDPOINT} is not reachable. Run `ollama serve` first."
+            "SKIP: Ollama endpoint {OLLAMA_ENDPOINT_ROOT} is not reachable. Run `ollama serve` first."
         );
         return;
     }
@@ -290,6 +311,11 @@ fn bootstrap_with_ollama_writes_wiki_pages() {
         .status()
         .expect("spawn coral init");
     assert!(status.success(), "coral init failed in {}", repo.display());
+
+    // v0.34.x: write the same `[provider.ollama]` block the wizard
+    // writes. The runner_helper bridge picks it up automatically — no
+    // CORAL_HTTP_ENDPOINT env var needed.
+    write_ollama_config(repo);
 
     // The real bootstrap call. May take 5-10 min on first run because
     // Ollama loads the 4.7 GB model on the first request.
