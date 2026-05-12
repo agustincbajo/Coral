@@ -19,7 +19,12 @@
   "mcpServers": {
     "coral": {
       "command": "coral",
-      "args": ["mcp", "serve", "--transport", "stdio"],
+      "args": [
+        "mcp",
+        "serve",
+        "--transport",
+        "stdio"
+      ],
       "env": {
         "RUST_LOG": "coral_mcp=info"
       }
