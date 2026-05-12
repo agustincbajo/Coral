@@ -731,7 +731,7 @@ pub fn run_record(args: RecordArgs, _wiki_root: Option<&Path>) -> Result<ExitCod
     }
     #[cfg(all(target_os = "linux", feature = "recorded"))]
     {
-        run_record_linux(args)
+        run_record_linux(args, _wiki_root)
     }
     #[cfg(not(all(target_os = "linux", feature = "recorded")))]
     {
@@ -751,10 +751,10 @@ pub(crate) fn is_recorded_capture_supported() -> bool {
 }
 
 #[cfg(all(target_os = "linux", feature = "recorded"))]
-fn run_record_linux(args: RecordArgs) -> Result<ExitCode> {
+fn run_record_linux(args: RecordArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
     use std::process::Command;
     use std::time::Duration;
-    let project = resolve_project(_wiki_root)?;
+    let project = resolve_project(wiki_root)?;
     if project.environments_raw.is_empty() {
         anyhow::bail!("no [[environments]] declared in coral.toml");
     }

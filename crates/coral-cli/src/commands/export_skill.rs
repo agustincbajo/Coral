@@ -224,9 +224,12 @@ fn extract_description(body: &str) -> String {
             }
         }
         if (past_frontmatter || !in_frontmatter)
-            && !trimmed.is_empty() && !trimmed.starts_with('#') && !trimmed.starts_with("---") {
-                return trimmed.to_string();
-            }
+            && !trimmed.is_empty()
+            && !trimmed.starts_with('#')
+            && !trimmed.starts_with("---")
+        {
+            return trimmed.to_string();
+        }
     }
     String::new()
 }

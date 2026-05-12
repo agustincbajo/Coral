@@ -19,7 +19,14 @@ feature-depth = 1
 
 [advisories]
 yanked = "warn"
-ignore = []
+ignore = [
+    # bincode 1.x is unmaintained per RUSTSEC-2025-0141. Used for the
+    # persisted BM25 search index in `coral-core`. Not a security
+    # vulnerability, just no longer accepting bug fixes upstream.
+    # Migration to bincode 2.x is tracked for a future release; the
+    # encode/decode surface we use is stable.
+    "RUSTSEC-2025-0141",
+]
 
 [licenses]
 # Spell each allowed license explicitly. Add as needed; grep-able log.

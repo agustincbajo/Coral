@@ -396,7 +396,8 @@ path = "api"
 name = "worker"
 url  = "git@example.com:acme/worker.git"
 path = "worker"
-"#.to_string();
+"#
+        .to_string();
         let manifest_path = root.join("coral.toml");
         std::fs::write(&manifest_path, &toml_str).unwrap();
         let mut p = manifest::parse_toml(&toml_str, &manifest_path).unwrap();

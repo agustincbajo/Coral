@@ -110,7 +110,7 @@ pub fn handle(state: &Arc<AppState>, query_string: &str) -> Result<Vec<u8>, ApiE
     // Cap by degree (highest first) so the visualization always
     // surfaces the densest hubs first when truncated.
     if nodes.len() > max_nodes {
-        nodes.sort_by(|a, b| b.degree.cmp(&a.degree));
+        nodes.sort_by_key(|n| std::cmp::Reverse(n.degree));
         nodes.truncate(max_nodes);
         let kept: std::collections::HashSet<String> = nodes.iter().map(|n| n.id.clone()).collect();
         edges.retain(|e| kept.contains(&e.source) && kept.contains(&e.target));
