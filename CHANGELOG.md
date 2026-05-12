@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`coral ui serve` — REST API + embedded modern WebUI (v0.32.0 M1).** A new
+  React 19 + Vite 7 + Tailwind 3.4 + shadcn SPA is now embedded directly in
+  the `coral` binary via `include_dir!`. End-users never need Node/npm — the
+  pre-built bundle is committed at `crates/coral-ui/assets/dist/` and embedded
+  at compile time. Four views ship in M1: **Pages** (filterable list +
+  Markdown detail), **Graph** (Sigma.js force-directed view of wikilinks with
+  the unique **bi-temporal slider** scrubbing through `valid_from`/`valid_to`),
+  **Query** (LLM playground over SSE-streamed `/api/v1/query`), and
+  **Manifest** (`coral.toml` / `coral.lock` / stats).
+- **New crate `coral-ui`** in the workspace. Loopback-only and read-only by
+  default; bearer-token auth (constant-time comparison) is required for
+  `/api/v1/query` (which spends LLM credits) and for any non-loopback bind.
+  Backed by `tiny_http` (no tokio) for consistency with the rest of the
+  workspace. 24 unit tests; SSE streams via `request.into_writer()` with per-
+  frame `flush()`.
+- **REST API `/api/v1/*`** isomorphic to the existing MCP resources/tools:
+  `pages`, `pages/:repo/:slug`, `search`, `graph`, `manifest`, `lock`,
+  `stats`, `query` (POST, streaming). JSON envelope is
+  `{"data": T, "meta"?: {...}}` for success and
+  `{"error": {"code","message","hint"}}` for failure. Slug/repo validation
+  reuses `coral_core::slug::is_safe_*`.
+- **Internationalization**: SPA ships with full `en` and `es` bundles (every
+  visible string keyed; no hardcoded strings).
+- **`.github/workflows/ui-build.yml`**: CI job that builds the SPA and fails
+  the PR if `assets/dist/` is out of sync with `assets/src/`. Includes a
+  hard binary-size gate at 14 MiB to detect accidental dep bloat.
+- **`docs/UI.md`**: full WebUI documentation (security model, REST surface,
+  bi-temporal feature, architecture diagram, dev workflow).
+- **`.gitattributes`**: marks `crates/coral-ui/assets/dist/**` as
+  `linguist-generated=true merge=ours` so generated bundle doesn't pollute
+  language stats or cause merge conflicts on landing PRs.
+
+### Changed
+
+- **`coral-cli` default features now include `ui`.** The new `ui` feature
+  gates the entire WebUI behind a single flag for users who want a minimal
+  binary: `cargo install coral-cli --no-default-features --features mcp,cli`
+  produces a binary without the SPA (~11 MiB instead of ~12 MiB). The
+  separate legacy `webui` feature (which gates `coral wiki serve`) is
+  unchanged.
+
+### Backward compatibility
+
+- **`coral wiki serve` is unchanged.** It continues to serve the simple
+  HTML/Mermaid view from v0.25.0. Both subcommands coexist on the same
+  default port (3838) but are never invoked simultaneously.
+- The MCP server, all 42 CLI subcommands, all 8 resources, and all 10 tools
+  remain bit-for-bit identical.
+
 ## [0.31.1] - 2026-05-11
 
 **Audit cycle 5 closure + `TestKind` reserved-variant honesty.** Patch release that finishes the v0.30.0 audit umbrella (issue #62, B-batch) and makes the test-kind value-enum honest about what's wired. Twelve B-items total in the umbrella: six (B1, B4, B5, B6, B7, B8) shipped in v0.31.0; the remaining six (B2, B3, B9, B10, B11, B12) close in this release. No public-surface breakage — every change is a tightening of existing behavior.

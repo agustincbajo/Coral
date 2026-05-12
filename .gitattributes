@@ -1,0 +1,20 @@
+# v0.32.0: the SPA build output lives under
+# `crates/coral-ui/assets/dist/`. It is committed so end-users don't
+# need Node/npm to install Coral (the Rust binary embeds it via
+# `include_dir!`). However:
+#
+#   - linguist-generated=true keeps GitHub's language stats honest and
+#     hides the bundle from default `git diff` views.
+#   - merge=ours auto-resolves merge conflicts in dist/ by keeping the
+#     branch's version. CI rebuilds and verifies sync after the merge.
+#
+# Source of truth is always `crates/coral-ui/assets/src/`.
+
+crates/coral-ui/assets/dist/** linguist-generated=true merge=ours
+
+# node_modules is gitignored, but in case something slips, mark it.
+crates/coral-ui/assets/src/node_modules/** linguist-vendored=true
+
+# Lockfiles are generated artifacts but kept under VC for reproducibility.
+Cargo.lock linguist-generated=false
+crates/coral-ui/assets/src/package-lock.json linguist-generated=true

@@ -2,7 +2,7 @@
 
 This directory is the Claude Code plugin for [Coral](https://github.com/agustincbajo/Coral). It bundles:
 
-- **Three auto-invoked skills** — `coral-bootstrap`, `coral-query`, `coral-onboard`. Claude picks them up from natural-language requests like *"set up Coral for this repo"*, *"how does authentication work"*, or *"I'm new to this codebase, where do I start"*.
+- **Four auto-invoked skills** — `coral-bootstrap`, `coral-query`, `coral-onboard`, `coral-ui`. Claude picks them up from natural-language requests like *"set up Coral for this repo"*, *"how does authentication work"*, *"I'm new to this codebase, where do I start"*, or *"show me the architecture as a graph"*.
 - **Two slash commands** — `/coral:coral-bootstrap` and `/coral:coral-status` for explicit manual control.
 - **The Coral MCP server** — automatically registers `coral mcp serve --transport stdio` so Claude can read your repo's wiki, manifest, lockfile, and test results across sessions.
 

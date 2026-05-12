@@ -14,3 +14,7 @@ Cargo.lock.bak
 **/index.md.lock
 **/log.md.lock
 **/.coral-embeddings.json.lock
+.coral/sessions/*.jsonl
+.coral/sessions/*.lock
+.coral/sessions/index.json
+!.coral/sessions/distilled/

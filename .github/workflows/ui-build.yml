@@ -1,0 +1,108 @@
+name: WebUI build
+
+# v0.32.0: builds the SPA in `crates/coral-ui/assets/src/` and verifies
+# that the resulting `assets/dist/` matches what was committed. This is
+# what guarantees end-users never need Node/npm — the binary embeds the
+# pre-built bundle via `include_dir!`.
+#
+# The drift check is the safety rail: if a frontend PR forgets to commit
+# `assets/dist/`, this job fails the PR loudly. If a Rust-only PR is
+# orthogonal to the SPA, the job is fast (~30s).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "crates/coral-ui/assets/src/**"
+      - "crates/coral-ui/assets/dist/**"
+      - ".github/workflows/ui-build.yml"
+  pull_request:
+    paths:
+      - "crates/coral-ui/assets/src/**"
+      - "crates/coral-ui/assets/dist/**"
+      - ".github/workflows/ui-build.yml"
+
+concurrency:
+  group: ui-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-check-drift:
+    name: Build SPA and verify dist/ is in sync
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: crates/coral-ui/assets/src
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          # Node 20 LTS is the floor for Vite 7 and TanStack Query 5.
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: crates/coral-ui/assets/src/package-lock.json
+
+      - name: npm ci
+        # `npm ci` is strict — it errors if package-lock is out of sync
+        # with package.json, which is exactly the guard we want at CI time.
+        run: npm ci
+
+      - name: npm run build
+        run: npm run build
+
+      - name: Verify dist/ matches committed snapshot
+        run: |
+          if ! git diff --quiet ../dist/; then
+            echo "::error::crates/coral-ui/assets/dist/ is out of sync with assets/src/."
+            echo "Run \`npm run build\` locally inside crates/coral-ui/assets/src/ and commit the result."
+            echo ""
+            echo "--- Diff summary ---"
+            git status --short ../dist/
+            git --no-pager diff --stat ../dist/
+            exit 1
+          fi
+          echo "✓ dist/ is in sync with src/"
+
+      - name: Report dist/ bundle size
+        run: |
+          echo "### WebUI bundle size" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| File | Size |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          (cd ../dist && find . -type f -printf '| %p | %s bytes |\n') >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Total: $(du -sh ../dist | cut -f1)" >> "$GITHUB_STEP_SUMMARY"
+
+  binary-size-gate:
+    # v0.32.0 gate: a release binary with the `ui` feature on must stay
+    # under 14 MB on Linux x86_64 stripped. The base binary (no `ui`) is
+    # ~11 MB; the SPA adds ~1.3 MB. Anything past 14 MB indicates either
+    # mermaid sneaking back in or a large dep being pulled accidentally.
+    name: Binary size gate (Linux release)
+    runs-on: ubuntu-latest
+    needs: build-and-check-drift
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ui-size-gate
+      - name: cargo build --release (with ui feature)
+        run: cargo build --release --bin coral
+      - name: Check binary size <= 14 MB
+        run: |
+          SIZE=$(stat -c %s target/release/coral)
+          MAX=14680064  # 14 MiB
+          echo "Binary size: $SIZE bytes (target/release/coral)"
+          echo "Hard cap:    $MAX bytes (14 MiB)"
+          if [ "$SIZE" -gt "$MAX" ]; then
+            echo "::error::binary exceeds 14 MiB size gate"
+            exit 1
+          fi
+          echo "✓ binary within budget ($(echo "scale=2; $SIZE / 1048576" | bc) MiB)"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Binary size" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`coral\` (Linux x86_64 release): **$(echo "scale=2; $SIZE / 1048576" | bc) MiB**" >> "$GITHUB_STEP_SUMMARY"

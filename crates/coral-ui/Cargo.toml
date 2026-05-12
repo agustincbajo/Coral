@@ -1,0 +1,28 @@
+[package]
+name = "coral-ui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Coral WebUI — REST API + embedded SPA assets."
+
+[dependencies]
+tiny_http = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml_ng = { workspace = true }
+toml = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+include_dir = { workspace = true }
+signal-hook = { workspace = true }
+mime_guess = { workspace = true }
+coral-core = { workspace = true }
+coral-runner = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

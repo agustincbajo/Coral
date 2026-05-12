@@ -146,6 +146,12 @@ enum Cmd {
     /// let you search (`--search`) or filter (`--filter`) individual
     /// pages from that historical snapshot.
     Wiki(commands::wiki::WikiArgs),
+    /// **v0.32.0**: REST API + embedded SPA via `coral ui serve`.
+    /// Loopback-only and read-only by default; `--token` /
+    /// `CORAL_UI_TOKEN` is required when binding off-loopback or
+    /// when calling `/api/v1/query` (which spends LLM tokens).
+    #[cfg(feature = "ui")]
+    Ui(commands::ui::UiArgs),
     /// **v0.24 M2.3**: Watch `.wiki/` for changes to Interface-typed
     /// pages and emit structured notifications. Daemon command for
     /// real-time interface contract drift detection.
@@ -256,6 +262,8 @@ fn main() -> ExitCode {
         Cmd::Ci(args) => commands::ci::run(args),
         Cmd::Monitor(args) => commands::monitor::run(args, cli.wiki_root.as_deref()),
         Cmd::Wiki(args) => commands::wiki::run(args, cli.wiki_root.as_deref()),
+        #[cfg(feature = "ui")]
+        Cmd::Ui(args) => commands::ui::run(args, cli.wiki_root.as_deref()),
         Cmd::Interface(args) => commands::interface::run(args, cli.wiki_root.as_deref()),
         Cmd::MigrateConsumers(args) => commands::migrate::run(args, cli.wiki_root.as_deref()),
         Cmd::Scaffold(args) => commands::scaffold::run(args, cli.wiki_root.as_deref()),

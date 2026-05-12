@@ -98,6 +98,34 @@ Plus:
 
 ---
 
+## WebUI (`coral ui serve`)
+
+v0.32.0 ships a modern React SPA embedded in the binary. Single command:
+
+```bash
+coral ui serve
+# opens http://localhost:3838 in your browser
+```
+
+Four views:
+
+- **Pages** — filterable list (by `page_type`, `status`, `confidence` range, `valid_at`, repo, full-text search) + Markdown detail panel.
+- **Graph** — Sigma.js force-directed view of wikilinks with a **bi-temporal slider** that scrubs through `valid_from`/`valid_to` history. Color by status, size by degree, opacity by confidence.
+- **Query** — LLM-backed playground that streams `coral query` over Server-Sent Events. Cites source slugs.
+- **Manifest** — `coral.toml` + `coral.lock` + stats breakdown.
+
+End-users do **not** need Node or npm — the pre-built SPA is committed to `crates/coral-ui/assets/dist/` and embedded into the binary via `include_dir!`. Loopback-only (`127.0.0.1`) and read-only by default; a bearer token (`--token` / `CORAL_UI_TOKEN`) gates the LLM query endpoint and any non-loopback bind.
+
+The legacy `coral wiki serve` (HTML/Mermaid, single page) remains unchanged for backward compatibility.
+
+Full docs: [`docs/UI.md`](docs/UI.md).
+
+To opt out of the WebUI in a minimal install:
+
+```bash
+cargo install coral-cli --no-default-features --features mcp,cli
+```
+
 ## Why Coral
 
 Three problems in one tool.

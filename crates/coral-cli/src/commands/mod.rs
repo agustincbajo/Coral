@@ -34,6 +34,8 @@ pub mod verify;
 pub mod wiki;
 #[cfg(feature = "webui")]
 pub mod serve;
+#[cfg(feature = "ui")]
+pub mod ui;
 
 pub mod bootstrap;
 pub mod consolidate;

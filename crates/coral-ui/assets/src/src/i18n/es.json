@@ -1,0 +1,209 @@
+{
+  "app": {
+    "title": "Coral",
+    "tagline": "Conocimiento vivo para código vivo"
+  },
+  "nav": {
+    "pages": "Páginas",
+    "graph": "Grafo",
+    "query": "Consulta",
+    "manifest": "Manifiesto"
+  },
+  "common": {
+    "loading": "Cargando…",
+    "error": "Error",
+    "retry": "Reintentar",
+    "close": "Cerrar",
+    "save": "Guardar",
+    "cancel": "Cancelar",
+    "open": "Abrir",
+    "clear": "Limpiar",
+    "reset": "Restablecer",
+    "search": "Buscar",
+    "apply": "Aplicar",
+    "of": "de",
+    "previous": "Anterior",
+    "next": "Siguiente",
+    "page": "Página",
+    "back": "Volver",
+    "none": "Ninguno",
+    "yes": "Sí",
+    "no": "No"
+  },
+  "errors": {
+    "network": "Error de red. ¿El backend está corriendo?",
+    "unauthorized": "Necesitás un token válido para esta acción.",
+    "not_found": "No encontrado.",
+    "unknown": "Algo salió mal."
+  },
+  "pageType": {
+    "module": "Módulo",
+    "concept": "Concepto",
+    "entity": "Entidad",
+    "flow": "Flujo",
+    "decision": "Decisión",
+    "synthesis": "Síntesis",
+    "operation": "Operación",
+    "source": "Fuente",
+    "gap": "Hueco",
+    "index": "Índice",
+    "log": "Bitácora",
+    "schema": "Esquema",
+    "readme": "Léeme",
+    "reference": "Referencia",
+    "interface": "Interfaz"
+  },
+  "status": {
+    "draft": "Borrador",
+    "reviewed": "Revisado",
+    "verified": "Verificado",
+    "stale": "Desactualizado",
+    "archived": "Archivado",
+    "reference": "Referencia"
+  },
+  "pages": {
+    "list": {
+      "title": "Páginas",
+      "subtitle": "Explorá y filtrá las páginas de Coral.",
+      "empty_state": "No hay páginas que coincidan con los filtros.",
+      "showing": "Mostrando {{from}}–{{to}} de {{total}}",
+      "columns": {
+        "slug": "Slug",
+        "page_type": "Tipo",
+        "status": "Estado",
+        "confidence": "Confianza",
+        "generated_at": "Generada",
+        "backlinks": "Enlaces"
+      }
+    },
+    "filters": {
+      "title": "Filtros",
+      "search_placeholder": "Buscar slugs, títulos…",
+      "page_type": "Tipo de página",
+      "status": "Estado",
+      "confidence_range": "Rango de confianza",
+      "repo": "Repositorio",
+      "repo_placeholder": "default",
+      "valid_at": "Vigente al",
+      "valid_at_helper": "Mostrar páginas vigentes en esta fecha.",
+      "reset": "Restablecer filtros",
+      "applied_count": "{{count}} activos"
+    },
+    "detail": {
+      "loading": "Cargando página…",
+      "not_found": "Página no encontrada.",
+      "backlinks": "Enlaces entrantes",
+      "no_backlinks": "Sin enlaces entrantes.",
+      "sources": "Fuentes",
+      "no_sources": "Sin fuentes declaradas.",
+      "frontmatter": "Frontmatter",
+      "valid_from": "Vigente desde",
+      "valid_to": "Vigente hasta",
+      "generated_at": "Generada el",
+      "confidence": "Confianza",
+      "open_raw": "Ver crudo"
+    }
+  },
+  "graph": {
+    "title": "Grafo",
+    "subtitle": "Vista bi-temporal del grafo de conocimiento de Coral.",
+    "controls": {
+      "layout": "Layout",
+      "color_by": "Color por",
+      "size_by": "Tamaño por",
+      "max_nodes": "Nodos máx.",
+      "rerun_layout": "Recorrer layout",
+      "as_of": "al {{date}}",
+      "now": "ahora",
+      "valid_at": "Vigente al",
+      "valid_at_helper": "Arrastrá para viajar entre versiones bi-temporales."
+    },
+    "layouts": {
+      "forceatlas2": "ForceAtlas2",
+      "circular": "Circular",
+      "noverlap": "Sin superposición"
+    },
+    "color_by": {
+      "status": "Estado",
+      "page_type": "Tipo de página"
+    },
+    "size_by": {
+      "degree": "Grado",
+      "confidence": "Confianza"
+    },
+    "empty": "Sin datos del grafo.",
+    "node_preview": {
+      "open_page": "Abrir página completa",
+      "loading": "Cargando vista previa…",
+      "no_body": "Sin vista previa disponible."
+    },
+    "stats": {
+      "nodes": "{{count}} nodos",
+      "edges": "{{count}} aristas"
+    }
+  },
+  "query": {
+    "title": "Consulta",
+    "subtitle": "Preguntale a Coral sobre tu código.",
+    "input_placeholder": "Hacé una pregunta…",
+    "send": "Enviar",
+    "clear_history": "Limpiar historial",
+    "mode": "Modo",
+    "modes": {
+      "local": "Local",
+      "global": "Global",
+      "hybrid": "Híbrido"
+    },
+    "mode_help": {
+      "local": "Recorre el vecindario local desde las páginas más relevantes.",
+      "global": "Lee resúmenes de alto nivel a través de todo el grafo.",
+      "hybrid": "Combina contexto local con resúmenes globales."
+    },
+    "token_warning": "Esto consume tokens LLM del proveedor configurado.",
+    "needs_token": "Se requiere un token para /query. Configurá uno abajo.",
+    "sources": "Fuentes",
+    "open_in_pages": "Abrir en Páginas",
+    "user_label": "Vos",
+    "assistant_label": "Coral",
+    "streaming": "Streaming…",
+    "stream_error": "El stream terminó inesperadamente.",
+    "empty": "Hacé una pregunta para empezar."
+  },
+  "manifest": {
+    "title": "Manifiesto",
+    "subtitle": "Manifiesto, lockfile y estadísticas en vivo.",
+    "tabs": {
+      "manifest": "Manifiesto",
+      "lock": "Lock",
+      "stats": "Estadísticas"
+    },
+    "not_found": "No disponible en este workspace.",
+    "stats": {
+      "page_count": "Páginas",
+      "avg_confidence": "Confianza promedio",
+      "total_backlinks": "Enlaces totales",
+      "status_breakdown": "Distribución por estado",
+      "page_type_breakdown": "Distribución por tipo"
+    }
+  },
+  "auth": {
+    "token_dialog": {
+      "title": "Token de API",
+      "description": "Coral necesita un bearer token para endpoints de escritura como /query.",
+      "label": "Bearer token",
+      "placeholder": "coral_***",
+      "save": "Guardar token",
+      "clear": "Borrar token",
+      "stored_hint": "Se guarda sólo en este navegador.",
+      "open": "Configurar token"
+    }
+  },
+  "locale": {
+    "label": "Idioma",
+    "en": "English",
+    "es": "Español"
+  },
+  "footer": {
+    "version": "Coral v{{version}}"
+  }
+}

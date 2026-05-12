@@ -1,0 +1,209 @@
+{
+  "app": {
+    "title": "Coral",
+    "tagline": "Living Knowledge for Living Code"
+  },
+  "nav": {
+    "pages": "Pages",
+    "graph": "Graph",
+    "query": "Query",
+    "manifest": "Manifest"
+  },
+  "common": {
+    "loading": "Loading…",
+    "error": "Error",
+    "retry": "Retry",
+    "close": "Close",
+    "save": "Save",
+    "cancel": "Cancel",
+    "open": "Open",
+    "clear": "Clear",
+    "reset": "Reset",
+    "search": "Search",
+    "apply": "Apply",
+    "of": "of",
+    "previous": "Previous",
+    "next": "Next",
+    "page": "Page",
+    "back": "Back",
+    "none": "None",
+    "yes": "Yes",
+    "no": "No"
+  },
+  "errors": {
+    "network": "Network error. Is the backend running?",
+    "unauthorized": "You need a valid API token for this action.",
+    "not_found": "Not found.",
+    "unknown": "Something went wrong."
+  },
+  "pageType": {
+    "module": "Module",
+    "concept": "Concept",
+    "entity": "Entity",
+    "flow": "Flow",
+    "decision": "Decision",
+    "synthesis": "Synthesis",
+    "operation": "Operation",
+    "source": "Source",
+    "gap": "Gap",
+    "index": "Index",
+    "log": "Log",
+    "schema": "Schema",
+    "readme": "Readme",
+    "reference": "Reference",
+    "interface": "Interface"
+  },
+  "status": {
+    "draft": "Draft",
+    "reviewed": "Reviewed",
+    "verified": "Verified",
+    "stale": "Stale",
+    "archived": "Archived",
+    "reference": "Reference"
+  },
+  "pages": {
+    "list": {
+      "title": "Pages",
+      "subtitle": "Browse and filter Coral pages.",
+      "empty_state": "No pages match your filters.",
+      "showing": "Showing {{from}}–{{to}} of {{total}}",
+      "columns": {
+        "slug": "Slug",
+        "page_type": "Type",
+        "status": "Status",
+        "confidence": "Confidence",
+        "generated_at": "Generated",
+        "backlinks": "Backlinks"
+      }
+    },
+    "filters": {
+      "title": "Filters",
+      "search_placeholder": "Search slugs, titles…",
+      "page_type": "Page type",
+      "status": "Status",
+      "confidence_range": "Confidence range",
+      "repo": "Repository",
+      "repo_placeholder": "default",
+      "valid_at": "Valid at",
+      "valid_at_helper": "Show pages valid on this date.",
+      "reset": "Reset filters",
+      "applied_count": "{{count}} active"
+    },
+    "detail": {
+      "loading": "Loading page…",
+      "not_found": "Page not found.",
+      "backlinks": "Backlinks",
+      "no_backlinks": "No incoming links.",
+      "sources": "Sources",
+      "no_sources": "No declared sources.",
+      "frontmatter": "Frontmatter",
+      "valid_from": "Valid from",
+      "valid_to": "Valid to",
+      "generated_at": "Generated at",
+      "confidence": "Confidence",
+      "open_raw": "Open raw"
+    }
+  },
+  "graph": {
+    "title": "Graph",
+    "subtitle": "Bi-temporal view of the Coral knowledge graph.",
+    "controls": {
+      "layout": "Layout",
+      "color_by": "Color by",
+      "size_by": "Size by",
+      "max_nodes": "Max nodes",
+      "rerun_layout": "Re-run layout",
+      "as_of": "as of {{date}}",
+      "now": "now",
+      "valid_at": "Valid at",
+      "valid_at_helper": "Drag to travel through bi-temporal versions."
+    },
+    "layouts": {
+      "forceatlas2": "ForceAtlas2",
+      "circular": "Circular",
+      "noverlap": "No-overlap"
+    },
+    "color_by": {
+      "status": "Status",
+      "page_type": "Page type"
+    },
+    "size_by": {
+      "degree": "Degree",
+      "confidence": "Confidence"
+    },
+    "empty": "No graph data.",
+    "node_preview": {
+      "open_page": "Open full page",
+      "loading": "Loading preview…",
+      "no_body": "No body preview available."
+    },
+    "stats": {
+      "nodes": "{{count}} nodes",
+      "edges": "{{count}} edges"
+    }
+  },
+  "query": {
+    "title": "Query Playground",
+    "subtitle": "Ask Coral about your codebase.",
+    "input_placeholder": "Ask a question…",
+    "send": "Send",
+    "clear_history": "Clear history",
+    "mode": "Mode",
+    "modes": {
+      "local": "Local",
+      "global": "Global",
+      "hybrid": "Hybrid"
+    },
+    "mode_help": {
+      "local": "Walks local neighborhood from the most relevant pages.",
+      "global": "Reads high-level summaries across the whole graph.",
+      "hybrid": "Combines local context with global summaries."
+    },
+    "token_warning": "This will spend LLM tokens from your configured provider.",
+    "needs_token": "An API token is required for /query. Configure one below.",
+    "sources": "Sources",
+    "open_in_pages": "Open in Pages",
+    "user_label": "You",
+    "assistant_label": "Coral",
+    "streaming": "Streaming…",
+    "stream_error": "The stream ended unexpectedly.",
+    "empty": "Ask a question to get started."
+  },
+  "manifest": {
+    "title": "Manifest",
+    "subtitle": "Project manifest, lockfile and live stats.",
+    "tabs": {
+      "manifest": "Manifest",
+      "lock": "Lock",
+      "stats": "Stats"
+    },
+    "not_found": "Not available in this workspace.",
+    "stats": {
+      "page_count": "Pages",
+      "avg_confidence": "Average confidence",
+      "total_backlinks": "Total backlinks",
+      "status_breakdown": "Status breakdown",
+      "page_type_breakdown": "Page type breakdown"
+    }
+  },
+  "auth": {
+    "token_dialog": {
+      "title": "API token",
+      "description": "Coral needs a bearer token to call write-side endpoints like /query.",
+      "label": "Bearer token",
+      "placeholder": "coral_***",
+      "save": "Save token",
+      "clear": "Clear token",
+      "stored_hint": "Stored in this browser only.",
+      "open": "Configure token"
+    }
+  },
+  "locale": {
+    "label": "Language",
+    "en": "English",
+    "es": "Español"
+  },
+  "footer": {
+    "version": "Coral v{{version}}"
+  }
+}
