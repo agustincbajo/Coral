@@ -3,6 +3,16 @@ name: CI
 on:
   push:
     branches: [main]
+    # v0.34.0 onboarding (PRD §7.6): when release.yml's
+    # sync-plugin-manifests job pushes a manifest-only bump back to
+    # main, it tags the commit with [skip ci] AND we add belt-and-
+    # suspenders by ignoring those paths here. Either guard alone is
+    # sufficient; together they make a release-time anti-loop
+    # impossible. `paths-ignore` only filters `push:` events — `pull_
+    # request:` runs CI regardless so a PR touching .claude-plugin/
+    # still gets validated.
+    paths-ignore:
+      - '.claude-plugin/**'
   pull_request:
   workflow_dispatch:
 

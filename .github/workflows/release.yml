@@ -22,9 +22,74 @@ env:
   RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
 
 jobs:
+  # ----------------------------------------------------------------------
+  # v0.34.0 onboarding (FR-ONB-5 / PRD §7.6): sync the plugin manifests
+  # to RELEASE_TAG BEFORE the cargo build, so the .claude-plugin/*.json
+  # versions ALWAYS match the tag the release is for. Avoids a forever-
+  # drift between Cargo workspace version and the plugin marketplace
+  # version (which v0.32.3 -> v0.33.0 the prep commit had to chase
+  # manually).
+  #
+  # Guard rails against feedback loops:
+  #   1. Commit message contains [skip ci] so the push back to main
+  #      doesn't re-trigger ci.yml.
+  #   2. ci.yml uses paths-ignore on .claude-plugin/** for push events
+  #      (defense in depth — if a developer ever drops the [skip ci]
+  #      tag manually, the path filter still saves us).
+  #   3. The push targets `main` explicitly, never the tag ref, so the
+  #      bumped manifests live on the trunk and the NEXT release
+  #      inherits them without an extra hop.
+  # ----------------------------------------------------------------------
+  sync-plugin-manifests:
+    name: Sync plugin manifests to release tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # We need a full checkout (not just the tag) because we are
+          # going to push a commit back to main.
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Patch plugin.json + marketplace.json to ${{ env.RELEASE_TAG }}
+        run: |
+          set -euo pipefail
+          V="${RELEASE_TAG#v}"
+          # `jq -e` would fail on empty filters; -r already returns 0
+          # on success. We write to a sibling .tmp + mv so a parse
+          # error never strands the original.
+          jq --arg v "$V" '.version = $v' \
+            .claude-plugin/plugin.json > .claude-plugin/plugin.json.tmp
+          mv .claude-plugin/plugin.json.tmp .claude-plugin/plugin.json
+          jq --arg v "$V" '.plugins[0].version = $v' \
+            .claude-plugin/marketplace.json > .claude-plugin/marketplace.json.tmp
+          mv .claude-plugin/marketplace.json.tmp .claude-plugin/marketplace.json
+      - name: Commit + push when manifests changed
+        run: |
+          set -euo pipefail
+          if git diff --quiet .claude-plugin/; then
+            echo "manifests already at ${RELEASE_TAG}; nothing to commit"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .claude-plugin/
+          # [skip ci] is the anti-loop guard — ci.yml's paths-ignore
+          # is the defense in depth.
+          git commit -m "ci(release): sync plugin manifests to ${RELEASE_TAG} [skip ci]"
+          git push origin HEAD:main
+
   build:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
+    # NOTE: build does NOT depend on sync-plugin-manifests. The plugin
+    # manifests are metadata Claude Code reads from the repo's
+    # .claude-plugin/, not from the binary, so the current release
+    # ships whatever the tag points at; the sync job pushes the
+    # bumped versions back to main so the NEXT clone+release inherits
+    # them. Running both jobs in parallel keeps releases fast.
     strategy:
       matrix:
         include:
