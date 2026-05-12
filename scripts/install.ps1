@@ -2,21 +2,36 @@
 #
 # Downloads the latest x86_64-pc-windows-msvc release zip, verifies the
 # SHA-256, extracts coral.exe to $env:LOCALAPPDATA\Coral\bin, prepends
-# that dir to the user PATH if missing, and prints the two lines a user
-# should paste into Claude Code to install the plugin.
+# that dir to the user PATH if missing, and (optionally) registers the
+# Coral marketplace in Claude Code's settings. Prints either the 3
+# paste lines or a single "ready" message.
 #
 # Usage (one-liner):
 #   iwr -useb https://raw.githubusercontent.com/agustincbajo/Coral/main/scripts/install.ps1 | iex
 #
-# Or with an explicit version:
-#   $v = "v0.30.0"
-#   & ([scriptblock]::Create((iwr -useb https://raw.githubusercontent.com/agustincbajo/Coral/main/scripts/install.ps1).Content)) -Version $v
+# Or with explicit args:
+#   $v = "v0.34.0"
+#   & ([scriptblock]::Create((iwr -useb https://raw.githubusercontent.com/agustincbajo/Coral/main/scripts/install.ps1).Content)) -Version $v -WithClaudeConfig
 #
 # Idempotent: re-running over the same version is a no-op.
+#
+# Flags:
+#   -Version vX.Y.Z              Pin a specific release tag (skips the
+#                                GitHub API "latest" lookup).
+#   -InstallDir PATH             Override install dir (default
+#                                $env:LOCALAPPDATA\Coral\bin).
+#   -WithClaudeConfig            After install, patch the project's
+#                                .claude\settings.json via `coral
+#                                self-register-marketplace`. Opt-in
+#                                per FR-ONB-26.
+#   -SkipPluginInstructions      Silent for CI (FR-ONB-2). No final
+#                                paste-3-lines or claude-paste.txt.
 
 param(
   [string]$Version = "",
-  [string]$InstallDir = "$env:LOCALAPPDATA\Coral\bin"
+  [string]$InstallDir = "$env:LOCALAPPDATA\Coral\bin",
+  [switch]$WithClaudeConfig,
+  [switch]$SkipPluginInstructions
 )
 
 Set-StrictMode -Version Latest
@@ -27,14 +42,56 @@ $ApiLatest  = "https://api.github.com/repos/$Repo/releases/latest"
 $DownloadDl = "https://github.com/$Repo/releases/download"
 $Target     = "x86_64-pc-windows-msvc"
 
-function Write-NextSteps {
+function Test-ClaudeCli {
+  # FR-ONB-1: branch the next-steps message based on whether the user
+  # already has Claude Code installed. Get-Command returns $null when
+  # the binary is not on PATH and we silence the error.
+  $null -ne (Get-Command claude -ErrorAction SilentlyContinue)
+}
+
+function Write-ClaudePasteFile {
+  # `.coral\claude-paste.txt` lives in the cwd's .coral folder so the
+  # user can copy-paste the 3 lines from an editor.
+  $coralDir = Join-Path (Get-Location).Path ".coral"
+  New-Item -ItemType Directory -Path $coralDir -Force | Out-Null
+  $paste = @"
+/plugin marketplace add agustincbajo/Coral
+/plugin install coral@coral
+/reload-plugins
+"@
+  Set-Content -Path (Join-Path $coralDir "claude-paste.txt") -Value $paste -Encoding utf8
+}
+
+function Write-PostInstallMessage {
+  if ($SkipPluginInstructions) { return }
+  if (-not (Test-ClaudeCli)) {
+    Write-Host ""
+    Write-Host "Claude Code not installed." -ForegroundColor Yellow
+    Write-Host "  Install: https://claude.ai/code  -> run this installer again,"
+    Write-Host "  OR use 'coral doctor --wizard' to set up a non-Claude-Code provider"
+    Write-Host "  (Anthropic API key, Gemini, or local Ollama)."
+    Write-Host ""
+    return
+  }
+  if ($WithClaudeConfig) {
+    # FR-ONB-4: --with-claude-config success message.
+    Write-Host ""
+    Write-Host "Coral installed + marketplace registered." -ForegroundColor Green
+    Write-Host "Open Claude Code in your repo and type anything to get started."
+    return
+  }
+  # FR-ONB-4 default: 3 paste lines + claude-paste.txt sidecar.
+  Write-ClaudePasteFile
   Write-Host ""
-  Write-Host "Now, inside Claude Code, paste:"
+  Write-Host "Next: paste these three lines into Claude Code (one at a time):"
   Write-Host ""
-  Write-Host "  /plugin marketplace add agustincbajo/Coral"
-  Write-Host "  /plugin install coral@coral"
+  Write-Host "    /plugin marketplace add agustincbajo/Coral"
+  Write-Host "    /plugin install coral@coral"
+  Write-Host "    /reload-plugins"
   Write-Host ""
-  Write-Host 'Then ask Claude: "set up Coral for this repo" - the plugin takes over.'
+  Write-Host "Then type anything in Claude Code - Coral's CLAUDE.md will guide it."
+  Write-Host ""
+  Write-Host "(Also saved to .coral\claude-paste.txt for copy-paste from your editor.)"
 }
 
 # --- arch check ------------------------------------------------------------
@@ -72,7 +129,16 @@ if (Test-Path $ExePath) {
     $installed = ((& $ExePath --version 2>$null) | Out-String).Trim() -replace '^coral\s+',''
     if ($installed -and (("v$installed" -eq $Version) -or ($installed -eq $Version))) {
       Write-Host "coral $Version already installed at $ExePath - nothing to do."
-      Write-NextSteps
+      # FR-ONB-26: still wire marketplace on re-runs when the user
+      # asked for it. Idempotent — already-registered exits 0 quietly.
+      if ($WithClaudeConfig) {
+        try {
+          & $ExePath self-register-marketplace --scope=project
+        } catch {
+          Write-Warning "marketplace registration failed; falling back to paste-3-lines flow: $_"
+        }
+      }
+      Write-PostInstallMessage
       exit 0
     }
   } catch {
@@ -135,6 +201,15 @@ try {
   Remove-Item -Recurse -Force -Path $TmpDir -ErrorAction SilentlyContinue
 }
 
+# FR-ONB-31: Defender SmartScreen hint, printed right after the binary
+# is placed on disk so users who hit "this app might harm your device"
+# on first run know what to do. We do not ship code-signed binaries
+# yet (tracked for v0.35).
+Write-Host ""
+Write-Host "Windows Defender SmartScreen may block coral.exe on first run." -ForegroundColor Yellow
+Write-Host "  If so: right-click -> Properties -> check 'Unblock' -> OK."
+Write-Host "  We are working on code signing for v0.35."
+
 # --- PATH prepend (user scope) --------------------------------------------
 
 $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
@@ -145,7 +220,13 @@ if (-not ($PathParts -contains $InstallDir)) {
   [Environment]::SetEnvironmentVariable("Path", $NewPath, "User")
   # Also update the current session so the post-install `coral --version` works.
   $env:Path = $InstallDir + ';' + $env:Path
-  Write-Host "Prepended $InstallDir to user PATH. Open a new terminal for it to take effect in other shells."
+  # FR-ONB-31: the User PATH update doesn't propagate to *other*
+  # already-open shells. Loud about it so the user knows to open a
+  # fresh terminal instead of confusedly typing `coral` into the old
+  # one and getting "not recognized".
+  Write-Host ""
+  Write-Host "PATH updated for new sessions. Open a NEW PowerShell window to use 'coral'" -ForegroundColor Yellow
+  Write-Host "  (current shell still has old PATH outside this script)."
 }
 
 # --- post-install ---------------------------------------------------------
@@ -154,4 +235,14 @@ Write-Host ""
 Write-Host "Installed: $ExePath"
 try { & $ExePath --version } catch { }
 
-Write-NextSteps
+# FR-ONB-26: opt-in marketplace registration. Failure is non-fatal —
+# the paste-3-lines flow is the documented fallback.
+if ($WithClaudeConfig) {
+  try {
+    & $ExePath self-register-marketplace --scope=project
+  } catch {
+    Write-Warning "marketplace registration failed; falling back to paste-3-lines flow: $_"
+  }
+}
+
+Write-PostInstallMessage

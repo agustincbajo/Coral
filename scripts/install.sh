@@ -3,14 +3,33 @@
 #
 # Downloads the latest release tarball matching this host's platform/arch,
 # verifies the SHA-256, places `coral` on PATH, removes the macOS
-# quarantine xattr, and prints the two lines a user should paste into
-# Claude Code to install the plugin.
+# quarantine xattr, and (optionally) registers the Coral marketplace in
+# Claude Code's settings. Prints either the 3 paste lines or a single
+# "ready" message depending on `--with-claude-config`.
 #
 # Idempotent: running twice over the same release is a no-op.
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/agustincbajo/Coral/main/scripts/install.sh | bash
-#   curl -fsSL https://raw.githubusercontent.com/agustincbajo/Coral/main/scripts/install.sh | bash -s -- --version v0.30.0
+#   curl -fsSL https://raw.githubusercontent.com/agustincbajo/Coral/main/scripts/install.sh | bash -s -- --version v0.34.0
+#   curl -fsSL https://raw.githubusercontent.com/agustincbajo/Coral/main/scripts/install.sh | bash -s -- --with-claude-config
+#   curl -fsSL https://raw.githubusercontent.com/agustincbajo/Coral/main/scripts/install.sh | bash -s -- --skip-plugin-instructions
+#
+# Flags:
+#   --version vX.Y.Z          Pin a specific release tag (skips the
+#                             GitHub API "latest" lookup).
+#   --install-dir DIR         Override the install target. Default:
+#                             `/usr/local/bin` if writable, else
+#                             `~/.local/bin` (mkdir -p).
+#   --with-claude-config      After install, patch `.claude/settings.json`
+#                             (project scope) with the Coral marketplace
+#                             via `coral self-register-marketplace`. Opt-in
+#                             per FR-ONB-26 — we never touch user config
+#                             without explicit consent.
+#   --skip-plugin-instructions
+#                             Silent for CI (FR-ONB-2). Skips the final
+#                             paste-3-lines / ready message and the
+#                             `.coral/claude-paste.txt` write.
 #
 set -euo pipefail
 
@@ -22,6 +41,8 @@ RELEASES_DL="https://github.com/${REPO}/releases/download"
 
 VERSION=""
 INSTALL_DIR=""
+WITH_CLAUDE_CONFIG="0"
+SKIP_PLUGIN_INSTRUCTIONS="0"
 while [ $# -gt 0 ]; do
   case "$1" in
     --version)
@@ -31,6 +52,16 @@ while [ $# -gt 0 ]; do
     --install-dir)
       INSTALL_DIR="${2:-}"
       shift 2
+      ;;
+    --with-claude-config)
+      WITH_CLAUDE_CONFIG="1"
+      shift
+      ;;
+    --skip-plugin-instructions)
+      # FR-ONB-2: silent mode for CI runs. Also suppresses the
+      # claude-paste.txt write so we leave no artifacts behind.
+      SKIP_PLUGIN_INSTRUCTIONS="1"
+      shift
       ;;
     -h|--help)
       sed -n '2,/^set -e/p' "$0" | sed 's/^# \{0,1\}//'
@@ -108,21 +139,88 @@ if [ -z "${INSTALL_DIR}" ]; then
   fi
 fi
 
+# ----- post-install plumbing (forward decls) --------------------------------
+#
+# `print_post_install_message` runs after the binary is on PATH AND the
+# optional marketplace registration. Three modes — gated on SKIP, the
+# `--with-claude-config` flag, and whether Claude Code is present on
+# this host (FR-ONB-1).
+
+claude_cli_present() {
+  # FR-ONB-1: branch the next-steps message based on whether the user
+  # already has Claude Code installed. `command -v` is portable; we
+  # avoid spawning `claude --version` because that's slow and not
+  # required (presence is enough).
+  command -v claude >/dev/null 2>&1
+}
+
+write_claude_paste_file() {
+  # `.coral/claude-paste.txt` makes the 3 lines copy-pasteable from a
+  # text editor when the user's terminal isn't on-screen. Skipped under
+  # `--skip-plugin-instructions` so CI doesn't leave stray files.
+  local install_root
+  install_root="$(pwd)/.coral"
+  mkdir -p "${install_root}"
+  cat > "${install_root}/claude-paste.txt" <<'PASTE'
+/plugin marketplace add agustincbajo/Coral
+/plugin install coral@coral
+/reload-plugins
+PASTE
+}
+
+print_post_install_message() {
+  if [ "${SKIP_PLUGIN_INSTRUCTIONS}" = "1" ]; then
+    return 0
+  fi
+  if ! claude_cli_present; then
+    cat <<MISSING_CLAUDE
+
+⚠ Claude Code not installed.
+  Install: https://claude.ai/code → run this installer again,
+  OR use \`coral doctor --wizard\` to set up a non-Claude-Code provider
+  (Anthropic API key, Gemini, or local Ollama).
+
+MISSING_CLAUDE
+    return 0
+  fi
+  if [ "${WITH_CLAUDE_CONFIG}" = "1" ]; then
+    # FR-ONB-4: --with-claude-config success message.
+    cat <<READY
+
+✅ Coral installed + marketplace registered.
+   Open Claude Code in your repo and type anything to get started.
+READY
+    return 0
+  fi
+  # FR-ONB-4 default path: 3 paste lines + claude-paste.txt sidecar.
+  write_claude_paste_file
+  cat <<NEXT
+
+📋 Next: paste these three lines into Claude Code (one at a time):
+
+    /plugin marketplace add agustincbajo/Coral
+    /plugin install coral@coral
+    /reload-plugins
+
+Then type anything in Claude Code — Coral's CLAUDE.md will guide it.
+
+(Also saved to .coral/claude-paste.txt for copy-paste from your editor.)
+NEXT
+}
+
 # ----- skip if already installed at this version ----------------------------
 
 if [ -x "${INSTALL_DIR}/coral" ]; then
   installed_version=$("${INSTALL_DIR}/coral" --version 2>/dev/null | awk '{print $2}' || true)
   if [ "v${installed_version}" = "${VERSION}" ] || [ "${installed_version}" = "${VERSION}" ]; then
     echo "coral ${VERSION} already installed at ${INSTALL_DIR}/coral — nothing to do."
-    cat <<'NEXT'
-
-Now, inside Claude Code, paste:
-
-  /plugin marketplace add agustincbajo/Coral
-  /plugin install coral@coral
-
-Then ask Claude: "set up Coral for this repo".
-NEXT
+    # FR-ONB-26: still wire marketplace on re-runs when the user asked
+    # for `--with-claude-config`. The subcommand is idempotent.
+    if [ "${WITH_CLAUDE_CONFIG}" = "1" ]; then
+      "${INSTALL_DIR}/coral" self-register-marketplace --scope=project \
+        || echo "warn: marketplace registration failed; falling back to paste-3-lines flow" >&2
+    fi
+    print_post_install_message
     exit 0
   fi
 fi
@@ -178,6 +276,11 @@ if [ "${uname_s}" = "Darwin" ] && command -v xattr >/dev/null 2>&1; then
   xattr -d com.apple.quarantine "${INSTALL_DIR}/coral" 2>/dev/null || true
 fi
 
+# Restore the original cwd (we cd'd into ${tmpdir} for the shasum check)
+# so subsequent steps that touch the repo's `.coral/` use the right
+# directory. The EXIT trap still rm -rf's tmpdir.
+cd - >/dev/null
+
 # ----- post-install message ------------------------------------------------
 
 echo
@@ -195,12 +298,27 @@ case ":${PATH}:" in
     ;;
 esac
 
-cat <<'NEXT'
+# FR-ONB-31: WSL2 detection. When running under WSL2 the user is on a
+# Windows host but installed the Linux binary — if they invoke Claude
+# Code on the Windows side (not in WSL), the Linux `coral` won't be
+# reachable. We warn but don't abort because Coral-in-WSL is also a
+# legitimate setup.
+if [ -r /proc/version ] && grep -qi microsoft /proc/version 2>/dev/null; then
+  cat >&2 <<'WSL'
 
-Now, inside Claude Code, paste:
+⚠ Detected WSL2. Coral binary installed for Linux.
+  If you use Claude Code on Windows host (not in WSL),
+  install the Windows binary instead via install.ps1.
+WSL
+fi
 
-  /plugin marketplace add agustincbajo/Coral
-  /plugin install coral@coral
+# FR-ONB-26: delegate marketplace registration to the binary (no jq
+# required cross-platform). The subcommand is idempotent + atomic; a
+# failure here is non-fatal because the paste-3-lines flow is the
+# fallback experience the user can still complete manually.
+if [ "${WITH_CLAUDE_CONFIG}" = "1" ]; then
+  "${INSTALL_DIR}/coral" self-register-marketplace --scope=project \
+    || echo "warn: marketplace registration failed; falling back to paste-3-lines flow" >&2
+fi
 
-Then ask Claude: "set up Coral for this repo" — the plugin takes over.
-NEXT
+print_post_install_message
