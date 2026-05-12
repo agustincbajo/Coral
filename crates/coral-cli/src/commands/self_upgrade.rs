@@ -59,8 +59,11 @@ pub struct SelfUpgradeArgs {
 
 pub fn run(args: SelfUpgradeArgs) -> Result<ExitCode> {
     let current_version = env!("CARGO_PKG_VERSION").to_string();
+    // Preserve the user's original tag (with-or-without leading `v`)
+    // so messages echo what they typed. `normalize_version` is used
+    // only for the equality / major comparison.
     let target_version = match args.version.as_deref() {
-        Some(explicit) => normalize_version(explicit).to_string(),
+        Some(explicit) => explicit.to_string(),
         None => fetch_latest_release_tag().context("looking up the latest release from GitHub")?,
     };
 
@@ -91,10 +94,14 @@ pub fn run(args: SelfUpgradeArgs) -> Result<ExitCode> {
 
     let current_exe =
         std::env::current_exe().context("locating the running binary via current_exe()")?;
-    let target_filename = platform_asset_filename(&target_version)?;
+    // GitHub release tags are always vX.Y.Z; re-add the prefix for
+    // URL + filename derivation so users that typed `0.34.0` still
+    // hit the right asset.
+    let tag_for_url = ensure_v_prefix(&target_version);
+    let target_filename = platform_asset_filename(&tag_for_url)?;
     let download_url = format!(
         "https://github.com/{REPO}/releases/download/{tag}/{name}",
-        tag = target_version,
+        tag = tag_for_url,
         name = target_filename,
     );
     let sha_url = format!("{download_url}.sha256");
@@ -113,7 +120,7 @@ pub fn run(args: SelfUpgradeArgs) -> Result<ExitCode> {
     // Extract the bare binary from the archive into the tempdir so
     // we have a standalone file to swap onto current_exe's parent.
     println!("Extracting binary ...");
-    let extracted = extract_binary(&archive_path, tmpdir.path(), &target_version)?;
+    let extracted = extract_binary(&archive_path, tmpdir.path(), &tag_for_url)?;
 
     let new_path = staged_new_path(&current_exe);
     // Move the extracted binary alongside the running exe so the swap
@@ -132,7 +139,10 @@ fn report_check_only(current: &str, target: &str) {
     if target_n == current {
         println!("up_to_date");
     } else {
-        println!("update_available: {target}");
+        // Display with `v` prefix because that's the canonical
+        // release-tag shape on GitHub (matches what `coral
+        // self-upgrade --version v...` would expect).
+        println!("update_available: {}", ensure_v_prefix(target));
     }
 }
 
@@ -140,6 +150,17 @@ fn report_check_only(current: &str, target: &str) {
 /// `env!("CARGO_PKG_VERSION")` (which is unprefixed).
 pub(crate) fn normalize_version(tag: &str) -> &str {
     tag.strip_prefix('v').unwrap_or(tag)
+}
+
+/// Add a leading `v` if missing — GitHub release tags are always
+/// `vX.Y.Z`, and the install/release artefact paths embed the
+/// prefixed tag verbatim.
+pub(crate) fn ensure_v_prefix(tag: &str) -> String {
+    if tag.starts_with('v') {
+        tag.to_string()
+    } else {
+        format!("v{tag}")
+    }
 }
 
 /// Returns true iff `current` and `target` share a major component.
@@ -590,6 +611,18 @@ mod tests {
         // spec says vX.Y.Z; vvX.Y.Z is malformed and we don't try
         // to fix it.
         assert_eq!(normalize_version("vv1.0.0"), "v1.0.0");
+    }
+
+    /// `ensure_v_prefix` is the inverse — it adds a `v` if missing
+    /// so we can build release URLs from either user-typed form.
+    #[test]
+    fn ensure_v_prefix_idempotent_over_either_form() {
+        assert_eq!(ensure_v_prefix("v0.34.0"), "v0.34.0");
+        assert_eq!(ensure_v_prefix("0.34.0"), "v0.34.0");
+        // Pairs with normalize_version: round-tripping (normalize then
+        // ensure_v) is a no-op.
+        let raw = "v1.2.3";
+        assert_eq!(ensure_v_prefix(normalize_version(raw)), raw);
     }
 
     /// `same_major` accepts patch + minor bumps and refuses major
