@@ -184,9 +184,14 @@ fn streaming_partial_then_nonzero_exit_returns_err() {
 #[test]
 fn streaming_silent_hang_is_killed_at_timeout() {
     let _lock = test_script_lock();
-    // `sleep 30` writes nothing to stdout — the runner's recv_timeout
-    // path fires first.
-    let (_dir, script_path) = script("sleep 30");
+    // `exec sleep 30` (not plain `sleep 30`): the shell wrapper is
+    // replaced by the sleep binary, so `child.kill()` SIGKILLs the
+    // actual blocking process. With a plain `sleep 30` the kill goes
+    // to the shell but the grandchild `sleep` keeps stdout open and
+    // the runner's reader_thread.join() blocks for the full 30s.
+    // Same fix the sibling streaming_one_line_then_hang_is_killed_at_timeout
+    // test already uses (v0.19.8 validator follow-up).
+    let (_dir, script_path) = script("exec sleep 30");
     let r = ClaudeRunner::with_binary(&script_path);
     let mut chunks: Vec<String> = Vec::new();
     let prompt = Prompt {
