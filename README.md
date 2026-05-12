@@ -17,7 +17,7 @@ Coral is a Karpathy-style LLM wiki for your code, scaled to microservice-shaped 
 
 ```bash
 # Install (Linux/macOS — Windows prereqs below)
-cargo install --locked --git https://github.com/agustincbajo/Coral --tag v0.32.0 coral-cli
+cargo install --locked --git https://github.com/agustincbajo/Coral --tag v0.33.0 coral-cli
 
 # Scaffold a wiki in any git repo
 cd /path/to/your/repo
@@ -100,7 +100,7 @@ Plus:
 
 ## WebUI (`coral ui serve`)
 
-v0.32.0 ships a modern React SPA embedded in the binary. Single command:
+Since v0.32.0 Coral ships a modern React SPA embedded in the binary. Single command:
 
 ```bash
 coral ui serve
@@ -166,17 +166,37 @@ Giving an LLM context about your repo by hand-writing one giant `AGENTS.md` file
 
 ### 2. The microservices problem
 
-Most production codebases span N repos. Coding agents (Cursor, Claude Code, Continue, …) treat each repo in isolation; your developers spend hours wiring up the dev environment by hand each onboarding.
+Most production codebases span N repos. Coding agents (Cursor, Claude Code, Continue, …) treat each repo in isolation; your developers spend hours wiring up the dev environment by hand each onboarding. Cross-repo edits introduce drift — service A's OpenAPI changes, service B's consumer expectations don't follow, and nobody notices until staging.
 
-**Coral multi-repo** declares the project shape in a `coral.toml`: list every repo, declare `depends_on`, tag them, and Coral handles parallel git clone, aggregated wiki, and dependency-graph visualization. The lockfile (`coral.lock`) pins resolved SHAs for reproducibility — same role as `Cargo.lock` / `package-lock.json` / `MODULE.bazel.lock`.
+**How Coral mitigates it** — concrete mechanisms, not slogans:
+
+- **`coral.toml` as the project manifest.** Declare every repo *once*, with `remotes`, `depends_on`, `tags`. From any working tree, `coral env up` brings the whole stack online and `coral query "how does X work"` reads the aggregated wiki across all of them. Same role as `Cargo.toml`'s `[workspace]` — but for repos that don't share a build system.
+- **`coral.lock` pins resolved SHAs.** When repo A points at `main` and someone pushes a breaking change downstream, the lockfile catches it on `coral env up` and the diff against the previous lock is the audit trail. Same role as `Cargo.lock` / `package-lock.json` / `MODULE.bazel.lock`, just for `git+ssh://` sources instead of crate registries.
+- **Aggregated wiki.** Every repo has its own `.wiki/`; `coral consolidate` builds a single namespaced view (`<repo>/<slug>`) so a coding agent answering "how does the order saga work" can read entries from *all* services without you wiring it up. The wiki is plain Markdown — Git-native, auditable, diff-able in PRs.
+- **`coral diff <ref>` + `coral affected --since <ref>`.** Given a git ref, Coral computes which repos a change touches **and** which downstream consumers are affected (via `depends_on`). Combined with `coral contract check`, it's the blast-radius computation that lets a coding agent answer "what else do I need to update?" before pushing.
+- **`coral interface watch`.** A daemon that watches `.wiki/` for changes to `Interface`-typed pages and emits structured notifications. When repo A's contract page changes, repo B's agent gets a push event — closing the loop that human teams normally bridge through Slack and forgotten Notion comments.
+- **One MCP surface for all of it.** Every coding agent on the box (Claude Code, Cursor, Continue, Cline, Goose) reads the same `coral://wiki`, `coral://manifest`, `coral://lock`, `coral://contracts` resources through `coral mcp serve`. The agent doesn't need to know there are N repos; it sees one project.
+
+The net effect: a coding agent operating on a single repo can answer multi-repo questions correctly, and a change in repo A that breaks repo B is surfaced *before* the test environment is brought up.
 
 ### 3. The functional testing problem
 
-Unit tests don't tell you if your microservices actually work together. End-to-end browser tests are slow and brittle. The middle layer — *integration tests against a running multi-service stack* — is where most teams have nothing.
+Unit tests don't tell you if your microservices actually work together. End-to-end browser tests are slow and brittle. The middle layer — *integration tests against a running multi-service stack* — is where most teams have nothing: tribal knowledge bash scripts, a fragile CI job nobody understands, and an "it works on my machine" rate that drifts up every quarter.
 
-**Coral test layer** sits in the [microservices honeycomb middle layer](https://martinfowler.com/articles/2021-test-shapes.html): healthchecks, user-defined YAML/Hurl smoke suites, OpenAPI-discovered cases (no LLM), with retry / captures / snapshot assertions, and JUnit XML output for CI.
+**How Coral mitigates it** — the actual mechanisms:
 
-**Coral mcp serve** then exposes the wiki + manifest + lockfile + test results to *any* MCP-speaking agent, so your AI workflows operate on the same structured ground truth your team operates on. Per the [MCP 2025-11-25 spec](https://modelcontextprotocol.io/specification/2025-11-25), pinned in `coral-mcp::PROTOCOL_VERSION`.
+- **One env spec, one command.** `coral env up` reads `coral.toml`, brings up every declared service via `docker compose` (real binaries, real databases, real network), waits on per-service healthchecks, and prints a single line per service when it's ready. `coral env down` (with `--volumes`) is the matching teardown. No bash glue, no `docker-compose.yml` boilerplate per developer.
+- **TestCases as YAML/Hurl, not code.** Tests live in `.coral/tests/*.{yaml,hurl}` — declarative, reviewable, language-agnostic. A failing test points at the wire request it sent, the actual response, and the assertion that failed. Languages don't compose; YAML does.
+- **OpenAPI auto-discovery.** Drop an `openapi.{yaml,yml,json}` next to a service in `coral.toml` and `coral test-discover` synthesizes baseline TestCases for every operation — Schemathesis-style property tests with shrink-on-failure plus path/method/status checks. No "we haven't written tests for that endpoint yet" excuse.
+- **`coral contract check` runs *before* the env comes up.** It diffs each consumer's `.coral/tests/` against each provider's `openapi.yaml` — paths, methods, status codes, request body fields, parameter schemas — and exits non-zero on drift. No more "20 minutes into a CI run, generic 404, no clue why." See [Recipe 4](#recipe-4--cross-repo-contract-testing) for the wire-level example.
+- **`coral test guarantee --can-i-deploy <env>`.** Aggregates lint + contract drift + functional tests + flake rate into a single **GREEN / YELLOW / RED** verdict. Use it as the last step of CI: green means the change *might* ship; red means it definitely shouldn't. Yellow flags warning-class drift (e.g. a new optional field added) that you can ship but should track.
+- **Recorded captures (`coral test record`, Linux).** Capture real HTTP traffic during exploratory testing with `keploy record`, replay it deterministically on every CI run as `coral test --kind recorded`. Closes the loop on "the test passes but production behaves differently."
+- **JUnit XML out.** Every test runner emits JUnit XML so it slots into existing CI dashboards (GitHub Actions test reporting, GitLab, Jenkins, etc.) without per-tool plugins.
+- **Honest about the test pyramid.** Coral lives in the [microservice honeycomb middle layer](https://martinfowler.com/articles/2021-test-shapes.html) — integration + smoke + contract. **Use `cargo test` / `pytest` / `jest` for unit tests; use Playwright for full browser E2E.** Coral does the middle that's chronically under-served.
+
+The combination — env bring-up + declarative TestCases + pre-flight contract gate + aggregate verdict — is what turns "20 minutes of bash, then maybe it works" into "one command, deterministic exit code, parseable output."
+
+**Coral mcp serve** exposes the wiki + manifest + lockfile + test results to *any* MCP-speaking agent, so your AI workflows operate on the same structured ground truth your team operates on. Per the [MCP 2025-11-25 spec](https://modelcontextprotocol.io/specification/2025-11-25), pinned in `coral-mcp::PROTOCOL_VERSION`.
 
 ---
 
@@ -204,15 +224,15 @@ curl -fsSL https://raw.githubusercontent.com/agustincbajo/Coral/main/scripts/ins
 iwr -useb https://raw.githubusercontent.com/agustincbajo/Coral/main/scripts/install.ps1 | iex
 ```
 
-Pin a version with `bash -s -- --version v0.32.0` (Linux/macOS) or `... | iex; & coral --version` (Windows, after install). For a manual download with full control, see [Pre-built binaries](#pre-built-binaries) below.
+Pin a version with `bash -s -- --version v0.33.0` (Linux/macOS) or `... | iex; & coral --version` (Windows, after install). For a manual download with full control, see [Pre-built binaries](#pre-built-binaries) below.
 
 ### From a tagged release (recommended)
 
 ```bash
-cargo install --locked --git https://github.com/agustincbajo/Coral --tag v0.32.0 coral-cli
+cargo install --locked --git https://github.com/agustincbajo/Coral --tag v0.33.0 coral-cli
 ```
 
-(Replace `v0.32.0` with the latest tag from the [Releases page](https://github.com/agustincbajo/Coral/releases).)
+(Replace `v0.33.0` with the latest tag from the [Releases page](https://github.com/agustincbajo/Coral/releases).)
 
 ### From `main` (latest)
 
@@ -244,9 +264,9 @@ Each tagged release ships pre-built binaries for x86_64 Linux, x86_64 macOS, aar
 
 ```bash
 # Replace VERSION and TARGET with the values for the release you want; e.g.
-#   VERSION=v0.32.0
+#   VERSION=v0.33.0
 #   TARGET=aarch64-apple-darwin   # x86_64-apple-darwin, x86_64-unknown-linux-gnu, or x86_64-pc-windows-msvc
-VERSION=v0.32.0
+VERSION=v0.33.0
 TARGET=aarch64-apple-darwin
 curl -L -o coral.tar.gz "https://github.com/agustincbajo/Coral/releases/download/${VERSION}/coral-${VERSION}-${TARGET}.tar.gz"
 shasum -a 256 -c coral.tar.gz.sha256  # if you also downloaded the .sha256 sidecar
