@@ -163,6 +163,20 @@ impl Runner for GeminiRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use std::sync::{Mutex, MutexGuard};
+
+    /// Serialize tests that fork-exec a fresh shell script. Same
+    /// rationale as `crates/coral-runner/tests/streaming_failure_modes.rs`:
+    /// Linux ETXTBSY race under parallel test execution.
+    #[cfg(unix)]
+    static SCRIPT_LOCK: Mutex<()> = Mutex::new(());
+    #[cfg(unix)]
+    fn acquire_lock() -> MutexGuard<'static, ()> {
+        SCRIPT_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     #[test]
     fn build_args_passes_user_prompt_under_dash_p() {
@@ -288,6 +302,8 @@ mod tests {
     #[test]
     fn gemini_runner_non_zero_scrubs_bearer_token_from_error() {
         use std::io::Write as _;
+        #[cfg(unix)]
+        let _lock = acquire_lock();
         let dir = tempfile::TempDir::new().expect("tempdir");
         let script = dir.path().join("fake-gemini.sh");
         // Linux CI fix: `sync_all()` + explicit drop before exec avoids
