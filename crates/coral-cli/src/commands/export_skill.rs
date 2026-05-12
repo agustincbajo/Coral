@@ -133,10 +133,7 @@ fn discover_wiki_pages(wiki_root: &Path) -> Result<Vec<(String, String)>> {
             let entry = entry?;
             let path = entry.path();
             if path.is_dir() {
-                let name = path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("");
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
                 if !name.starts_with('.') && name != "_archive" {
                     walk_dir(&path, pages)?;
                 }
@@ -195,7 +192,7 @@ pub fn extract_skill_entry(slug: &str, body: &str) -> SkillEntry {
 
 /// Convert a slug like "my-skill-page" to a human name "my skill page".
 fn slug_to_name(slug: &str) -> String {
-    slug.replace('-', " ").replace('_', " ")
+    slug.replace(['-', '_'], " ")
 }
 
 /// Extract the description from a page body.
@@ -226,11 +223,10 @@ fn extract_description(body: &str) -> String {
                 }
             }
         }
-        if past_frontmatter || !in_frontmatter {
-            if !trimmed.is_empty() && !trimmed.starts_with('#') && !trimmed.starts_with("---") {
+        if (past_frontmatter || !in_frontmatter)
+            && !trimmed.is_empty() && !trimmed.starts_with('#') && !trimmed.starts_with("---") {
                 return trimmed.to_string();
             }
-        }
     }
     String::new()
 }
@@ -292,7 +288,10 @@ mod tests {
         assert_eq!(skills.len(), 1);
         assert_eq!(skills[0].source_page, "deploy-skill");
         assert_eq!(skills[0].description, "Deploy automation");
-        assert_eq!(skills[0].triggers, vec!["on push to main", "manual dispatch"]);
+        assert_eq!(
+            skills[0].triggers,
+            vec!["on push to main", "manual dispatch"]
+        );
     }
 
     #[test]

@@ -35,45 +35,45 @@ pub mod trace_runner;
 pub mod user_defined_runner;
 pub mod walk_tests;
 
+pub use browser_runner::BrowserRunner;
 pub use contract_check::{
     ContractReport, Finding as ContractFinding, FindingKind as ContractFindingKind,
     Severity as ContractSeverity, check_project as check_contracts,
     render_report_json as render_contract_json, render_report_markdown as render_contract_markdown,
 };
-pub use browser_runner::BrowserRunner;
 pub use contract_runner::ContractRunner;
-pub use event_runner::EventRunner;
 pub use coverage::{
     CoverageReport, Endpoint as CoverageEndpoint, compute_coverage,
     render_json as render_coverage_json, render_markdown as render_coverage_markdown,
 };
 pub use discover::{DiscoveredCase, discover_openapi_in_project};
+pub use emit_k6::{EmitOutput, SkipNote, SkipReason, emit_k6};
+pub use error::{TestError, TestResult};
+pub use event_runner::EventRunner;
+pub use healthcheck_runner::HealthcheckRunner;
 pub use history::{
     FlakeEntry, TestRecord, append_records, compute_flakes, read_history,
     render_json as render_flakes_json, render_markdown as render_flakes_markdown,
 };
+pub use hurl_runner::HurlRunner;
+pub use mock::MockTestRunner;
+pub use orchestrator::{TestFilters, run_test_suite_filtered};
 pub use perf::{
     LatencyStats, PerfBaseline, PerfRegression, PerfReport, detect_regressions, load_baseline,
     render_json as render_perf_json, render_markdown as render_perf_markdown, save_baseline,
     update_baseline,
 };
-pub use emit_k6::{EmitOutput, SkipNote, SkipReason, emit_k6};
-pub use error::{TestError, TestResult};
-pub use healthcheck_runner::HealthcheckRunner;
-pub use hurl_runner::HurlRunner;
-pub use mock::MockTestRunner;
-pub use orchestrator::{TestFilters, run_test_suite_filtered};
 pub use property_runner::{
     DEFAULT_ITERATIONS as PROPERTY_DEFAULT_ITERATIONS, PropertyRunner, PropertyTestCaseSpec,
     cases_from_property_specs, json_schema_strategy,
 };
 pub use recorded_runner::{KeployTestCase, RecordedRunner, discover_recorded};
 pub use report::{Evidence, JunitOutput, TestReport, TestStatus};
-pub use trace_runner::TraceRunner;
 pub use semantic_diff::{
     BreakingChange, DiffSeverity, SemanticDiffResult, diff_openapi, diff_protobuf, diff_schema,
 };
 pub use spec::{TestCase, TestKind, TestSource, TestSpec};
+pub use trace_runner::TraceRunner;
 pub use user_defined_runner::UserDefinedRunner;
 
 use coral_env::EnvHandle;

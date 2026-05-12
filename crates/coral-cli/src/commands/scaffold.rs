@@ -5,7 +5,7 @@
 //! Reads an existing wiki page's frontmatter + structure and generates
 //! a new page with the same structure but placeholder content.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::{Args, Subcommand};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -61,9 +61,7 @@ fn run_module(args: ModuleArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
 
     // Find the template page by slug
     let pages = walk::read_pages(&root).context("reading wiki pages")?;
-    let template = pages
-        .iter()
-        .find(|p| p.frontmatter.slug == args.like);
+    let template = pages.iter().find(|p| p.frontmatter.slug == args.like);
 
     let template = match template {
         Some(p) => p,
@@ -89,7 +87,10 @@ fn run_module(args: ModuleArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
         .with_context(|| format!("writing {}", target_file.display()))?;
 
     println!("scaffolded: {}", target_file.display());
-    println!("  template: {} (type={:?})", args.like, template.frontmatter.page_type);
+    println!(
+        "  template: {} (type={:?})",
+        args.like, template.frontmatter.page_type
+    );
     println!("  new slug: {}", args.name);
 
     Ok(ExitCode::SUCCESS)
@@ -135,7 +136,9 @@ fn extract_heading_structure(body: &str, new_slug: &str) -> String {
             }
             result.push_str(line);
             result.push('\n');
-            result.push_str(&format!("\n<!-- TODO: fill in content for {new_slug} -->\n\n"));
+            result.push_str(&format!(
+                "\n<!-- TODO: fill in content for {new_slug} -->\n\n"
+            ));
             last_was_heading = true;
         } else {
             last_was_heading = false;
@@ -143,9 +146,7 @@ fn extract_heading_structure(body: &str, new_slug: &str) -> String {
     }
 
     if result.is_empty() {
-        format!(
-            "# {new_slug}\n\n<!-- TODO: fill in content for {new_slug} -->\n"
-        )
+        format!("# {new_slug}\n\n<!-- TODO: fill in content for {new_slug} -->\n")
     } else {
         result
     }

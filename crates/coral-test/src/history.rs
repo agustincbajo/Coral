@@ -132,11 +132,7 @@ pub fn render_markdown(flakes: &[FlakeEntry]) -> String {
     out.push_str("| Test | Runs | Pass | Fail | Flake Rate | Status |\n");
     out.push_str("|------|------|------|------|------------|--------|\n");
     for f in flakes {
-        let status = if f.quarantined {
-            "quarantine"
-        } else {
-            "flaky"
-        };
+        let status = if f.quarantined { "quarantine" } else { "flaky" };
         out.push_str(&format!(
             "| {} | {} | {} | {} | {:.1}% | {} |\n",
             f.case_id,
@@ -320,7 +316,10 @@ mod tests {
         let flakes = compute_flakes(&records, None);
         assert_eq!(flakes.len(), 1);
         assert_eq!(flakes[0].case_id, "borderline");
-        assert!(!flakes[0].quarantined, "borderline should NOT be quarantined");
+        assert!(
+            !flakes[0].quarantined,
+            "borderline should NOT be quarantined"
+        );
         assert!((flakes[0].flake_rate - 0.1).abs() < 0.001);
     }
 

@@ -75,10 +75,11 @@ pub fn require_bearer(state: &AppState, request: &Request) -> Result<(), ApiErro
         ));
     };
 
-    let auth = header_value(request, "authorization")
-        .ok_or(ApiError::MissingToken)?;
+    let auth = header_value(request, "authorization").ok_or(ApiError::MissingToken)?;
     let trimmed = auth.trim();
-    let Some(token) = trimmed.strip_prefix("Bearer ").or_else(|| trimmed.strip_prefix("bearer "))
+    let Some(token) = trimmed
+        .strip_prefix("Bearer ")
+        .or_else(|| trimmed.strip_prefix("bearer "))
     else {
         return Err(ApiError::MissingToken);
     };

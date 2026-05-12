@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.32.2] - 2026-05-12
+
+**WebUI polish + CI unblock.** Six follow-up improvements after the v0.32.1 patch, plus an emergency fix to the `ci.yml` workflow that had been silently 422-rejecting every push for 100+ runs (since v0.22.5, three days prior). No backward-compat breakage; `coral --version` reports `coral 0.32.2`.
+
+### Fixed
+
+- **`ci.yml` unblocked after 100+ consecutive 0s failures.** Root cause: line 67 used `${{ env.CORAL_MSRV }}` inside the **job-level `name:` field**, which GitHub Actions only expands inside `steps:`. The workflow parser silently 422-ed every run with the runs reporting `total_count: 0` jobs and `billable: {}`, while `gh run view` returned a misleading "workflow file issue" without any pointer to the line. Discovered by running `gh workflow run ci.yml` (workflow_dispatch), which surfaced the parser's actual `Unrecognized named-value: 'env'` error. The MSRV is now hard-coded in the `name:` string; `steps:` interpolation continues to work. Three days of PR gate downtime closed in one character. (`7135df1`)
+- **Clippy 1.94 lint regressions fixed across the workspace.** The October stable clippy bump introduced `io_other_error`, `needless_borrows_for_generic_args`, `single_char_add_str`, `infallible_destructuring_match`, and tightened `field_reassign_with_default`. Touched: `coral-core/search_index.rs` (4), `coral-ui/routes/query.rs` (1), `coral-mcp/transport/http_sse.rs` (1, scoped `#[allow]`), `coral-test/browser_runner.rs` (4 refactored to struct literals), `coral-runner/tests/cross_runner_contract.rs` (3 unused-import warnings — fn and imports now `#[cfg(unix)]`-gated correctly), `coral-cli/lib.rs` (crate-wide `#[allow(clippy::doc_lazy_continuation)]` because reformatting 11 doc-comments to indent list continuations would touch broad surface for cosmetic gain).
+- **`cargo fmt --check`**: workspace re-formatted (auto-fix from rustfmt against the new stable).
+
+### Added
+
+- **Dark mode toggle** (M3 feature pulled into this patch). Sun/Moon icon button in the header switches `<html class="dark">` and persists in `localStorage`. Initial value follows `prefers-color-scheme` or the stored override; applied **before** React hydrates so there's no flash of wrong theme. New i18n keys `theme.switch_to_light` / `theme.switch_to_dark` in `en` + `es`.
+- **Export graph as PNG** from the Graph view. Floating "Export PNG" button in the top-right of the canvas composites Sigma's edges + nodes + labels layers onto an offscreen canvas with a white background, serialises via `toDataURL("image/png")`, and triggers a same-tab download as `coral-graph-YYYY-MM-DD.png`. A success toast confirms the filename; failures log to console and surface as an error toast.
+- **Mermaid diagrams** lazy-loaded from `cdn.jsdelivr.net/npm/mermaid@11.4.0/dist/mermaid.esm.min.mjs` only when a wiki page actually contains a ```` ```mermaid ```` fence. Adds zero bytes to the offline-only baseline bundle. Network or CSP failure falls back to a labeled `<pre>` showing the source. `securityLevel: "strict"` and post-`react-markdown` insertion keep the XSS surface tight.
+- **Toast notification system.** Minimal Zustand-backed `<Toaster/>` (no Radix dep — ~80 lines + 4 KB gzipped) with variants `default / success / error / warning`, auto-dismiss TTL, and a `useToast()` hook. Mounted once at the app root in `main.tsx`. Wired up to the two existing user-facing actions where inline feedback is awkward: saving a bearer token and exporting the graph PNG. M2 will migrate query-error feedback off the inline error box onto the toast surface.
+- **Multi-repo dynamic resolution** from `/api/v1/manifest`. `useCurrentRepo()` now resolves in priority order: explicit user override in `useFiltersStore().repo` → first repo key in the parsed `coral.toml` (`repos.<name>` or `[[repo]] name = ...`) → `DEFAULT_REPO` constant. Components that previously hard-coded `"default"` (`<NodePreview>`, `<PagesList>` link `to`, the cited-source links in `<QueryPlayground>`) now read from this hook, so adding a second repo to `coral.toml` makes the UI follow without code changes.
+
+### Changed
+
+- **`accepted_origins()` removed `bind_origin()` after the v0.32.1 cleanup.** No call sites remained; the more permissive helper that returns both `http://` and `https://` variants is now the only API. (Surfaced as a dead-code warning at v0.32.1 build time; rolled into this release.)
+
+### Backward compatibility
+
+- `coral wiki serve` (legacy) unchanged. BC tests 6/6 green.
+- REST `/api/v1/*` wire format identical to v0.32.0/v0.32.1.
+- `coral --version` reports `coral 0.32.2`.
+
 ## [0.32.1] - 2026-05-12
 
 **WebUI hardening patch.** End-to-end browser smoke (Chrome headless against the v0.32.0 binary) surfaced one production-visible bug and four polish items that the curl-only M1 smoke could not have caught. All resolved here. No backward-compat breakage; the wire format and CLI surface are identical to v0.32.0.

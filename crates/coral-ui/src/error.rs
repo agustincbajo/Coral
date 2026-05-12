@@ -74,13 +74,9 @@ impl ApiError {
     /// Avoids leaking arbitrary anyhow chains; only static strings here.
     pub fn hint(&self) -> Option<&'static str> {
         match self {
-            ApiError::MissingToken => {
-                Some("provide an `Authorization: Bearer <token>` header")
-            }
+            ApiError::MissingToken => Some("provide an `Authorization: Bearer <token>` header"),
             ApiError::InvalidToken => Some("the token did not match the configured value"),
-            ApiError::InvalidHost => {
-                Some("requests must address the loopback bind by hostname")
-            }
+            ApiError::InvalidHost => Some("requests must address the loopback bind by hostname"),
             ApiError::InvalidOrigin => Some("set Origin to the bound origin or omit it"),
             ApiError::WriteToolsDisabled => {
                 Some("rerun the server with --allow-write-tools to enable mutation")

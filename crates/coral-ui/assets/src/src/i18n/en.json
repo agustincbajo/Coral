@@ -113,6 +113,7 @@
       "size_by": "Size by",
       "max_nodes": "Max nodes",
       "rerun_layout": "Re-run layout",
+      "export_png": "Export PNG",
       "as_of": "as of {{date}}",
       "now": "now",
       "valid_at": "Valid at",
@@ -140,6 +141,10 @@
     "stats": {
       "nodes": "{{count}} nodes",
       "edges": "{{count}} edges"
+    },
+    "toast": {
+      "exported": "Graph exported",
+      "export_failed": "Export failed"
     },
     "fallback": {
       "no_webgl2_title": "Graph view requires WebGL 2",
@@ -201,13 +206,20 @@
       "save": "Save token",
       "clear": "Clear token",
       "stored_hint": "Stored in this browser only.",
-      "open": "Configure token"
+      "open": "Configure token",
+      "toast_saved": "Token saved",
+      "toast_saved_desc": "Stored in this browser's localStorage.",
+      "toast_cleared": "Token cleared"
     }
   },
   "locale": {
     "label": "Language",
     "en": "English",
     "es": "Español"
+  },
+  "theme": {
+    "switch_to_light": "Switch to light theme",
+    "switch_to_dark": "Switch to dark theme"
   },
   "footer": {
     "version": "Coral v{{version}}"

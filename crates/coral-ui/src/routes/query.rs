@@ -84,7 +84,7 @@ pub fn handle_streaming(state: &Arc<AppState>, mut request: Request) -> Result<(
             context.push_str("---\n");
             context.push_str(&format!("# {}\n", p.frontmatter.slug));
             context.push_str(&p.body);
-            context.push_str("\n");
+            context.push('\n');
         }
     }
     if context.is_empty() {
@@ -138,9 +138,8 @@ pub fn handle_streaming(state: &Arc<AppState>, mut request: Request) -> Result<(
             // NOTE(coral-ui spec): we already sent the HTTP head, so we
             // can't switch to a 500. The SPA must treat `event: error`
             // as a terminal frame.
-            let payload =
-                serde_json::json!({ "code": "RUNNER_FAILED", "message": e.to_string() })
-                    .to_string();
+            let payload = serde_json::json!({ "code": "RUNNER_FAILED", "message": e.to_string() })
+                .to_string();
             let _ = write_sse_frame(&mut writer, "error", &payload);
         }
     }

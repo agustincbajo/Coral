@@ -106,19 +106,16 @@ pub fn run(args: MigrateArgs, _wiki_root: Option<&Path>) -> Result<ExitCode> {
         }
         println!("(pass --apply to write these to .coral/migrations/{timestamp}/)");
     } else {
-        let migrations_dir = PathBuf::from(".coral")
-            .join("migrations")
-            .join(&timestamp);
+        let migrations_dir = PathBuf::from(".coral").join("migrations").join(&timestamp);
         fs::create_dir_all(&migrations_dir)
             .with_context(|| format!("creating migrations dir: {}", migrations_dir.display()))?;
 
         for draft in &drafts {
             let filename = draft.repo.replace('/', "__") + ".json";
             let path = migrations_dir.join(&filename);
-            let json = serde_json::to_string_pretty(draft)
-                .context("serializing migration draft")?;
-            fs::write(&path, &json)
-                .with_context(|| format!("writing {}", path.display()))?;
+            let json =
+                serde_json::to_string_pretty(draft).context("serializing migration draft")?;
+            fs::write(&path, &json).with_context(|| format!("writing {}", path.display()))?;
             println!("wrote: {}", path.display());
         }
         println!(
@@ -214,11 +211,7 @@ pub fn build_drafts(
 }
 
 fn truncate(s: &str, max: usize) -> &str {
-    if s.len() <= max {
-        s
-    } else {
-        &s[..max]
-    }
+    if s.len() <= max { s } else { &s[..max] }
 }
 
 #[cfg(test)]
@@ -238,7 +231,11 @@ mod tests {
             },
         ];
 
-        let drafts = build_drafts(&consumers, "removed /users/{id} endpoint", "20260511T120000Z");
+        let drafts = build_drafts(
+            &consumers,
+            "removed /users/{id} endpoint",
+            "20260511T120000Z",
+        );
 
         assert_eq!(drafts.len(), 2);
         assert_eq!(drafts[0].repo, "acme/frontend");

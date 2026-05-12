@@ -21,6 +21,8 @@ pub mod notion_push;
 pub mod pins;
 pub mod project;
 pub mod search;
+#[cfg(feature = "webui")]
+pub mod serve;
 pub mod session;
 pub mod skill;
 pub mod stats;
@@ -28,14 +30,12 @@ pub mod status;
 pub mod sync;
 pub mod test;
 pub mod test_discover;
+#[cfg(feature = "ui")]
+pub mod ui;
 pub mod up;
 pub mod validate_pin;
 pub mod verify;
 pub mod wiki;
-#[cfg(feature = "webui")]
-pub mod serve;
-#[cfg(feature = "ui")]
-pub mod ui;
 
 pub mod bootstrap;
 pub mod consolidate;
@@ -49,8 +49,8 @@ pub mod query;
 
 pub mod migrate;
 pub mod mutants;
-pub mod scaffold;
 pub mod runner_helper;
+pub mod scaffold;
 
 /// v0.30.0 audit cycle 5 B2: documented exit-code contract for the
 /// "is-something-wrong-with-my-project" family of commands (`lint`,
@@ -87,9 +87,7 @@ pub mod exit_codes {
     /// `Result<ExitCode>` that maps `Err` to `Ok(ExitCode::from(3))`.
     /// Errors are still printed (caller does that). Used at the
     /// dispatch boundary for commands that opt into the contract.
-    pub fn map_internal_err(
-        result: anyhow::Result<ExitCode>,
-    ) -> (ExitCode, Option<anyhow::Error>) {
+    pub fn map_internal_err(result: anyhow::Result<ExitCode>) -> (ExitCode, Option<anyhow::Error>) {
         match result {
             Ok(code) => (code, None),
             Err(e) => (ExitCode::from(INTERNAL), Some(e)),
@@ -122,7 +120,10 @@ pub mod exit_codes {
             let (code, err) = map_internal_err(Ok(ExitCode::from(FINDINGS)));
             assert!(err.is_none(), "Ok input must not produce an error");
             // ExitCode does not implement PartialEq; compare via Debug.
-            assert_eq!(format!("{code:?}"), format!("{:?}", ExitCode::from(FINDINGS)));
+            assert_eq!(
+                format!("{code:?}"),
+                format!("{:?}", ExitCode::from(FINDINGS))
+            );
 
             // Err case: rewritten to ExitCode 3 with the error preserved.
             let (code, err) = map_internal_err(Err(anyhow::anyhow!("backend down")));
@@ -131,7 +132,10 @@ pub mod exit_codes {
                 err.unwrap().to_string().contains("backend down"),
                 "the original error message must survive"
             );
-            assert_eq!(format!("{code:?}"), format!("{:?}", ExitCode::from(INTERNAL)));
+            assert_eq!(
+                format!("{code:?}"),
+                format!("{:?}", ExitCode::from(INTERNAL))
+            );
         }
     }
 }

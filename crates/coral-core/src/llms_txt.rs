@@ -69,9 +69,21 @@ mod tests {
     #[test]
     fn generate_basic_output() {
         let pages = vec![
-            make_page("auth", PageType::Module, "# Authentication\n\nHandles user login."),
-            make_page("payment", PageType::Flow, "# Payment Flow\n\nProcesses transactions."),
-            make_page("user", PageType::Entity, "# User\n\nRepresents a system user."),
+            make_page(
+                "auth",
+                PageType::Module,
+                "# Authentication\n\nHandles user login.",
+            ),
+            make_page(
+                "payment",
+                PageType::Flow,
+                "# Payment Flow\n\nProcesses transactions.",
+            ),
+            make_page(
+                "user",
+                PageType::Entity,
+                "# User\n\nRepresents a system user.",
+            ),
         ];
 
         let output = generate(&pages, "TestProject");

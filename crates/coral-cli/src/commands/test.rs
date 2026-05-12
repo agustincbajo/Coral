@@ -589,8 +589,7 @@ fn apply_filters(cases: Vec<TestCase>, services: &[String], tags: &[String]) -> 
 
 fn run_coverage(args: CoverageArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
     let project = resolve_project(wiki_root)?;
-    let report = coral_test::compute_coverage(&project.root)
-        .context("computing test coverage")?;
+    let report = coral_test::compute_coverage(&project.root).context("computing test coverage")?;
 
     match args.format {
         CoverageFormat::Markdown => print!("{}", coral_test::render_coverage_markdown(&report)),
@@ -656,8 +655,7 @@ fn run_perf(args: PerfArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
         for rec in &records {
             coral_test::update_baseline(&mut baseline, &rec.case_id, rec.duration_ms);
         }
-        coral_test::save_baseline(&project.root, &baseline)
-            .context("saving perf baseline")?;
+        coral_test::save_baseline(&project.root, &baseline).context("saving perf baseline")?;
         eprintln!(
             "Baseline updated with {} records ({} cases)",
             records.len(),
@@ -674,9 +672,7 @@ fn run_perf(args: PerfArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
     }
 
     if baseline.cases.is_empty() {
-        println!(
-            "No baseline found. Run `coral test perf --update-baseline` to establish one."
-        );
+        println!("No baseline found. Run `coral test perf --update-baseline` to establish one.");
         return Ok(ExitCode::SUCCESS);
     }
 

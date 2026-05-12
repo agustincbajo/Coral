@@ -52,11 +52,7 @@ pub fn run(args: LockArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
 
     coral_core::atomic::with_exclusive_lock(&lock_path, || {
         let mut lock = Lockfile::load_or_default(&lock_path).map_err(|e| {
-            coral_core::error::CoralError::Walk(format!(
-                "loading {}: {}",
-                lock_path.display(),
-                e
-            ))
+            coral_core::error::CoralError::Walk(format!("loading {}: {}", lock_path.display(), e))
         })?;
 
         for repo in &project.repos {

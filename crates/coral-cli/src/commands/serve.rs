@@ -14,8 +14,8 @@ use clap::Args;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::process::ExitCode;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use coral_core::page::Page;
 use coral_core::walk::read_pages;
@@ -74,8 +74,8 @@ pub fn run(args: ServeArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
         // Use recv_timeout so the shutdown flag gets checked periodically.
         let request = match server.recv_timeout(std::time::Duration::from_millis(250)) {
             Ok(Some(req)) => req,
-            Ok(None) => continue,    // timeout, re-check shutdown
-            Err(_) => continue,      // transient error, keep going
+            Ok(None) => continue, // timeout, re-check shutdown
+            Err(_) => continue,   // transient error, keep going
         };
 
         handle_request(request, &pages);
@@ -88,11 +88,9 @@ fn handle_request(request: tiny_http::Request, pages: &[Page]) {
     let url = request.url().to_string();
     let response = route(&url, pages);
 
-    let header = tiny_http::Header::from_bytes(
-        b"Content-Type" as &[u8],
-        response.content_type.as_bytes(),
-    )
-    .expect("valid header");
+    let header =
+        tiny_http::Header::from_bytes(b"Content-Type" as &[u8], response.content_type.as_bytes())
+            .expect("valid header");
 
     let resp = tiny_http::Response::from_string(response.body)
         .with_status_code(response.status)
@@ -122,8 +120,7 @@ fn route(url: &str, pages: &[Page]) -> HttpResponse {
         _ => HttpResponse {
             status: 404,
             content_type: "text/html; charset=utf-8".into(),
-            body: "<h1>404 — Not Found</h1><p><a href=\"/\">Back to index</a></p>"
-                .into(),
+            body: "<h1>404 — Not Found</h1><p><a href=\"/\">Back to index</a></p>".into(),
         },
     }
 }
@@ -256,7 +253,13 @@ pub fn render_mermaid_graph(pages: &[Page]) -> String {
 /// spaces or special chars, so we replace non-alphanumeric with `_`.
 fn mermaid_id(slug: &str) -> String {
     slug.chars()
-        .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 
@@ -358,8 +361,14 @@ mod tests {
             make_page("api-gateway", "gateway"),
         ];
         let html = render_index(&pages);
-        assert!(html.contains("/page/api-gateway"), "missing api-gateway link");
-        assert!(html.contains("/page/auth-service"), "missing auth-service link");
+        assert!(
+            html.contains("/page/api-gateway"),
+            "missing api-gateway link"
+        );
+        assert!(
+            html.contains("/page/auth-service"),
+            "missing auth-service link"
+        );
         // Pages should be sorted alphabetically.
         let pos_api = html.find("api-gateway").unwrap();
         let pos_auth = html.find("auth-service").unwrap();
@@ -388,10 +397,22 @@ mod tests {
             make_page("users", "links to [[auth-service]]"),
         ];
         let graph = render_mermaid_graph(&pages);
-        assert!(graph.starts_with("graph LR"), "must start with graph directive");
-        assert!(graph.contains("auth_service --> tokens"), "missing auth->tokens edge");
-        assert!(graph.contains("auth_service --> users"), "missing auth->users edge");
-        assert!(graph.contains("users --> auth_service"), "missing users->auth edge");
+        assert!(
+            graph.starts_with("graph LR"),
+            "must start with graph directive"
+        );
+        assert!(
+            graph.contains("auth_service --> tokens"),
+            "missing auth->tokens edge"
+        );
+        assert!(
+            graph.contains("auth_service --> users"),
+            "missing auth->users edge"
+        );
+        assert!(
+            graph.contains("users --> auth_service"),
+            "missing users->auth edge"
+        );
         // Isolated node (tokens has no outbound links).
         assert!(graph.contains("tokens"), "isolated node missing");
     }

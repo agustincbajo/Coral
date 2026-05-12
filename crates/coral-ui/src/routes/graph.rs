@@ -73,10 +73,8 @@ pub fn handle(state: &Arc<AppState>, query_string: &str) -> Result<Vec<u8>, ApiE
     // out- and in-degrees per node so the SPA can size bubbles by total
     // connectivity. Nodes referenced only via wikilinks (no own page) are
     // skipped — we keep the node set closed.
-    let visible_slugs: std::collections::HashSet<String> = visible
-        .iter()
-        .map(|p| p.frontmatter.slug.clone())
-        .collect();
+    let visible_slugs: std::collections::HashSet<String> =
+        visible.iter().map(|p| p.frontmatter.slug.clone()).collect();
     let mut degree: HashMap<String, usize> = HashMap::new();
     let mut edges: Vec<Edge> = Vec::new();
     for p in &visible {
@@ -114,8 +112,7 @@ pub fn handle(state: &Arc<AppState>, query_string: &str) -> Result<Vec<u8>, ApiE
     if nodes.len() > max_nodes {
         nodes.sort_by(|a, b| b.degree.cmp(&a.degree));
         nodes.truncate(max_nodes);
-        let kept: std::collections::HashSet<String> =
-            nodes.iter().map(|n| n.id.clone()).collect();
+        let kept: std::collections::HashSet<String> = nodes.iter().map(|n| n.id.clone()).collect();
         edges.retain(|e| kept.contains(&e.source) && kept.contains(&e.target));
     }
 

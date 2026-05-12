@@ -55,8 +55,7 @@ pub fn serve_stdio(handler: &McpHandler) -> std::io::Result<()> {
         // Drain any pending push notifications enqueued during
         // handler dispatch (e.g. resource subscription updates).
         while let Ok(notification) = rx.try_recv() {
-            let serialized =
-                serde_json::to_string(&notification).unwrap_or_else(|_| "{}".into());
+            let serialized = serde_json::to_string(&notification).unwrap_or_else(|_| "{}".into());
             writeln!(handle, "{serialized}")?;
             handle.flush()?;
         }

@@ -256,13 +256,17 @@ pub fn search_hybrid(pages: &[Page], query: &str, limit: usize) -> Vec<SearchRes
     for (rank, r) in bm25_results.iter().enumerate() {
         let rank_1based = (rank + 1) as f64;
         *rrf_scores.entry(r.slug.as_str()).or_insert(0.0) += 1.0 / (RRF_K + rank_1based);
-        snippets.entry(r.slug.as_str()).or_insert(r.snippet.as_str());
+        snippets
+            .entry(r.slug.as_str())
+            .or_insert(r.snippet.as_str());
     }
 
     for (rank, r) in tfidf_results.iter().enumerate() {
         let rank_1based = (rank + 1) as f64;
         *rrf_scores.entry(r.slug.as_str()).or_insert(0.0) += 1.0 / (RRF_K + rank_1based);
-        snippets.entry(r.slug.as_str()).or_insert(r.snippet.as_str());
+        snippets
+            .entry(r.slug.as_str())
+            .or_insert(r.snippet.as_str());
     }
 
     let mut results: Vec<SearchResult> = rrf_scores
@@ -712,7 +716,11 @@ mod tests {
         assert!(slugs.contains(&"long"), "expected 'long' in results");
         // All scores must be positive.
         for r in &results {
-            assert!(r.score > 0.0, "expected positive RRF score, got {}", r.score);
+            assert!(
+                r.score > 0.0,
+                "expected positive RRF score, got {}",
+                r.score
+            );
         }
     }
 
@@ -756,8 +764,7 @@ mod tests {
         let top = &results[0];
         let bm25_rank = bm25.iter().position(|r| r.slug == top.slug).unwrap() + 1;
         let tfidf_rank = tfidf.iter().position(|r| r.slug == top.slug).unwrap() + 1;
-        let expected_score =
-            1.0 / (RRF_K + bm25_rank as f64) + 1.0 / (RRF_K + tfidf_rank as f64);
+        let expected_score = 1.0 / (RRF_K + bm25_rank as f64) + 1.0 / (RRF_K + tfidf_rank as f64);
         assert!(
             (top.score - expected_score).abs() < 1e-12,
             "top result '{}' score {} should equal RRF sum {} (bm25_rank={}, tfidf_rank={})",
@@ -831,7 +838,10 @@ mod tests {
     fn classify_synthesis_query() {
         let slugs = &["order", "payment", "outbox"];
         assert_eq!(
-            classify_query("how does payment flow from order to invoice end-to-end", slugs),
+            classify_query(
+                "how does payment flow from order to invoice end-to-end",
+                slugs
+            ),
             QueryLevel::Synthesis
         );
         assert_eq!(
@@ -844,7 +854,10 @@ mod tests {
     fn classify_short_unknown_slug_is_entity() {
         let slugs = &["order", "payment"];
         // Short query with no synthesis signals defaults to entity
-        assert_eq!(classify_query("describe invoice", slugs), QueryLevel::Entity);
+        assert_eq!(
+            classify_query("describe invoice", slugs),
+            QueryLevel::Entity
+        );
     }
 
     #[test]

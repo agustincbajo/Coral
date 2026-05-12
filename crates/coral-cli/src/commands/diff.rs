@@ -209,9 +209,7 @@ fn narrative_to_json(diffs: &[narrative::PageDiff]) -> serde_json::Value {
 /// the wiki root via `git ls-tree` and then reading each with `git show`.
 fn read_pages_at_ref(wiki_root: &Path, git_ref: &str) -> Result<Vec<Page>> {
     let repo_root = wiki_root.parent().unwrap_or(wiki_root);
-    let rel_wiki = wiki_root
-        .strip_prefix(repo_root)
-        .unwrap_or(wiki_root);
+    let rel_wiki = wiki_root.strip_prefix(repo_root).unwrap_or(wiki_root);
 
     // List all .md files under the wiki root at the given ref.
     let output = std::process::Command::new("git")
@@ -231,8 +229,8 @@ fn read_pages_at_ref(wiki_root: &Path, git_ref: &str) -> Result<Vec<Page>> {
         anyhow::bail!("git ls-tree failed for ref {git_ref}: {stderr}");
     }
 
-    let file_list = String::from_utf8(output.stdout)
-        .context("git ls-tree output is not valid UTF-8")?;
+    let file_list =
+        String::from_utf8(output.stdout).context("git ls-tree output is not valid UTF-8")?;
 
     let mut pages = Vec::new();
     for line in file_list.lines() {
@@ -292,8 +290,7 @@ fn read_page_at_ref(wiki_root: &Path, slug: &str, git_ref: &str, pages: &[Page])
         anyhow::bail!("git show failed for {slug} at {git_ref}: {stderr}");
     }
 
-    let content =
-        String::from_utf8(output.stdout).context("git show output is not valid UTF-8")?;
+    let content = String::from_utf8(output.stdout).context("git show output is not valid UTF-8")?;
 
     Page::from_content(&content, &current.path)
         .map_err(|e| anyhow::anyhow!("parsing page at ref {git_ref}: {e}"))
@@ -950,7 +947,14 @@ mod tests {
 
     #[test]
     fn read_page_at_ref_returns_error_for_unknown_slug() {
-        let pages = vec![page("alpha", PageType::Module, Status::Reviewed, 0.7, "x", &[])];
+        let pages = vec![page(
+            "alpha",
+            PageType::Module,
+            Status::Reviewed,
+            0.7,
+            "x",
+            &[],
+        )];
         let wiki_root = Path::new(".wiki");
         let r = read_page_at_ref(wiki_root, "nonexistent", "HEAD", &pages);
         assert!(r.is_err(), "must error when slug is not in wiki");
@@ -1032,7 +1036,10 @@ mod tests {
             head: "HEAD".into(),
         };
         let r = run(args, Some(&wiki));
-        assert!(r.is_err(), "must error when slug_b is missing and --ref is not set");
+        assert!(
+            r.is_err(),
+            "must error when slug_b is missing and --ref is not set"
+        );
         let msg = format!("{}", r.unwrap_err());
         assert!(
             msg.contains("slug_b is required"),

@@ -25,6 +25,12 @@ use std::time::Instant;
 
 pub struct TraceRunner;
 
+impl Default for TraceRunner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TraceRunner {
     pub fn new() -> Self {
         Self
@@ -88,8 +94,7 @@ impl TestRunner for TraceRunner {
                 }
             }
             None => {
-                evidence.stdout_tail =
-                    Some("error: service_name is required in trace spec".into());
+                evidence.stdout_tail = Some("error: service_name is required in trace spec".into());
                 TestStatus::Error {
                     reason: "missing required field: service_name".into(),
                 }

@@ -246,7 +246,12 @@ mod tests {
 
     #[test]
     fn rule_low_confidence() {
-        let pages = vec![make_page("low", PageType::Concept, 0.3, "Some body text that is long enough to pass the minimum length check")];
+        let pages = vec![make_page(
+            "low",
+            PageType::Concept,
+            0.3,
+            "Some body text that is long enough to pass the minimum length check",
+        )];
         let policy = GovernancePolicy::default();
         let violations = check(&pages, &policy);
         assert_eq!(violations.len(), 1);
@@ -256,11 +261,18 @@ mod tests {
 
     #[test]
     fn rule_missing_sources() {
-        let pages = vec![make_page("mod1", PageType::Module, 0.8, "This is a module page with enough text to pass minimum body length check")];
+        let pages = vec![make_page(
+            "mod1",
+            PageType::Module,
+            0.8,
+            "This is a module page with enough text to pass minimum body length check",
+        )];
         let policy = GovernancePolicy::default();
         let violations = check(&pages, &policy);
-        let source_violations: Vec<_> =
-            violations.iter().filter(|v| v.rule == "missing_sources").collect();
+        let source_violations: Vec<_> = violations
+            .iter()
+            .filter(|v| v.rule == "missing_sources")
+            .collect();
         assert_eq!(source_violations.len(), 1);
         assert_eq!(source_violations[0].severity, Severity::Error);
     }
@@ -270,8 +282,10 @@ mod tests {
         let pages = vec![make_page("short", PageType::Concept, 0.8, "hi")];
         let policy = GovernancePolicy::default();
         let violations = check(&pages, &policy);
-        let short_violations: Vec<_> =
-            violations.iter().filter(|v| v.rule == "body_too_short").collect();
+        let short_violations: Vec<_> = violations
+            .iter()
+            .filter(|v| v.rule == "body_too_short")
+            .collect();
         assert_eq!(short_violations.len(), 1);
         assert_eq!(short_violations[0].severity, Severity::Warning);
     }
@@ -285,15 +299,22 @@ mod tests {
             ..Default::default()
         };
         let violations = check(&pages, &policy);
-        let long_violations: Vec<_> =
-            violations.iter().filter(|v| v.rule == "body_too_long").collect();
+        let long_violations: Vec<_> = violations
+            .iter()
+            .filter(|v| v.rule == "body_too_long")
+            .collect();
         assert_eq!(long_violations.len(), 1);
         assert_eq!(long_violations[0].severity, Severity::Info);
     }
 
     #[test]
     fn rule_missing_required_field() {
-        let pages = vec![make_page("missing", PageType::Concept, 0.8, "Enough body text to pass the minimum length check for governance rules")];
+        let pages = vec![make_page(
+            "missing",
+            PageType::Concept,
+            0.8,
+            "Enough body text to pass the minimum length check for governance rules",
+        )];
         let policy = GovernancePolicy {
             required_extra_fields: vec!["owner".into()],
             ..Default::default()
@@ -309,7 +330,12 @@ mod tests {
 
     #[test]
     fn rule_link_to_archived() {
-        let mut archived = make_page("old", PageType::Concept, 0.8, "Enough body text to pass the minimum length check for governance rules");
+        let mut archived = make_page(
+            "old",
+            PageType::Concept,
+            0.8,
+            "Enough body text to pass the minimum length check for governance rules",
+        );
         archived.frontmatter.status = Status::Archived;
 
         // A page that links to the archived page via body wikilink.
@@ -329,12 +355,20 @@ mod tests {
 
     #[test]
     fn no_violations_for_healthy_page() {
-        let mut page = make_page("healthy", PageType::Concept, 0.9, "This page has enough content to pass all governance checks easily.");
+        let mut page = make_page(
+            "healthy",
+            PageType::Concept,
+            0.9,
+            "This page has enough content to pass all governance checks easily.",
+        );
         page.frontmatter.sources = vec!["src/lib.rs".into()];
         let pages = vec![page];
         let policy = GovernancePolicy::default();
         let violations = check(&pages, &policy);
-        assert!(violations.is_empty(), "expected no violations, got: {violations:?}");
+        assert!(
+            violations.is_empty(),
+            "expected no violations, got: {violations:?}"
+        );
     }
 
     #[test]

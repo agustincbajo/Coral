@@ -186,7 +186,11 @@ fn detect_project_name(wiki_root: &Path) -> String {
             }
         }
     }
-    parent.file_name().and_then(|n| n.to_str()).unwrap_or("wiki").to_string()
+    parent
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("wiki")
+        .to_string()
 }
 
 fn render_markdown_bundle(pages: &[Page]) -> String {

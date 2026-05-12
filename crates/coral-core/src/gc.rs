@@ -157,12 +157,7 @@ pub fn analyze(pages: &[Page]) -> GcReport {
     // Pre-compute body wikilinks per page (owned Strings, no backlinks mixed in).
     let body_links: Vec<(&str, Vec<String>)> = pages
         .iter()
-        .map(|p| {
-            (
-                p.frontmatter.slug.as_str(),
-                wikilinks::extract(&p.body),
-            )
-        })
+        .map(|p| (p.frontmatter.slug.as_str(), wikilinks::extract(&p.body)))
         .collect();
 
     // Inbound map: slug → set of slugs whose *body* wikilinks mention it.
@@ -221,9 +216,7 @@ pub fn analyze(pages: &[Page]) -> GcReport {
                 .map(|(_, links)| links.iter().any(|l| l == my_slug))
                 .unwrap_or(false); // bl doesn't exist ⇒ stale
             if !bl_links_here {
-                report
-                    .stale_backlinks
-                    .push((my_slug.clone(), bl.clone()));
+                report.stale_backlinks.push((my_slug.clone(), bl.clone()));
             }
         }
     }
@@ -278,7 +271,13 @@ mod tests {
     use crate::frontmatter::{Confidence, Frontmatter};
     use std::path::PathBuf;
 
-    fn make_page(slug: &str, page_type: PageType, status: Status, body: &str, backlinks: Vec<&str>) -> Page {
+    fn make_page(
+        slug: &str,
+        page_type: PageType,
+        status: Status,
+        body: &str,
+        backlinks: Vec<&str>,
+    ) -> Page {
         Page {
             path: PathBuf::from(format!(".wiki/{slug}.md")),
             frontmatter: Frontmatter {
@@ -305,9 +304,27 @@ mod tests {
     fn analyze_detects_orphaned_pages() {
         // alpha ↔ beta form a cycle; orphan has no links in or out.
         let pages = vec![
-            make_page("alpha", PageType::Module, Status::Reviewed, "See [[beta]]", vec![]),
-            make_page("beta", PageType::Concept, Status::Reviewed, "See [[alpha]]", vec![]),
-            make_page("orphan", PageType::Module, Status::Reviewed, "Lonely page", vec![]),
+            make_page(
+                "alpha",
+                PageType::Module,
+                Status::Reviewed,
+                "See [[beta]]",
+                vec![],
+            ),
+            make_page(
+                "beta",
+                PageType::Concept,
+                Status::Reviewed,
+                "See [[alpha]]",
+                vec![],
+            ),
+            make_page(
+                "orphan",
+                PageType::Module,
+                Status::Reviewed,
+                "Lonely page",
+                vec![],
+            ),
         ];
         let report = analyze(&pages);
         assert_eq!(report.orphans, vec!["orphan"]);
@@ -315,20 +332,31 @@ mod tests {
 
     #[test]
     fn index_page_is_never_orphan() {
-        let pages = vec![
-            make_page("master-index", PageType::Index, Status::Reviewed, "Welcome", vec![]),
-        ];
+        let pages = vec![make_page(
+            "master-index",
+            PageType::Index,
+            Status::Reviewed,
+            "Welcome",
+            vec![],
+        )];
         let report = analyze(&pages);
         assert!(report.orphans.is_empty(), "index pages must not be orphans");
     }
 
     #[test]
     fn backlink_not_orphan() {
-        let pages = vec![
-            make_page("alpha", PageType::Module, Status::Reviewed, "Content", vec!["external"]),
-        ];
+        let pages = vec![make_page(
+            "alpha",
+            PageType::Module,
+            Status::Reviewed,
+            "Content",
+            vec!["external"],
+        )];
         let report = analyze(&pages);
-        assert!(report.orphans.is_empty(), "page with backlinks is not an orphan");
+        assert!(
+            report.orphans.is_empty(),
+            "page with backlinks is not an orphan"
+        );
     }
 
     // ── Broken wikilinks ─────────────────────────────────────────────
@@ -336,8 +364,20 @@ mod tests {
     #[test]
     fn analyze_detects_broken_wikilinks() {
         let pages = vec![
-            make_page("alpha", PageType::Module, Status::Reviewed, "See [[nonexistent]] and [[beta]]", vec![]),
-            make_page("beta", PageType::Concept, Status::Reviewed, "See [[alpha]]", vec![]),
+            make_page(
+                "alpha",
+                PageType::Module,
+                Status::Reviewed,
+                "See [[nonexistent]] and [[beta]]",
+                vec![],
+            ),
+            make_page(
+                "beta",
+                PageType::Concept,
+                Status::Reviewed,
+                "See [[alpha]]",
+                vec![],
+            ),
         ];
         let report = analyze(&pages);
         assert_eq!(
@@ -349,8 +389,20 @@ mod tests {
     #[test]
     fn valid_wikilink_not_broken() {
         let pages = vec![
-            make_page("alpha", PageType::Module, Status::Reviewed, "See [[beta]]", vec![]),
-            make_page("beta", PageType::Concept, Status::Reviewed, "See [[alpha]]", vec![]),
+            make_page(
+                "alpha",
+                PageType::Module,
+                Status::Reviewed,
+                "See [[beta]]",
+                vec![],
+            ),
+            make_page(
+                "beta",
+                PageType::Concept,
+                Status::Reviewed,
+                "See [[alpha]]",
+                vec![],
+            ),
         ];
         let report = analyze(&pages);
         assert!(report.broken_wikilinks.is_empty());
@@ -362,19 +414,46 @@ mod tests {
     fn analyze_detects_broken_backlinks() {
         // `beta` declares backlink from `alpha`, but alpha doesn't link to beta.
         let pages = vec![
-            make_page("alpha", PageType::Module, Status::Reviewed, "Nothing here", vec![]),
-            make_page("beta", PageType::Concept, Status::Reviewed, "Content", vec!["alpha"]),
+            make_page(
+                "alpha",
+                PageType::Module,
+                Status::Reviewed,
+                "Nothing here",
+                vec![],
+            ),
+            make_page(
+                "beta",
+                PageType::Concept,
+                Status::Reviewed,
+                "Content",
+                vec!["alpha"],
+            ),
         ];
         let report = analyze(&pages);
-        assert_eq!(report.stale_backlinks, vec![("beta".to_string(), "alpha".to_string())]);
+        assert_eq!(
+            report.stale_backlinks,
+            vec![("beta".to_string(), "alpha".to_string())]
+        );
     }
 
     #[test]
     fn valid_backlink_not_stale() {
         // `beta` declares backlink from `alpha`, and alpha DOES link to beta.
         let pages = vec![
-            make_page("alpha", PageType::Module, Status::Reviewed, "See [[beta]]", vec![]),
-            make_page("beta", PageType::Concept, Status::Reviewed, "Content", vec!["alpha"]),
+            make_page(
+                "alpha",
+                PageType::Module,
+                Status::Reviewed,
+                "See [[beta]]",
+                vec![],
+            ),
+            make_page(
+                "beta",
+                PageType::Concept,
+                Status::Reviewed,
+                "Content",
+                vec!["alpha"],
+            ),
         ];
         let report = analyze(&pages);
         assert!(report.stale_backlinks.is_empty());
@@ -382,11 +461,18 @@ mod tests {
 
     #[test]
     fn nonexistent_backlink_is_stale() {
-        let pages = vec![
-            make_page("beta", PageType::Concept, Status::Reviewed, "Content", vec!["ghost"]),
-        ];
+        let pages = vec![make_page(
+            "beta",
+            PageType::Concept,
+            Status::Reviewed,
+            "Content",
+            vec!["ghost"],
+        )];
         let report = analyze(&pages);
-        assert_eq!(report.stale_backlinks, vec![("beta".to_string(), "ghost".to_string())]);
+        assert_eq!(
+            report.stale_backlinks,
+            vec![("beta".to_string(), "ghost".to_string())]
+        );
     }
 
     // ── Archived still referenced ────────────────────────────────────
@@ -394,8 +480,20 @@ mod tests {
     #[test]
     fn analyze_detects_archived_with_live_refs() {
         let pages = vec![
-            make_page("alive", PageType::Module, Status::Reviewed, "See [[old-stuff]]", vec![]),
-            make_page("old-stuff", PageType::Concept, Status::Archived, "Archived content", vec![]),
+            make_page(
+                "alive",
+                PageType::Module,
+                Status::Reviewed,
+                "See [[old-stuff]]",
+                vec![],
+            ),
+            make_page(
+                "old-stuff",
+                PageType::Concept,
+                Status::Archived,
+                "Archived content",
+                vec![],
+            ),
         ];
         let report = analyze(&pages);
         assert_eq!(
@@ -407,8 +505,20 @@ mod tests {
     #[test]
     fn archived_referenced_by_archived_is_ok() {
         let pages = vec![
-            make_page("old-a", PageType::Module, Status::Archived, "See [[old-b]]", vec![]),
-            make_page("old-b", PageType::Concept, Status::Archived, "Old content", vec![]),
+            make_page(
+                "old-a",
+                PageType::Module,
+                Status::Archived,
+                "See [[old-b]]",
+                vec![],
+            ),
+            make_page(
+                "old-b",
+                PageType::Concept,
+                Status::Archived,
+                "Old content",
+                vec![],
+            ),
         ];
         let report = analyze(&pages);
         assert!(
@@ -422,9 +532,27 @@ mod tests {
     #[test]
     fn analyze_clean_wiki_returns_empty_report() {
         let pages = vec![
-            make_page("index", PageType::Index, Status::Reviewed, "Welcome", vec![]),
-            make_page("alpha", PageType::Module, Status::Reviewed, "See [[beta]]", vec![]),
-            make_page("beta", PageType::Concept, Status::Reviewed, "See [[alpha]]", vec![]),
+            make_page(
+                "index",
+                PageType::Index,
+                Status::Reviewed,
+                "Welcome",
+                vec![],
+            ),
+            make_page(
+                "alpha",
+                PageType::Module,
+                Status::Reviewed,
+                "See [[beta]]",
+                vec![],
+            ),
+            make_page(
+                "beta",
+                PageType::Concept,
+                Status::Reviewed,
+                "See [[alpha]]",
+                vec![],
+            ),
         ];
         let report = analyze(&pages);
         assert!(report.is_clean(), "expected clean report: {report:?}");
@@ -459,8 +587,8 @@ mod tests {
             archived_still_referenced: vec![("old".to_string(), vec!["live".to_string()])],
         };
         let json = render_json(&report);
-        let parsed: serde_json::Value = serde_json::from_str(&json)
-            .expect("render_json must produce valid JSON");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&json).expect("render_json must produce valid JSON");
         assert!(parsed["orphans"].is_array());
         assert!(parsed["broken_wikilinks"].is_array());
         assert!(parsed["stale_backlinks"].is_array());

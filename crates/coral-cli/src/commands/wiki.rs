@@ -5,7 +5,7 @@
 //! branch) and presents it for querying. ★ killer feature #3 from the
 //! v0.24 PRD.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::{Args, Subcommand};
 use std::io::Write;
 use std::path::Path;
@@ -63,7 +63,11 @@ fn run_at(args: AtArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
 
     // Verify the ref exists
     let ref_check = Command::new("git")
-        .args(["rev-parse", "--verify", &format!("{}^{{commit}}", args.git_ref)])
+        .args([
+            "rev-parse",
+            "--verify",
+            &format!("{}^{{commit}}", args.git_ref),
+        ])
         .output()
         .context("failed to run git rev-parse")?;
     if !ref_check.status.success() {

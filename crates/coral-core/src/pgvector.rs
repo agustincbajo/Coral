@@ -92,9 +92,7 @@ impl PgvectorConfig {
     /// Validate that the URL looks like a Postgres connection string.
     fn validate_url(url: &str) -> Result<()> {
         if url.is_empty() {
-            return Err(CoralError::Sqlite(
-                "pgvector URL is empty".to_string(),
-            ));
+            return Err(CoralError::Sqlite("pgvector URL is empty".to_string()));
         }
         if !url.starts_with("postgres://") && !url.starts_with("postgresql://") {
             return Err(CoralError::Sqlite(format!(
@@ -213,10 +211,7 @@ mod tests {
     where
         F: FnOnce() -> R,
     {
-        let originals: Vec<_> = vars
-            .iter()
-            .map(|(k, _)| (*k, env::var(k).ok()))
-            .collect();
+        let originals: Vec<_> = vars.iter().map(|(k, _)| (*k, env::var(k).ok())).collect();
 
         for (k, v) in vars {
             // SAFETY: tests are run single-threaded.
@@ -269,7 +264,10 @@ mod tests {
         with_env_vars(
             &[
                 (ENV_BACKEND, Some("pgvector")),
-                (ENV_PGVECTOR_URL, Some("postgres://user:pass@localhost:5432/coral")),
+                (
+                    ENV_PGVECTOR_URL,
+                    Some("postgres://user:pass@localhost:5432/coral"),
+                ),
             ],
             || {
                 let result = select_pgvector_backend().unwrap();
@@ -360,12 +358,9 @@ mod tests {
 
     #[test]
     fn backend_selection_returns_none_when_env_unset() {
-        with_env_vars(
-            &[(ENV_BACKEND, None), (ENV_PGVECTOR_URL, None)],
-            || {
-                let result = select_pgvector_backend().unwrap();
-                assert!(result.is_none());
-            },
-        );
+        with_env_vars(&[(ENV_BACKEND, None), (ENV_PGVECTOR_URL, None)], || {
+            let result = select_pgvector_backend().unwrap();
+            assert!(result.is_none());
+        });
     }
 }

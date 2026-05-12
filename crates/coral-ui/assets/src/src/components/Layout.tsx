@@ -5,6 +5,7 @@ import { getConfig } from "@/lib/config";
 import { cn } from "@/lib/utils";
 import { LocaleSwitcher } from "@/components/LocaleSwitcher";
 import { TokenDialog } from "@/components/TokenDialog";
+import { ThemeToggle } from "@/components/ThemeToggle";
 
 const NAV_ITEMS = [
   { to: "/pages", key: "nav.pages", icon: FileText },
@@ -50,6 +51,7 @@ export function Layout() {
           </nav>
           <div className="ml-auto flex items-center gap-2">
             {cfg.authRequired ? <TokenDialog /> : null}
+            <ThemeToggle />
             <LocaleSwitcher />
           </div>
         </div>

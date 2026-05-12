@@ -132,11 +132,13 @@ impl HttpSseTransport {
                 3737u16
             ))
         })?;
+        // `ListenAddr::Unix` only exists `#[cfg(unix)]` in tiny_http, so on
+        // Windows the match is technically infallible but on Linux it has
+        // two arms. Clippy's `infallible_destructuring_match` lint fires
+        // for the Windows view but the Unix arm is necessary on Linux.
+        #[allow(clippy::infallible_destructuring_match)]
         let local_addr = match server.server_addr() {
             tiny_http::ListenAddr::IP(s) => s,
-            // `ListenAddr::Unix` only exists `#[cfg(unix)]` in tiny_http; on
-            // Windows the enum has no Unix variant so this arm must be
-            // gated to match. We don't accept unix-socket binds anyway.
             #[cfg(unix)]
             tiny_http::ListenAddr::Unix(_) => {
                 return Err(io::Error::other(
@@ -164,9 +166,7 @@ impl HttpSseTransport {
                     }
                 })
                 .map_err(|e| {
-                    io::Error::other(format!(
-                        "could not spawn SSE notification dispatcher: {e}"
-                    ))
+                    io::Error::other(format!("could not spawn SSE notification dispatcher: {e}"))
                 })?;
         }
         Ok(Self {
@@ -222,8 +222,7 @@ impl HttpSseTransport {
                 .name("coral-mcp-http".to_string())
                 .spawn(move || {
                     let _guard = ActiveGuard(active_for_guard);
-                    if let Err(e) = handle_request(request, &handler, &sessions, &notifications)
-                    {
+                    if let Err(e) = handle_request(request, &handler, &sessions, &notifications) {
                         tracing::warn!(error = %e, "MCP HTTP request handler error");
                     }
                 });
@@ -371,8 +370,7 @@ fn handle_post(
     // The MCP "Streamable HTTP" spec requires `application/json` on
     // POST; anything else is a transport-shape error → 415. We accept
     // an optional `charset=` parameter (per RFC 7231 §3.1.1.5).
-    if !content_type_is_json(&header_value(request.headers(), "Content-Type").unwrap_or_default())
-    {
+    if !content_type_is_json(&header_value(request.headers(), "Content-Type").unwrap_or_default()) {
         return respond_simple(
             request,
             415,
@@ -587,11 +585,7 @@ fn handle_get_sse(
 }
 
 /// Serialize one SSE `id: <n>\ndata: <json>\n\n` frame to `writer`.
-fn write_sse_event(
-    writer: &mut dyn Write,
-    id: u64,
-    value: &serde_json::Value,
-) -> io::Result<()> {
+fn write_sse_event(writer: &mut dyn Write, id: u64, value: &serde_json::Value) -> io::Result<()> {
     let data = serde_json::to_string(value).unwrap_or_else(|_| "{}".to_string());
     let frame = format!("id: {id}\ndata: {data}\n\n");
     writer.write_all(frame.as_bytes())?;
@@ -1030,10 +1024,7 @@ mod tests {
             "embedded 'initialize' in arguments must NOT shadow the real method"
         );
         // No method field → None.
-        assert_eq!(
-            parse_jsonrpc_method(r#"{"jsonrpc":"2.0","id":1}"#),
-            None
-        );
+        assert_eq!(parse_jsonrpc_method(r#"{"jsonrpc":"2.0","id":1}"#), None);
         // Garbage → None (not a panic).
         assert_eq!(parse_jsonrpc_method("not json"), None);
     }
@@ -1055,6 +1046,9 @@ mod tests {
         }
         // The oldest entries were evicted — the first id in the
         // buffer is past the original first 10 inserts.
-        assert!(ids[0] > 1, "oldest entries should have been evicted: {ids:?}");
+        assert!(
+            ids[0] > 1,
+            "oldest entries should have been evicted: {ids:?}"
+        );
     }
 }

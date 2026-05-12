@@ -259,9 +259,7 @@ mod tests {
     fn large_vocabulary_memory_efficiency() {
         // Demonstrate that interned vocabulary uses less memory than Vec<String>
         // for 10k tokens with realistic duplication.
-        let words: Vec<String> = (0..1000)
-            .map(|i| format!("token_{i:04}"))
-            .collect();
+        let words: Vec<String> = (0..1000).map(|i| format!("token_{i:04}")).collect();
 
         // Simulate a corpus with heavy repetition: 10k token occurrences
         // drawn from 1000 unique tokens.

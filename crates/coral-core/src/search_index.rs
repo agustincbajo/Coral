@@ -84,10 +84,7 @@ impl SearchIndex {
                 *df.entry(t.to_string()).or_insert(0) += 1;
             }
 
-            docs.insert(
-                p.frontmatter.slug.clone(),
-                DocEntry { tf, doc_len },
-            );
+            docs.insert(p.frontmatter.slug.clone(), DocEntry { tf, doc_len });
         }
 
         let avgdl = if n_docs > 0 && total_len > 0 {
@@ -184,12 +181,11 @@ impl SearchIndex {
     /// Readers (incl. parallel `coral` processes) see either the OLD
     /// contents or the NEW contents, never garbage.
     pub fn save_index(&self, path: &Path) -> std::io::Result<()> {
-        let encoded = bincode::serialize(self).map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::Other, format!("bincode encode: {e}"))
-        })?;
+        let encoded = bincode::serialize(self)
+            .map_err(|e| std::io::Error::other(format!("bincode encode: {e}")))?;
         crate::atomic::atomic_write_bytes(path, &encoded).map_err(|e| match e {
             crate::error::CoralError::Io { source, .. } => source,
-            other => std::io::Error::new(std::io::ErrorKind::Other, other.to_string()),
+            other => std::io::Error::other(other.to_string()),
         })
     }
 
@@ -199,7 +195,10 @@ impl SearchIndex {
         let mut buf = Vec::new();
         file.read_to_end(&mut buf)?;
         bincode::deserialize(&buf).map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, format!("bincode decode: {e}"))
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("bincode decode: {e}"),
+            )
         })
     }
 
@@ -303,9 +302,9 @@ pub fn compute_content_hash(pages: &[Page]) -> String {
         // Length prefixes (u64-LE) frame each field so concatenation is
         // unambiguous — without them, ("ab", "c") and ("a", "bc") would
         // hash to the same bytes.
-        hasher.update(&(slug.len() as u64).to_le_bytes());
+        hasher.update((slug.len() as u64).to_le_bytes());
         hasher.update(slug.as_bytes());
-        hasher.update(&(body.len() as u64).to_le_bytes());
+        hasher.update((body.len() as u64).to_le_bytes());
         hasher.update(body.as_bytes());
     }
     format!("{:x}", hasher.finalize())
@@ -679,7 +678,8 @@ mod tests {
             h.len()
         );
         assert!(
-            h.chars().all(|c| c.is_ascii_hexdigit() && !c.is_uppercase()),
+            h.chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_uppercase()),
             "digest must be lowercase hex: {h}"
         );
     }

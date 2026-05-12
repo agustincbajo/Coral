@@ -197,10 +197,7 @@ pub fn generate_narrative(changes: &[PageDiff]) -> String {
         modified.len(),
     ));
     let net_sign = if net_chars >= 0 { "+" } else { "" };
-    out.push_str(&format!(
-        "- Net content: {}{} chars\n",
-        net_sign, net_chars
-    ));
+    out.push_str(&format!("- Net content: {}{} chars\n", net_sign, net_chars));
     let conf_sign = if total_conf_delta >= 0.0 { "+" } else { "" };
     out.push_str(&format!(
         "- Confidence trend: {}{:.2}\n",
@@ -321,14 +318,8 @@ mod tests {
             md.contains("## Modified (1)"),
             "missing Modified section: {md}"
         );
-        assert!(
-            md.contains("**new-feature**"),
-            "missing added slug: {md}"
-        );
-        assert!(
-            md.contains("**deprecated**"),
-            "missing removed slug: {md}"
-        );
+        assert!(md.contains("**new-feature**"), "missing added slug: {md}");
+        assert!(md.contains("**deprecated**"), "missing removed slug: {md}");
         assert!(
             md.contains("**core-module**"),
             "missing modified slug: {md}"
@@ -347,10 +338,7 @@ mod tests {
             md.contains("# Wiki change narrative"),
             "missing header: {md}"
         );
-        assert!(
-            md.contains("No pages changed."),
-            "missing empty note: {md}"
-        );
+        assert!(md.contains("No pages changed."), "missing empty note: {md}");
         assert!(
             !md.contains("## Added"),
             "should not have Added section: {md}"

@@ -115,8 +115,7 @@ where
 
 /// Load goldset from a JSON file.
 pub fn load_goldset(path: &std::path::Path) -> Result<Vec<GoldsetEntry>, String> {
-    let content =
-        std::fs::read_to_string(path).map_err(|e| format!("reading goldset: {e}"))?;
+    let content = std::fs::read_to_string(path).map_err(|e| format!("reading goldset: {e}"))?;
     serde_json::from_str(&content).map_err(|e| format!("parsing goldset JSON: {e}"))
 }
 

@@ -25,6 +25,12 @@ use std::time::Instant;
 
 pub struct EventRunner;
 
+impl Default for EventRunner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl EventRunner {
     pub fn new() -> Self {
         Self

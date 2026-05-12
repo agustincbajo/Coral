@@ -26,6 +26,12 @@ use std::time::Instant;
 
 pub struct ContractRunner;
 
+impl Default for ContractRunner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ContractRunner {
     pub fn new() -> Self {
         Self
@@ -49,18 +55,14 @@ impl TestRunner for ContractRunner {
             .get("url")
             .and_then(|v| v.as_str())
             .unwrap_or("http://localhost:8080");
-        let method = spec
-            .get("method")
-            .and_then(|v| v.as_str())
-            .unwrap_or("GET");
+        let method = spec.get("method").and_then(|v| v.as_str()).unwrap_or("GET");
         let expected_schema = spec.get("expected_schema");
 
         let mut evidence = Evidence::default();
 
         let status = if expected_schema.is_some() {
-            evidence.stdout_tail = Some(format!(
-                "contract_type=json_schema endpoint={method} {url}"
-            ));
+            evidence.stdout_tail =
+                Some(format!("contract_type=json_schema endpoint={method} {url}"));
             // v0.24: structural schema validation only.
             // v0.25+: live HTTP + JSON Schema assertion against running service.
             TestStatus::Skip {

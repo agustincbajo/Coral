@@ -15,6 +15,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useAuthStore } from "@/stores/auth";
+import { useToast } from "@/components/ui/toaster";
 
 interface TokenDialogProps {
   /** Optional controlled mode — if `open` is set, no internal trigger is shown. */
@@ -33,6 +34,7 @@ export function TokenDialog({
   const stored = useAuthStore((s) => s.token);
   const setToken = useAuthStore((s) => s.setToken);
   const clear = useAuthStore((s) => s.clear);
+  const toast = useToast();
   const [draft, setDraft] = useState(stored ?? "");
 
   return (
@@ -81,6 +83,10 @@ export function TokenDialog({
               onClick={() => {
                 clear();
                 setDraft("");
+                toast({
+                  title: t("auth.token_dialog.toast_cleared"),
+                  variant: "default",
+                });
               }}
             >
               {t("auth.token_dialog.clear")}
@@ -88,7 +94,17 @@ export function TokenDialog({
           </DialogClose>
           <DialogClose asChild>
             <Button
-              onClick={() => setToken(draft.trim() || null)}
+              onClick={() => {
+                const v = draft.trim() || null;
+                setToken(v);
+                if (v) {
+                  toast({
+                    title: t("auth.token_dialog.toast_saved"),
+                    description: t("auth.token_dialog.toast_saved_desc"),
+                    variant: "success",
+                  });
+                }
+              }}
               disabled={!draft.trim()}
             >
               {t("auth.token_dialog.save")}

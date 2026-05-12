@@ -254,9 +254,9 @@ pub fn run_with_runner(
             "json" => {
                 println!(
                     "{}",
-                    serde_json::to_string_pretty(
-                        &coral_core::governance::render_json(&violations)
-                    )?
+                    serde_json::to_string_pretty(&coral_core::governance::render_json(
+                        &violations
+                    ))?
                 );
             }
             _ => {
@@ -290,8 +290,9 @@ fn load_governance_policy(wiki_root: &Path) -> coral_core::governance::Governanc
     if let Ok(raw) = std::fs::read_to_string(&manifest_path) {
         if let Ok(table) = raw.parse::<toml::Table>() {
             if let Some(gov) = table.get("governance") {
-                if let Ok(policy) =
-                    gov.clone().try_into::<coral_core::governance::GovernancePolicy>()
+                if let Ok(policy) = gov
+                    .clone()
+                    .try_into::<coral_core::governance::GovernancePolicy>()
                 {
                     return policy;
                 }

@@ -377,9 +377,7 @@ impl WikiResourceProvider {
     fn render_coverage(&self) -> Option<String> {
         let coral_dir = self.project_root.join(".coral");
         if !coral_dir.exists() {
-            return Some(
-                serde_json::json!({"status": "no .coral/ directory"}).to_string(),
-            );
+            return Some(serde_json::json!({"status": "no .coral/ directory"}).to_string());
         }
         let coverage_path = coral_dir.join("coverage.json");
         if coverage_path.exists() {
@@ -649,7 +647,10 @@ mod tests {
             pages2.len(),
             2,
             "post-mark_dirty read must observe new page; got slugs {:?}",
-            pages2.iter().map(|p| &p.frontmatter.slug).collect::<Vec<_>>()
+            pages2
+                .iter()
+                .map(|p| &p.frontmatter.slug)
+                .collect::<Vec<_>>()
         );
     }
 

@@ -671,10 +671,7 @@ fn get_mcp_emits_sse_frame_for_pushed_notification() {
     let n = stream.read(&mut buf).expect("notification read");
     buf.truncate(n);
     let text = String::from_utf8_lossy(&buf);
-    assert!(
-        text.contains("data:"),
-        "expected SSE data frame: {text:?}"
-    );
+    assert!(text.contains("data:"), "expected SSE data frame: {text:?}");
     assert!(
         text.contains("notifications/resources/list_changed"),
         "SSE frame must carry the list_changed notification: {text:?}"

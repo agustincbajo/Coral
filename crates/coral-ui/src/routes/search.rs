@@ -88,7 +88,11 @@ mod tests {
     fn search_returns_envelope() {
         let tmp = TempDir::new().unwrap();
         write_page(tmp.path(), "alpha", "widgets and gadgets together");
-        write_page(tmp.path(), "beta", "completely different topic about plumbing");
+        write_page(
+            tmp.path(),
+            "beta",
+            "completely different topic about plumbing",
+        );
         let s = state(tmp.path().to_path_buf());
         let body = handle(&s, "q=widgets").unwrap();
         let v: serde_json::Value = serde_json::from_slice(&body).unwrap();

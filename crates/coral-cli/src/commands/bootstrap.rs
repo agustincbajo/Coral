@@ -264,10 +264,7 @@ pub fn run_from_symbols(args: BootstrapArgs, wiki_root: Option<&Path>) -> Result
         );
         for entry in &entries {
             println!("  - slug: {}", entry.slug);
-            println!(
-                "    type: {:?}",
-                entry.r#type.unwrap_or(PageType::Module)
-            );
+            println!("    type: {:?}", entry.r#type.unwrap_or(PageType::Module));
             println!("    confidence: 0.4");
             println!("    symbols: (see body)");
             println!();
@@ -414,8 +411,7 @@ fn module_key_for_symbol(sym: &Symbol, scan_dir: &Path) -> String {
 /// Convert a module key to a safe slug (lowercase, hyphens).
 fn module_key_to_slug(key: &str) -> String {
     key.to_lowercase()
-        .replace('_', "-")
-        .replace(' ', "-")
+        .replace(['_', ' '], "-")
         .chars()
         .filter(|c| c.is_alphanumeric() || *c == '-')
         .collect()
@@ -818,8 +814,7 @@ mod tests {
         );
 
         // Verify confidence in the frontmatter.
-        let auth_content =
-            std::fs::read_to_string(wiki.join("modules").join("auth.md")).unwrap();
+        let auth_content = std::fs::read_to_string(wiki.join("modules").join("auth.md")).unwrap();
         assert!(
             auth_content.contains("confidence: 0.4"),
             "auth page must have confidence 0.4: {auth_content}"

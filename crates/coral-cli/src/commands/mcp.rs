@@ -846,8 +846,8 @@ mod tests {
         // file. Total must equal n_threads * per_thread — no losses
         // due to rotation race.
         let active_content = std::fs::read_to_string(&active).unwrap_or_default();
-        let rolled_content = std::fs::read_to_string(coral_dir.join("audit.log.1"))
-            .unwrap_or_default();
+        let rolled_content =
+            std::fs::read_to_string(coral_dir.join("audit.log.1")).unwrap_or_default();
         let mut seen = 0usize;
         for t in 0..n_threads {
             for i in 0..per_thread {

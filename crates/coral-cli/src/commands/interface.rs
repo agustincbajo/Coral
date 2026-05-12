@@ -76,7 +76,8 @@ pub struct Notification {
 
 impl Notification {
     pub fn to_json(&self) -> String {
-        serde_json::to_string(self).unwrap_or_else(|_| format!("{{\"error\":\"serialize_failed\"}}"))
+        serde_json::to_string(self)
+            .unwrap_or_else(|_| "{\"error\":\"serialize_failed\"}".to_string())
     }
 
     pub fn to_text(&self) -> String {
@@ -206,8 +207,7 @@ fn is_debounced(ledger: &DebounceLedger, path: &Path) -> bool {
 fn scan_interface_pages(wiki_dir: &Path) -> Result<MtimeMap> {
     let mut map = MtimeMap::new();
 
-    let paths = coral_core::walk::list_page_paths(wiki_dir)
-        .context("listing wiki pages")?;
+    let paths = coral_core::walk::list_page_paths(wiki_dir).context("listing wiki pages")?;
 
     for path in paths {
         let content = match std::fs::read_to_string(&path) {
@@ -401,7 +401,12 @@ mod tests {
         write_page(root, "interfaces", "users-api", "interface");
 
         let map = scan_interface_pages(root).unwrap();
-        assert_eq!(map.len(), 2, "expected 2 interface pages, got {}", map.len());
+        assert_eq!(
+            map.len(),
+            2,
+            "expected 2 interface pages, got {}",
+            map.len()
+        );
 
         let slugs: Vec<&str> = map.values().map(|(_, s)| s.as_str()).collect();
         assert!(slugs.contains(&"payments-api"));

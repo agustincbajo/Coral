@@ -130,8 +130,7 @@ pub fn detect_regressions(
             if stats.p95 == 0 {
                 continue;
             }
-            let delta =
-                (current_ms as f64 - stats.p95 as f64) / stats.p95 as f64 * 100.0;
+            let delta = (current_ms as f64 - stats.p95 as f64) / stats.p95 as f64 * 100.0;
             let reg = PerfRegression {
                 case_id: case_id.clone(),
                 baseline_p95: stats.p95,

@@ -62,7 +62,10 @@ pub fn run_with_runner(
         .with_context(|| format!("reading pages from {}", root.display()))?;
     // Bi-temporal filter: when --at is set, only include pages valid at that time.
     let pages: Vec<coral_core::page::Page> = if let Some(ref at) = args.at {
-        all_pages.into_iter().filter(|p| p.frontmatter.is_valid_at(at)).collect()
+        all_pages
+            .into_iter()
+            .filter(|p| p.frontmatter.is_valid_at(at))
+            .collect()
     } else {
         all_pages
     };

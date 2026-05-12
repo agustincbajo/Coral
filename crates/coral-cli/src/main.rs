@@ -243,7 +243,9 @@ fn main() -> ExitCode {
         Cmd::Env(args) => commands::env::run(args, cli.wiki_root.as_deref()),
         // v0.30.0 audit cycle 5 B2: see `Cmd::Lint` above for the
         // exit-code contract this wrapper implements.
-        Cmd::Verify(args) => map_b2_internal_err(commands::verify::run(args, cli.wiki_root.as_deref())),
+        Cmd::Verify(args) => {
+            map_b2_internal_err(commands::verify::run(args, cli.wiki_root.as_deref()))
+        }
         Cmd::Test(args) => commands::test::run(args, cli.wiki_root.as_deref()),
         Cmd::Guarantee(args) => commands::guarantee::run(args, cli.wiki_root.as_deref()),
         Cmd::TestDiscover(args) => commands::test_discover::run(args, cli.wiki_root.as_deref()),
@@ -252,7 +254,9 @@ fn main() -> ExitCode {
         Cmd::ContextBuild(args) => commands::context_build::run(args, cli.wiki_root.as_deref()),
         // v0.30.0 audit cycle 5 B2: see `Cmd::Lint` above for the
         // exit-code contract this wrapper implements.
-        Cmd::Contract(args) => map_b2_internal_err(commands::contract::run(args, cli.wiki_root.as_deref())),
+        Cmd::Contract(args) => {
+            map_b2_internal_err(commands::contract::run(args, cli.wiki_root.as_deref()))
+        }
         Cmd::Session(args) => commands::session::run(args, cli.wiki_root.as_deref()),
         Cmd::Skill(args) => match args.command {
             SkillCmd::Build { output } => commands::skill::build(output),

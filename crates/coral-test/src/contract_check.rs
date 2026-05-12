@@ -81,10 +81,7 @@ pub enum FindingKind {
     },
     /// Consumer sends a request body but provider doesn't declare one
     /// (or vice versa).
-    RequestBodyDrift {
-        method: String,
-        path: String,
-    },
+    RequestBodyDrift { method: String, path: String },
 }
 
 impl ContractReport {
@@ -453,8 +450,7 @@ fn extract_from_yaml(path: &Path, refs: &mut Vec<EndpointReference>) -> TestResu
                     .and_then(|s| s.as_u64())
                     .map(|s| s as u16);
                 // v0.24: detect whether the step sends a request body.
-                let sends_body =
-                    step.get("body").is_some() || step.get("json").is_some();
+                let sends_body = step.get("body").is_some() || step.get("json").is_some();
                 refs.push(EndpointReference {
                     method,
                     path: path_str,

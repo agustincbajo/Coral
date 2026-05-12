@@ -147,9 +147,9 @@ pub struct WatcherHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ServerConfig;
     use crate::resources::WikiResourceProvider;
     use crate::server::{McpHandler, NoOpDispatcher};
-    use crate::ServerConfig;
     use std::fs;
     use std::sync::Arc;
 
@@ -207,7 +207,9 @@ mod tests {
         // Give the watcher time to detect the change.
         std::thread::sleep(Duration::from_millis(150));
 
-        let msg = rx.try_recv().expect("watcher must send notification on change");
+        let msg = rx
+            .try_recv()
+            .expect("watcher must send notification on change");
         assert_eq!(msg["method"], "notifications/resources/list_changed");
     }
 

@@ -1,10 +1,12 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import {
   SigmaContainer,
   useLoadGraph,
   useRegisterEvents,
   useSigma,
 } from "@react-sigma/core";
+import { useTranslation } from "react-i18next";
+import { Download } from "lucide-react";
 import Graph from "graphology";
 import forceAtlas2 from "graphology-layout-forceatlas2";
 import noverlap from "graphology-layout-noverlap";
@@ -13,6 +15,8 @@ import "@react-sigma/core/lib/style.css";
 import type { GraphPayload, PageType, Status } from "@/lib/types";
 import { STATUS_HEX } from "@/components/StatusBadge";
 import { useGraphStore } from "@/stores/graph";
+import { Button } from "@/components/ui/button";
+import { useToast } from "@/components/ui/toaster";
 
 // NOTE(coral-ui frontend): page-type palette mirrors PageTypeBadge tones
 // in saturated form so colour-by works in both modes.
@@ -139,6 +143,73 @@ function Events() {
   return null;
 }
 
+// Floating export button. Lives *inside* `<SigmaContainer>` so it has
+// access to the Sigma instance via `useSigma()`. Composites the WebGL
+// canvas + the labels canvas onto a single PNG via `toDataURL` and
+// triggers a same-tab download via a synthetic anchor click.
+function ExportButton() {
+  const { t } = useTranslation();
+  const sigma = useSigma();
+  const toast = useToast();
+  const onClick = useCallback(() => {
+    try {
+      const renderer = sigma.getCanvases();
+      // Layer order in Sigma v3: edges, nodes, labels, hovers, mouse.
+      // We composite onto a single offscreen canvas before serialising.
+      const sample = renderer.nodes ?? renderer.edges ?? renderer.labels;
+      if (!sample) return;
+      const w = sample.width;
+      const h = sample.height;
+      const out = document.createElement("canvas");
+      out.width = w;
+      out.height = h;
+      const ctx = out.getContext("2d");
+      if (!ctx) return;
+      // White background so dark-mode previews still produce a readable
+      // exported image; consumers can re-fill in image editors if they
+      // want transparency.
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, w, h);
+      for (const layer of ["edges", "nodes", "labels"] as const) {
+        const c = renderer[layer];
+        if (c) ctx.drawImage(c, 0, 0);
+      }
+      const url = out.toDataURL("image/png");
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `coral-graph-${new Date().toISOString().slice(0, 10)}.png`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      toast({
+        title: t("graph.toast.exported"),
+        description: a.download,
+        variant: "success",
+      });
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn("[Coral UI] export PNG failed:", e);
+      toast({
+        title: t("graph.toast.export_failed"),
+        description: e instanceof Error ? e.message : String(e),
+        variant: "error",
+      });
+    }
+  }, [sigma, toast, t]);
+  return (
+    <Button
+      size="sm"
+      variant="secondary"
+      onClick={onClick}
+      className="absolute right-2 top-2 z-10 shadow"
+      title={t("graph.controls.export_png")}
+    >
+      <Download className="h-4 w-4 mr-1" />
+      {t("graph.controls.export_png")}
+    </Button>
+  );
+}
+
 interface Props {
   payload: GraphPayload;
   height?: number;
@@ -151,7 +222,7 @@ export function GraphCanvas({ payload, height = 600 }: Props) {
     [payload],
   );
   return (
-    <div className="rounded-lg border overflow-hidden" style={{ height }}>
+    <div className="relative rounded-lg border overflow-hidden" style={{ height }}>
       <SigmaContainer
         key={key}
         style={{ height: "100%", width: "100%", background: "transparent" }}
@@ -163,6 +234,7 @@ export function GraphCanvas({ payload, height = 600 }: Props) {
       >
         <Loader payload={payload} />
         <Events />
+        <ExportButton />
       </SigmaContainer>
     </div>
   );

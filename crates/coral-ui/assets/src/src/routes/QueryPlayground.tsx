@@ -11,6 +11,7 @@ import { useQueryHistory, type QueryMode } from "@/stores/query";
 import { useAuthStore } from "@/stores/auth";
 import { getConfig } from "@/lib/config";
 import { cn } from "@/lib/utils";
+import { useCurrentRepo } from "@/lib/repo";
 
 const MODES: QueryMode[] = ["local", "global", "hybrid"];
 
@@ -21,6 +22,7 @@ export function QueryPlayground() {
   const turns = useQueryHistory((s) => s.turns);
   const clear = useQueryHistory((s) => s.clear);
   const { send, streaming } = useQueryStream();
+  const repo = useCurrentRepo();
 
   const [draft, setDraft] = useState("");
   const [mode, setMode] = useState<QueryMode>("hybrid");
@@ -117,7 +119,7 @@ export function QueryPlayground() {
                           >
                             <span className="truncate">{s}</span>
                             <Link
-                              to={`/pages/default/${encodeURIComponent(s)}`}
+                              to={`/pages/${encodeURIComponent(repo)}/${encodeURIComponent(s)}`}
                               className="text-primary hover:underline shrink-0"
                             >
                               {t("query.open_in_pages")}

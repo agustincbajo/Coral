@@ -142,9 +142,8 @@ fn handle(state: &Arc<AppState>, request: Request) {
             return;
         }
     }
-    let token_required = path == "/api/v1/query"
-        || path.starts_with("/api/v1/tools/")
-        || state.token.is_some();
+    let token_required =
+        path == "/api/v1/query" || path.starts_with("/api/v1/tools/") || state.token.is_some();
     if token_required {
         if let Err(e) = crate::auth::require_bearer(state, &request) {
             let _ = request.respond(e.to_response());
@@ -253,12 +252,18 @@ fn open_browser(url: &str) -> std::io::Result<()> {
 
 #[cfg(target_os = "macos")]
 fn open_browser(url: &str) -> std::io::Result<()> {
-    std::process::Command::new("open").arg(url).spawn().map(|_| ())
+    std::process::Command::new("open")
+        .arg(url)
+        .spawn()
+        .map(|_| ())
 }
 
 #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
 fn open_browser(url: &str) -> std::io::Result<()> {
-    std::process::Command::new("xdg-open").arg(url).spawn().map(|_| ())
+    std::process::Command::new("xdg-open")
+        .arg(url)
+        .spawn()
+        .map(|_| ())
 }
 
 /// Probes PATH for the `claude` (or `claude.exe`) binary. Used at
@@ -273,7 +278,11 @@ fn claude_binary_present() -> bool {
     let Ok(path_env) = std::env::var("PATH") else {
         return false;
     };
-    let sep = if cfg!(target_os = "windows") { ';' } else { ':' };
+    let sep = if cfg!(target_os = "windows") {
+        ';'
+    } else {
+        ':'
+    };
     for dir in path_env.split(sep) {
         if dir.is_empty() {
             continue;

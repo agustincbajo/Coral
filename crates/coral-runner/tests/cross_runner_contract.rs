@@ -58,9 +58,13 @@
 //!    behavior. If either gains timeout support later, add the assert
 //!    back.
 
-use coral_runner::{
-    ClaudeRunner, GeminiRunner, HttpRunner, LocalRunner, MockRunner, Prompt, Runner, RunnerError,
-};
+use coral_runner::{HttpRunner, MockRunner, Prompt, Runner, RunnerError};
+// Unix-only runners (Claude/Gemini/Local) all spawn subprocesses, so the
+// streaming + zero-timeout legs of the contract are exercised against
+// `/bin/echo` / `/usr/bin/yes`-style fixtures that don't exist on Windows.
+#[cfg(unix)]
+use coral_runner::{ClaudeRunner, GeminiRunner, LocalRunner};
+#[cfg(unix)]
 use std::time::Duration;
 
 mod common;
@@ -88,6 +92,11 @@ fn assert_prompt_default_works<R: Runner>(runner: &R, _name: &str) {
 /// at least one chunk. Skipped when `run` itself errors (we'd never
 /// reach the chunk-emit path, which is fine — we only assert the
 /// invariant for the OK case).
+///
+/// Currently only exercised by the Unix-only Claude/Gemini/Local legs
+/// (they rely on `/bin/echo`). HttpRunner OK-path streaming is covered
+/// by `wiremock_http.rs`; MockRunner streaming by its own unit tests.
+#[cfg(unix)]
 fn assert_streaming_emits_chunk_on_ok<R: Runner>(runner: &R, prompt: &Prompt) {
     let mut chunks: Vec<String> = Vec::new();
     let res = runner.run_streaming(prompt, &mut |c| chunks.push(c.to_string()));

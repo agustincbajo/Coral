@@ -193,8 +193,17 @@ mod tests {
         let func_pos = a.find("\"function\"").expect("function present");
         let struct_pos = a.find("\"struct\"").expect("struct present");
         let trait_pos = a.find("\"trait\"").expect("trait present");
-        assert!(enum_pos < func_pos, "by_kind must be sorted (enum < function)");
-        assert!(func_pos < struct_pos, "by_kind must be sorted (function < struct)");
-        assert!(struct_pos < trait_pos, "by_kind must be sorted (struct < trait)");
+        assert!(
+            enum_pos < func_pos,
+            "by_kind must be sorted (enum < function)"
+        );
+        assert!(
+            func_pos < struct_pos,
+            "by_kind must be sorted (function < struct)"
+        );
+        assert!(
+            struct_pos < trait_pos,
+            "by_kind must be sorted (struct < trait)"
+        );
     }
 }

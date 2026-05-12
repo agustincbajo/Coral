@@ -338,7 +338,13 @@ pub(crate) fn slug_from_pdf(path: &Path) -> String {
     // Normalize: lowercase, replace non-alphanumeric with hyphens, collapse.
     let normalized: String = stem
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c.to_ascii_lowercase() } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
         .collect();
     // Collapse consecutive hyphens and trim leading/trailing hyphens.
     let collapsed = normalized
@@ -375,11 +381,7 @@ fn extract_pdf_text(pdf_path: &Path) -> Option<String> {
 
 /// Ingest PDF files from `docs_dir` into the wiki as Reference pages.
 /// Returns (created_count, warnings).
-fn ingest_docs_pdfs(
-    docs_dir: &Path,
-    wiki_root: &Path,
-    head_sha: &str,
-) -> (usize, Vec<String>) {
+fn ingest_docs_pdfs(docs_dir: &Path, wiki_root: &Path, head_sha: &str) -> (usize, Vec<String>) {
     let mut created = 0usize;
     let mut warnings: Vec<String> = Vec::new();
 
@@ -411,7 +413,10 @@ fn ingest_docs_pdfs(
             })
             .collect(),
         Err(e) => {
-            warnings.push(format!("failed to read docs dir {}: {e}", docs_dir.display()));
+            warnings.push(format!(
+                "failed to read docs dir {}: {e}",
+                docs_dir.display()
+            ));
             return (created, warnings);
         }
     };
@@ -492,7 +497,10 @@ fn ingest_docs_pdfs(
         };
 
         if let Err(e) = page.write() {
-            warnings.push(format!("failed to write page for {}: {e}", pdf_path.display()));
+            warnings.push(format!(
+                "failed to write page for {}: {e}",
+                pdf_path.display()
+            ));
             continue;
         }
         created += 1;
@@ -741,17 +749,14 @@ mod tests {
             super::slug_from_pdf(Path::new("docs/UPPER_CASE.pdf")),
             "ref-upper_case"
         );
-        assert_eq!(
-            super::slug_from_pdf(Path::new("hello.pdf")),
-            "ref-hello"
-        );
+        assert_eq!(super::slug_from_pdf(Path::new("hello.pdf")), "ref-hello");
     }
 
     #[test]
     fn pdf_page_generation_correct_frontmatter() {
         // Simulate the page that ingest_docs_pdfs would create
         // by calling the internal helpers directly.
-        use super::{slug_from_pdf, PDF_MAX_CHARS};
+        use super::{PDF_MAX_CHARS, slug_from_pdf};
         use coral_core::frontmatter::{Confidence, Frontmatter, PageType, Status};
         use coral_core::page::Page;
         use std::collections::BTreeMap;

@@ -137,10 +137,7 @@ pub fn extract_from_dir(root: &Path, extensions: &[&str]) -> Vec<Symbol> {
 pub fn build_symbol_index(symbols: &[Symbol]) -> HashMap<String, Vec<&Symbol>> {
     let mut index: HashMap<String, Vec<&Symbol>> = HashMap::new();
     for sym in symbols {
-        index
-            .entry(sym.name.to_lowercase())
-            .or_default()
-            .push(sym);
+        index.entry(sym.name.to_lowercase()).or_default().push(sym);
     }
     index
 }
@@ -289,8 +286,7 @@ fn extract_typescript(content: &str, path: &Path) -> Vec<Symbol> {
 
 fn extract_python(content: &str, path: &Path) -> Vec<Symbol> {
     let re_def = Regex::new(r"(?m)^(def|class)\s+([A-Za-z_][A-Za-z0-9_]*)").expect("valid regex");
-    let re_const =
-        Regex::new(r"(?m)^([A-Z][A-Z0-9_]*)\s*=").expect("valid regex");
+    let re_const = Regex::new(r"(?m)^([A-Z][A-Z0-9_]*)\s*=").expect("valid regex");
 
     let mut symbols = Vec::new();
     for (line_idx, line) in content.lines().enumerate() {
@@ -644,11 +640,7 @@ func (c *Config) Validate() error {
 
         // Create some source files.
         fs::create_dir_all(root.join("src")).unwrap();
-        fs::write(
-            root.join("src/lib.rs"),
-            "pub fn hello() {}\n",
-        )
-        .unwrap();
+        fs::write(root.join("src/lib.rs"), "pub fn hello() {}\n").unwrap();
 
         // Create files in excluded directories.
         fs::create_dir_all(root.join("target/debug")).unwrap();
@@ -673,11 +665,7 @@ func (c *Config) Validate() error {
         .unwrap();
 
         fs::create_dir_all(root.join("vendor/lib")).unwrap();
-        fs::write(
-            root.join("vendor/lib/dep.go"),
-            "func vendored() {}\n",
-        )
-        .unwrap();
+        fs::write(root.join("vendor/lib/dep.go"), "func vendored() {}\n").unwrap();
 
         let symbols = extract_from_dir(root, &["rs", "ts", "go"]);
 

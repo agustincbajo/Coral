@@ -43,13 +43,13 @@ pub fn compute_coverage(project_root: &Path) -> TestResult<CoverageReport> {
     // Build a set of (method, path) pairs that have tests
     let tested_endpoints: BTreeSet<(String, String)> = existing_cases
         .iter()
-        .filter_map(|tc| extract_endpoint_from_case(tc))
+        .filter_map(extract_endpoint_from_case)
         .collect();
 
     // All unique endpoints from specs
     let all_endpoints: Vec<Endpoint> = discovered
         .iter()
-        .map(|d| endpoint_from_discovered(d))
+        .map(endpoint_from_discovered)
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
@@ -196,8 +196,7 @@ fn extract_endpoint_from_case(tc: &TestCase) -> Option<(String, String)> {
         }
     }
     // Also try the "openapi METHOD /path" pattern used by discover
-    if name.starts_with("openapi ") {
-        let rest = &name["openapi ".len()..];
+    if let Some(rest) = name.strip_prefix("openapi ") {
         let parts: Vec<&str> = rest.splitn(2, ' ').collect();
         if parts.len() == 2 {
             let method = parts[0].to_lowercase();
@@ -214,8 +213,7 @@ fn extract_endpoint_from_case(tc: &TestCase) -> Option<(String, String)> {
 fn endpoint_from_discovered(d: &DiscoveredCase) -> Endpoint {
     let name = &d.case.name;
     // Discovered case names follow "openapi METHOD /path"
-    let (method, path) = if name.starts_with("openapi ") {
-        let rest = &name["openapi ".len()..];
+    let (method, path) = if let Some(rest) = name.strip_prefix("openapi ") {
         let parts: Vec<&str> = rest.splitn(2, ' ').collect();
         if parts.len() == 2 {
             (parts[0].to_uppercase(), parts[1].to_string())

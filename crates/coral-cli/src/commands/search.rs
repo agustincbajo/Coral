@@ -93,8 +93,7 @@ fn run_eval(pages: &[coral_core::page::Page], args: &SearchArgs) -> Result<ExitC
         .as_ref()
         .context("--goldset <file> is required when --eval is set")?;
     let path = PathBuf::from(goldset_path);
-    let goldset =
-        eval::load_goldset(&path).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let goldset = eval::load_goldset(&path).map_err(|e| anyhow::anyhow!("{e}"))?;
 
     let k = args.limit;
     let algorithm = args.algorithm.clone();
@@ -110,8 +109,7 @@ fn run_eval(pages: &[coral_core::page::Page], args: &SearchArgs) -> Result<ExitC
     if args.format == "json" {
         println!(
             "{}",
-            serde_json::to_string_pretty(&report)
-                .context("serializing eval report")?
+            serde_json::to_string_pretty(&report).context("serializing eval report")?
         );
     } else {
         print!("{}", eval::render_markdown(&report));
@@ -174,7 +172,11 @@ fn build_embeddings_provider(args: &SearchArgs) -> Result<Box<dyn EmbeddingsProv
     }
 }
 
-fn run_tfidf(pages: &[coral_core::page::Page], args: &SearchArgs, wiki_root: &Path) -> Result<ExitCode> {
+fn run_tfidf(
+    pages: &[coral_core::page::Page],
+    args: &SearchArgs,
+    wiki_root: &Path,
+) -> Result<ExitCode> {
     let results = match args.algorithm.as_str() {
         "tfidf" => search::search(pages, &args.query, args.limit),
         "bm25" => coral_core::search_index::search_with_index(

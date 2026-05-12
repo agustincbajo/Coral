@@ -26,6 +26,12 @@ use std::time::Instant;
 
 pub struct BrowserRunner;
 
+impl Default for BrowserRunner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BrowserRunner {
     pub fn new() -> Self {
         Self
@@ -49,8 +55,10 @@ impl TestRunner for BrowserRunner {
         let url = match spec.get("url").and_then(|v| v.as_str()) {
             Some(u) => u,
             None => {
-                let mut evidence = Evidence::default();
-                evidence.stdout_tail = Some("missing required field: url".into());
+                let evidence = Evidence {
+                    stdout_tail: Some("missing required field: url".into()),
+                    ..Default::default()
+                };
                 let status = TestStatus::Fail {
                     reason: "browser spec missing required field: url".into(),
                 };
@@ -63,8 +71,10 @@ impl TestRunner for BrowserRunner {
         let script_path = match spec.get("script_path").and_then(|v| v.as_str()) {
             Some(s) => s,
             None => {
-                let mut evidence = Evidence::default();
-                evidence.stdout_tail = Some("missing required field: script_path".into());
+                let evidence = Evidence {
+                    stdout_tail: Some("missing required field: script_path".into()),
+                    ..Default::default()
+                };
                 let status = TestStatus::Fail {
                     reason: "browser spec missing required field: script_path".into(),
                 };
@@ -85,10 +95,10 @@ impl TestRunner for BrowserRunner {
 
         // Structural check: verify the script file exists.
         if !Path::new(script_path).exists() {
-            let mut evidence = Evidence::default();
-            evidence.stdout_tail = Some(format!(
-                "script_path={script_path} error=file_not_found"
-            ));
+            let evidence = Evidence {
+                stdout_tail: Some(format!("script_path={script_path} error=file_not_found")),
+                ..Default::default()
+            };
             let status = TestStatus::Fail {
                 reason: format!("playwright script not found: {script_path}"),
             };
@@ -98,10 +108,12 @@ impl TestRunner for BrowserRunner {
         }
 
         // All structural checks passed — report Skip (execution deferred).
-        let mut evidence = Evidence::default();
-        evidence.stdout_tail = Some(format!(
-            "url={url} script_path={script_path} expected_selector={expected_selector} timeout_ms={timeout_ms} validation=structural_only"
-        ));
+        let evidence = Evidence {
+            stdout_tail: Some(format!(
+                "url={url} script_path={script_path} expected_selector={expected_selector} timeout_ms={timeout_ms} validation=structural_only"
+            )),
+            ..Default::default()
+        };
 
         let status = TestStatus::Skip {
             reason: "browser runner: Playwright execution deferred to v0.26; tracked at https://github.com/agustincbajo/Coral#roadmap".into(),

@@ -555,8 +555,8 @@ mod tests {
     // Test 11: CLI arg parsing — budget flag
     #[test]
     fn mutants_cli_budget_flag() {
-        let parsed = ShimCli::try_parse_from(["test", "--budget", "15"])
-            .expect("parse with budget flag");
+        let parsed =
+            ShimCli::try_parse_from(["test", "--budget", "15"]).expect("parse with budget flag");
         assert_eq!(parsed.args.budget, Some(15));
 
         // Default: no budget

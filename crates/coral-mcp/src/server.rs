@@ -18,8 +18,8 @@ use crate::resources::ResourceProvider;
 use crate::tools::{ToolCatalog, ToolKind};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 /// MCP protocol version. Coral pins to the 2025-11-25 spec freeze;
 /// future bumps are coordinated via the spec's negotiation flow.
@@ -167,12 +167,10 @@ impl ToolDispatcher for ContractToolDispatcher {
             "list_interfaces" => {
                 let body = self.resources.read("coral://contracts");
                 match body {
-                    Some((json, _)) => {
-                        match serde_json::from_str::<serde_json::Value>(&json) {
-                            Ok(val) => ToolCallResult::Ok(val),
-                            Err(_) => ToolCallResult::Ok(serde_json::json!({"contracts": []})),
-                        }
-                    }
+                    Some((json, _)) => match serde_json::from_str::<serde_json::Value>(&json) {
+                        Ok(val) => ToolCallResult::Ok(val),
+                        Err(_) => ToolCallResult::Ok(serde_json::json!({"contracts": []})),
+                    },
                     None => ToolCallResult::Ok(serde_json::json!({"contracts": []})),
                 }
             }
@@ -190,13 +188,9 @@ impl ToolDispatcher for ContractToolDispatcher {
                         let path = entry.path();
                         if path.extension().and_then(|e| e.to_str()) == Some("json") {
                             if let Ok(raw) = std::fs::read_to_string(&path) {
-                                if let Ok(val) =
-                                    serde_json::from_str::<serde_json::Value>(&raw)
-                                {
+                                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&raw) {
                                     if let Some(repo) = repo_filter {
-                                        if val.get("repo").and_then(|r| r.as_str())
-                                            != Some(repo)
-                                        {
+                                        if val.get("repo").and_then(|r| r.as_str()) != Some(repo) {
                                             continue;
                                         }
                                     }
@@ -207,9 +201,7 @@ impl ToolDispatcher for ContractToolDispatcher {
                     }
                 }
                 if reports.is_empty() {
-                    ToolCallResult::Ok(
-                        serde_json::json!({"status": "no contract checks found"}),
-                    )
+                    ToolCallResult::Ok(serde_json::json!({"status": "no contract checks found"}))
                 } else {
                     ToolCallResult::Ok(serde_json::json!({"reports": reports}))
                 }
@@ -372,12 +364,9 @@ impl McpHandler {
         &self,
         params: &serde_json::Value,
     ) -> std::result::Result<serde_json::Value, HandlerError> {
-        let uri = params
-            .get("uri")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                HandlerError::InvalidParams("missing required parameter `uri`".to_string())
-            })?;
+        let uri = params.get("uri").and_then(|v| v.as_str()).ok_or_else(|| {
+            HandlerError::InvalidParams("missing required parameter `uri`".to_string())
+        })?;
         // v0.19.6 audit C1: forward the provider-supplied mimeType
         // instead of hardcoding `text/markdown`. Hardcoding was
         // silently mislabeling every JSON resource in the catalog
@@ -441,12 +430,9 @@ impl McpHandler {
         &self,
         params: &serde_json::Value,
     ) -> std::result::Result<serde_json::Value, HandlerError> {
-        let name = params
-            .get("name")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                HandlerError::InvalidParams("missing required parameter `name`".to_string())
-            })?;
+        let name = params.get("name").and_then(|v| v.as_str()).ok_or_else(|| {
+            HandlerError::InvalidParams("missing required parameter `name`".to_string())
+        })?;
         let args = params
             .get("arguments")
             .cloned()
@@ -511,12 +497,9 @@ impl McpHandler {
         &self,
         params: &serde_json::Value,
     ) -> std::result::Result<serde_json::Value, HandlerError> {
-        let name = params
-            .get("name")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                HandlerError::InvalidParams("missing required parameter `name`".to_string())
-            })?;
+        let name = params.get("name").and_then(|v| v.as_str()).ok_or_else(|| {
+            HandlerError::InvalidParams("missing required parameter `name`".to_string())
+        })?;
         let prompt = PromptCatalog::list()
             .into_iter()
             .find(|p| p.name == name)
@@ -547,12 +530,9 @@ impl McpHandler {
         &self,
         params: &serde_json::Value,
     ) -> std::result::Result<serde_json::Value, HandlerError> {
-        let uri = params
-            .get("uri")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                HandlerError::InvalidParams("missing required parameter `uri`".to_string())
-            })?;
+        let uri = params.get("uri").and_then(|v| v.as_str()).ok_or_else(|| {
+            HandlerError::InvalidParams("missing required parameter `uri`".to_string())
+        })?;
         self.subscriptions.lock().unwrap().insert(uri.to_string());
         Ok(serde_json::json!({}))
     }
@@ -561,12 +541,9 @@ impl McpHandler {
         &self,
         params: &serde_json::Value,
     ) -> std::result::Result<serde_json::Value, HandlerError> {
-        let uri = params
-            .get("uri")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                HandlerError::InvalidParams("missing required parameter `uri`".to_string())
-            })?;
+        let uri = params.get("uri").and_then(|v| v.as_str()).ok_or_else(|| {
+            HandlerError::InvalidParams("missing required parameter `uri`".to_string())
+        })?;
         self.subscriptions.lock().unwrap().remove(uri);
         Ok(serde_json::json!({}))
     }
@@ -583,12 +560,9 @@ impl McpHandler {
                 "unknown method: tasks/create (enable with allow_experimental_tasks)".to_string(),
             ));
         }
-        let name = params
-            .get("name")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                HandlerError::InvalidParams("missing required parameter `name`".to_string())
-            })?;
+        let name = params.get("name").and_then(|v| v.as_str()).ok_or_else(|| {
+            HandlerError::InvalidParams("missing required parameter `name`".to_string())
+        })?;
         let description = params
             .get("description")
             .and_then(|v| v.as_str())
@@ -662,8 +636,8 @@ impl McpHandler {
 }
 
 fn lookup_tool_kind(name: &str) -> Option<ToolKind> {
-    use std::sync::OnceLock;
     use ahash::AHashMap;
+    use std::sync::OnceLock;
 
     static TOOL_KIND_MAP: OnceLock<AHashMap<String, ToolKind>> = OnceLock::new();
     let map = TOOL_KIND_MAP.get_or_init(|| {
@@ -1314,7 +1288,9 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel();
         h.set_notification_sender(tx);
         h.notify_resources_list_changed();
-        let msg = rx.try_recv().expect("list_changed notification must be sent");
+        let msg = rx
+            .try_recv()
+            .expect("list_changed notification must be sent");
         assert_eq!(msg["method"], "notifications/resources/list_changed");
         assert_eq!(msg["jsonrpc"], "2.0");
     }
@@ -1396,9 +1372,9 @@ mod tests {
     /// and delegates unknown tools to inner.
     #[test]
     fn contract_tool_dispatcher_handles_list_interfaces() {
-        let resources = Arc::new(WikiResourceProvider::new(
-            std::path::PathBuf::from("/tmp/coral-mcp-tests-empty"),
-        ));
+        let resources = Arc::new(WikiResourceProvider::new(std::path::PathBuf::from(
+            "/tmp/coral-mcp-tests-empty",
+        )));
         let dispatcher = ContractToolDispatcher {
             inner: Arc::new(NoOpDispatcher),
             resources: resources.clone(),
@@ -1408,7 +1384,10 @@ mod tests {
         match result {
             ToolCallResult::Ok(val) => {
                 let contracts = val["contracts"].as_array().unwrap();
-                assert!(contracts.is_empty(), "empty wiki should yield zero contracts");
+                assert!(
+                    contracts.is_empty(),
+                    "empty wiki should yield zero contracts"
+                );
             }
             other => panic!("expected Ok, got: {other:?}"),
         }
@@ -1419,9 +1398,9 @@ mod tests {
     /// doesn't exist.
     #[test]
     fn contract_tool_dispatcher_handles_contract_status() {
-        let resources = Arc::new(WikiResourceProvider::new(
-            std::path::PathBuf::from("/tmp/coral-mcp-tests-empty"),
-        ));
+        let resources = Arc::new(WikiResourceProvider::new(std::path::PathBuf::from(
+            "/tmp/coral-mcp-tests-empty",
+        )));
         let dispatcher = ContractToolDispatcher {
             inner: Arc::new(NoOpDispatcher),
             resources: resources.clone(),
@@ -1440,9 +1419,9 @@ mod tests {
     /// the inner dispatcher.
     #[test]
     fn contract_tool_dispatcher_delegates_unknown() {
-        let resources = Arc::new(WikiResourceProvider::new(
-            std::path::PathBuf::from("/tmp/coral-mcp-tests-empty"),
-        ));
+        let resources = Arc::new(WikiResourceProvider::new(std::path::PathBuf::from(
+            "/tmp/coral-mcp-tests-empty",
+        )));
         let dispatcher = ContractToolDispatcher {
             inner: Arc::new(NoOpDispatcher),
             resources: resources.clone(),
@@ -1717,9 +1696,7 @@ mod tests {
             resp["result"]["isError"], true,
             "tool runtime error must set result.isError=true: {resp}"
         );
-        let text = resp["result"]["content"][0]["text"]
-            .as_str()
-            .unwrap_or("");
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap_or("");
         assert!(
             text.contains("tool blew up"),
             "result.content must carry the tool error message: {resp}"
