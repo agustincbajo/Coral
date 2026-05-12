@@ -43,6 +43,7 @@ pub mod wiki;
 pub mod bootstrap;
 pub mod consolidate;
 pub mod diff;
+pub mod doctor;
 pub mod ingest;
 pub mod onboard;
 pub mod plan;

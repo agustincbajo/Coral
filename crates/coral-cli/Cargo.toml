@@ -52,6 +52,13 @@ schemars = { workspace = true }
 # week 3). Optional via the `tty` feature in case downstream
 # packagers want a TTY-free build later — not gated for now.
 dialoguer = { workspace = true }
+# v0.34.0 onboarding (FR-ONB-27): synchronous 1-token ping to the
+# provider HTTP endpoint inside the `coral doctor --wizard` mini-
+# wizard. We verify the API key the user just pasted actually works
+# (HTTP 200) before persisting it to `.coral/config.toml`. `ureq`
+# is sync + small (~150 KB) so we avoid pulling tokio for what is
+# literally one POST per provider.
+ureq = { workspace = true }
 zip = { workspace = true }
 # v0.23.1: SIGINT/SIGTERM clean-shutdown plumbing for `coral monitor up`.
 signal-hook = { workspace = true }

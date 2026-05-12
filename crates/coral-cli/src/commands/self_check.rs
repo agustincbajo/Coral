@@ -295,7 +295,11 @@ pub fn run(args: SelfCheckArgs) -> Result<ExitCode> {
 /// Runs all probes against `cwd`. The `quick` flag toggles MCP/UI/
 /// update probes — wired as `None` when skipped so consumers can
 /// distinguish "skipped" from "ran and returned no data".
-fn run_probes(cwd: &Path, quick: bool) -> SelfCheck {
+///
+/// `pub(crate)` so `coral doctor` (week 3) can run the same probe
+/// pipeline without shelling out to `coral self-check --format=json`.
+/// Cheaper + lets the doctor surface fix commands inline.
+pub(crate) fn run_probes(cwd: &Path, quick: bool) -> SelfCheck {
     let coral_version = env!("CARGO_PKG_VERSION").to_string();
     let binary_path = std::env::current_exe().unwrap_or_default();
     let in_path = is_coral_in_path();
@@ -386,7 +390,10 @@ fn is_coral_in_path() -> bool {
 /// Returns the resolved absolute path to a binary on PATH, or `None`
 /// when not found. Implemented in-house so we don't take a dep on the
 /// `which` crate for a 20-line probe.
-fn which_in_path(exe_name: &str) -> Option<PathBuf> {
+///
+/// `pub(crate)` so the `coral doctor` mini-wizard (week 3) can reuse
+/// it for Ollama detection without duplicating the PATH walk.
+pub(crate) fn which_in_path(exe_name: &str) -> Option<PathBuf> {
     let path_var = std::env::var_os("PATH")?;
     for dir in std::env::split_paths(&path_var) {
         let candidate = dir.join(exe_name);

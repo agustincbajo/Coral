@@ -122,7 +122,7 @@ windows-sys = { version = "0.59", features = [
 # tokio into the tree. `ureq` is sync, ~150 KB, with `rustls`/`native-
 # tls` opt-in; we take the default rustls path. Pure-Rust TLS chain
 # avoids OpenSSL system-lib coupling on Linux distros.
-ureq = "2"
+ureq = { version = "2", features = ["json"] }
 # v0.34.0 onboarding (FR-ONB-27): interactive prompts for the provider
 # mini-wizard (`Select`, `Password`, `Confirm`). `dialoguer` is the
 # de facto Rust prompt crate (~80 KB) — terminal-only, no TUI

@@ -173,6 +173,14 @@ enum Cmd {
     /// JSON Schema is the contract; `--print-schema` emits it.
     #[command(name = "self-check")]
     SelfCheck(commands::self_check::SelfCheckArgs),
+    /// **v0.34.0** (FR-ONB-7, FR-ONB-27, FR-ONB-28): top-level
+    /// `coral doctor` — runs the self-check probes in-process and
+    /// prints a human-readable report; with `--wizard`, launches the
+    /// provider mini-wizard (Anthropic / Gemini / Ollama / claude
+    /// CLI). Distinct from `coral project doctor` which checks
+    /// multi-repo manifest health. The `/coral:coral-doctor` slash
+    /// command + `coral-doctor` skill both invoke this entry point.
+    Doctor(commands::doctor::DoctorArgs),
     /// **v0.34.0** (FR-ONB-26): patch `.claude/settings.json` so the
     /// Coral marketplace is auto-registered in Claude Code without
     /// requiring the 3-line paste flow. Called by `install.sh
@@ -322,6 +330,7 @@ fn main() -> ExitCode {
         Cmd::MigrateConsumers(args) => commands::migrate::run(args, cli.wiki_root.as_deref()),
         Cmd::Scaffold(args) => commands::scaffold::run(args, cli.wiki_root.as_deref()),
         Cmd::SelfCheck(args) => commands::self_check::run(args),
+        Cmd::Doctor(args) => commands::doctor::run(args),
         Cmd::SelfRegisterMarketplace(args) => commands::self_register_marketplace::run(args),
         Cmd::SelfUninstall(args) => commands::self_uninstall::run(args),
         Cmd::SelfGroup(args) => match args.command {
