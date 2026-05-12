@@ -64,7 +64,12 @@ jobs:
     # this passes on stable + MSRV, we can promise users that
     # `cargo install --locked --tag vX.Y.Z coral-cli` works on the
     # MSRV they read in the README.
-    name: Test (MSRV ${{ env.CORAL_MSRV }})
+    # NOTE: hard-coded to match `CORAL_MSRV` env above. GitHub Actions
+    # does NOT expand `env.X` inside the job-level `name:` field — only
+    # in `steps:`. v0.22.5 introduced this expression and the workflow
+    # parser silently 422-ed *every push event for 100+ runs* until it
+    # was fixed in v0.32.2 (commit history forensic).
+    name: Test (MSRV 1.85)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
