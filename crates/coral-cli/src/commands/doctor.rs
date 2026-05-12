@@ -116,9 +116,7 @@ fn print_human_report(report: &SelfCheck) {
             report.providers_available.join(", ")
         );
     } else {
-        println!(
-            "  no providers configured and none auto-detected — run `coral doctor --wizard`"
-        );
+        println!("  no providers configured and none auto-detected — run `coral doctor --wizard`");
     }
 
     if report.warnings.is_empty() && report.suggestions.is_empty() {
@@ -167,8 +165,8 @@ fn run_wizard(cwd: &Path) -> Result<ExitCode> {
         ));
     }
 
-    use dialoguer::theme::ColorfulTheme;
     use dialoguer::Select;
+    use dialoguer::theme::ColorfulTheme;
 
     let theme = ColorfulTheme::default();
     println!("Coral provider wizard — pick one path:");
@@ -261,7 +259,11 @@ fn wizard_gemini(cwd: &Path, theme: &dialoguer::theme::ColorfulTheme) -> Result<
 }
 
 fn wizard_ollama(cwd: &Path) -> Result<ExitCode> {
-    let ollama_exe = if cfg!(windows) { "ollama.exe" } else { "ollama" };
+    let ollama_exe = if cfg!(windows) {
+        "ollama.exe"
+    } else {
+        "ollama"
+    };
     let Some(_path) = self_check::which_in_path(ollama_exe) else {
         println!("`ollama` is not on PATH.");
         println!("Install Ollama: https://ollama.com");
@@ -322,9 +324,10 @@ pub(crate) fn ping_anthropic(api_key: &str) -> Result<()> {
     match resp {
         Ok(r) if r.status() == 200 => Ok(()),
         Ok(r) => Err(anyhow!("HTTP {} from api.anthropic.com", r.status())),
-        Err(ureq::Error::Status(code, _)) => {
-            Err(anyhow!("HTTP {} from api.anthropic.com (invalid key?)", code))
-        }
+        Err(ureq::Error::Status(code, _)) => Err(anyhow!(
+            "HTTP {} from api.anthropic.com (invalid key?)",
+            code
+        )),
         Err(e) => Err(anyhow!("network error: {e}")),
     }
 }
@@ -362,9 +365,13 @@ pub(crate) fn ping_gemini(api_key: &str) -> Result<()> {
 /// model name. We grep for an exact `name:tag` prefix because Ollama's
 /// table-format output puts the name in column 0.
 fn has_ollama_model(model: &str) -> bool {
-    let out = std::process::Command::new(if cfg!(windows) { "ollama.exe" } else { "ollama" })
-        .arg("list")
-        .output();
+    let out = std::process::Command::new(if cfg!(windows) {
+        "ollama.exe"
+    } else {
+        "ollama"
+    })
+    .arg("list")
+    .output();
     let Ok(out) = out else { return false };
     if !out.status.success() {
         return false;

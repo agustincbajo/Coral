@@ -38,7 +38,7 @@ fn full_lifecycle_with_mock_runner() {
     std::env::set_current_dir(&cwd).unwrap();
 
     // Step 1: init.
-    init::run(InitArgs { force: false }, Some(&wiki)).unwrap();
+    init::run(InitArgs { force: false, yes: false }, Some(&wiki)).unwrap();
     assert!(wiki.join("SCHEMA.md").exists());
     assert!(wiki.join("index.md").exists());
     assert!(wiki.join("log.md").exists());
@@ -192,7 +192,7 @@ fn lifecycle_init_idempotent_does_not_clobber_seeded_pages() {
     let cur = std::env::current_dir().unwrap();
     std::env::set_current_dir(&cwd).unwrap();
 
-    init::run(InitArgs { force: false }, Some(&wiki)).unwrap();
+    init::run(InitArgs { force: false, yes: false }, Some(&wiki)).unwrap();
     write_page(
         &wiki.join("modules/payments.md"),
         "payments",
@@ -203,7 +203,7 @@ fn lifecycle_init_idempotent_does_not_clobber_seeded_pages() {
     );
 
     // Re-run init — should be a no-op for the seeded page.
-    init::run(InitArgs { force: false }, Some(&wiki)).unwrap();
+    init::run(InitArgs { force: false, yes: false }, Some(&wiki)).unwrap();
     let body = std::fs::read_to_string(wiki.join("modules/payments.md")).unwrap();
     assert!(body.contains("Payments module."));
 
@@ -242,7 +242,7 @@ fn lifecycle_lint_json_format_emits_valid_json() {
     let cur = std::env::current_dir().unwrap();
     std::env::set_current_dir(&cwd).unwrap();
 
-    init::run(InitArgs { force: false }, Some(&wiki)).unwrap();
+    init::run(InitArgs { force: false, yes: false }, Some(&wiki)).unwrap();
     write_page(
         &wiki.join("modules/clean.md"),
         "clean",
