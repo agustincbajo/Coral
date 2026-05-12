@@ -53,6 +53,10 @@ pub struct SelfUpgradeArgs {
     pub version: Option<String>,
     /// Only check if an upgrade is available; don't download. Prints
     /// `update_available: vX.Y.Z` or `up_to_date` and exits.
+    ///
+    /// Hits `api.github.com` unauthenticated by default (60 req/hour
+    /// per IP). In CI matrices that share an egress IP, export
+    /// `GITHUB_TOKEN` (or `GH_TOKEN`) to lift the quota to 5000/hour.
     #[arg(long = "check-only")]
     pub check_only: bool,
 }
@@ -569,17 +573,57 @@ fn post_upgrade_verify(current_exe: &Path, tag: &str) -> Result<()> {
 // GitHub API: latest release tag
 // --------------------------------------------------------------------------
 
+/// Env vars consulted (in order) for an optional GitHub bearer token
+/// to attach to the `releases/latest` request. Authenticated calls get
+/// 5000 req/hour/IP vs. 60 unauthenticated — the smoke matrix on a
+/// shared CI egress can otherwise exhaust the quota and produce 403s.
+/// The value is the same shape `gh auth status` writes (`$GH_TOKEN`)
+/// and the same name GitHub Actions exposes by default (`$GITHUB_TOKEN`).
+const GITHUB_TOKEN_ENV_VARS: &[&str] = &["GITHUB_TOKEN", "GH_TOKEN"];
+
+/// Returns the first non-empty value among [`GITHUB_TOKEN_ENV_VARS`].
+/// Pure read — does not log the token under any circumstance (callers
+/// must be careful to never include the returned string in error/debug
+/// output).
+fn github_token_from_env() -> Option<String> {
+    for var in GITHUB_TOKEN_ENV_VARS {
+        if let Ok(v) = std::env::var(var) {
+            if !v.is_empty() {
+                return Some(v);
+            }
+        }
+    }
+    None
+}
+
 /// Fetches the `tag_name` from GitHub's `releases/latest` endpoint
 /// via `ureq`. Times out at 15s — this is on the user's critical
 /// path. Returns the raw tag string (e.g. `v0.34.1`).
+///
+/// If `$GITHUB_TOKEN` or `$GH_TOKEN` is set (typical in CI matrix
+/// runners that share an egress IP), the request is authenticated via
+/// `Authorization: Bearer <token>`. Authenticated calls have a 5000
+/// req/hour quota vs. 60 unauthenticated, which matters when the
+/// post-release smoke workflow runs 3 OS matrix legs back-to-back. The
+/// token itself is NEVER echoed to stdout, stderr, or in any error
+/// message — only its presence influences the call.
 pub(crate) fn fetch_latest_release_tag() -> Result<String> {
     let agent = ureq::AgentBuilder::new()
         .timeout(Duration::from_secs(15))
         .user_agent(concat!("coral-self-upgrade/", env!("CARGO_PKG_VERSION")))
         .build();
-    let resp = agent
+    let mut req = agent
         .get(RELEASES_API)
-        .set("accept", "application/vnd.github+json")
+        .set("accept", "application/vnd.github+json");
+    if let Some(token) = github_token_from_env() {
+        // The token MUST NOT appear in any subsequent log line. We hold
+        // it in a local that drops at end-of-function. The `set` call
+        // moves the value into `ureq::Request`'s internal header map
+        // which ureq treats as opaque (no debug-print of headers in
+        // its error path as of ureq 2.x).
+        req = req.set("authorization", &format!("Bearer {token}"));
+    }
+    let resp = req
         .call()
         .map_err(|e| anyhow!("HTTP GET {RELEASES_API} failed: {e}"))?;
     let body: serde_json::Value = resp
@@ -599,7 +643,55 @@ pub(crate) fn fetch_latest_release_tag() -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
     use tempfile::TempDir;
+
+    /// `github_token_from_env` mutates / reads process-global state.
+    /// Serialize tests that touch it so concurrent runs don't see each
+    /// other's env mutations.
+    static GH_TOKEN_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// RAII guard for a single env var. Captures the previous value on
+    /// construction and restores it on `Drop` (matches the pattern used
+    /// in `runner_helper::tests` — kept local here to avoid a cross-
+    /// module test-only dep).
+    struct EnvVarGuard {
+        key: &'static str,
+        prev: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let prev = std::env::var(key).ok();
+            // SAFETY: caller serializes env mutation via GH_TOKEN_ENV_LOCK.
+            unsafe {
+                std::env::set_var(key, value);
+            }
+            Self { key, prev }
+        }
+        fn unset(key: &'static str) -> Self {
+            let prev = std::env::var(key).ok();
+            // SAFETY: caller serializes env mutation via GH_TOKEN_ENV_LOCK.
+            unsafe {
+                std::env::remove_var(key);
+            }
+            Self { key, prev }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            // SAFETY: caller still holds GH_TOKEN_ENV_LOCK for the
+            // guard's full lifetime (the guard's scope is nested in
+            // the lock's scope at every call site).
+            unsafe {
+                match &self.prev {
+                    Some(v) => std::env::set_var(self.key, v),
+                    None => std::env::remove_var(self.key),
+                }
+            }
+        }
+    }
 
     /// `normalize_version` strips a single leading `v` and leaves
     /// non-prefixed inputs alone.
@@ -762,5 +854,75 @@ mod tests {
         // `cur` is unprefixed, target with leading v must still match.
         assert!(same_major(cur, &format!("v{cur}")));
         assert_eq!(normalize_version(&format!("v{cur}")), cur);
+    }
+
+    /// With both env vars unset, the helper returns `None` — the
+    /// request will go out unauthenticated (preserving the legacy
+    /// v0.33 behavior for users who haven't set up CI auth).
+    #[test]
+    fn github_token_from_env_none_when_both_unset() {
+        let _lock = GH_TOKEN_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let _g1 = EnvVarGuard::unset("GITHUB_TOKEN");
+        let _g2 = EnvVarGuard::unset("GH_TOKEN");
+        assert!(github_token_from_env().is_none());
+    }
+
+    /// `GITHUB_TOKEN` is preferred and surfaced verbatim.
+    #[test]
+    fn github_token_from_env_reads_github_token() {
+        let _lock = GH_TOKEN_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let _g1 = EnvVarGuard::set("GITHUB_TOKEN", "ghp_test_token_1");
+        let _g2 = EnvVarGuard::unset("GH_TOKEN");
+        assert_eq!(
+            github_token_from_env().as_deref(),
+            Some("ghp_test_token_1")
+        );
+    }
+
+    /// `GH_TOKEN` is the fallback when `GITHUB_TOKEN` is absent.
+    /// Matches `gh auth status` behavior so users who only have the
+    /// gh CLI configured still benefit from authenticated quota.
+    #[test]
+    fn github_token_from_env_falls_back_to_gh_token() {
+        let _lock = GH_TOKEN_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let _g1 = EnvVarGuard::unset("GITHUB_TOKEN");
+        let _g2 = EnvVarGuard::set("GH_TOKEN", "ghp_test_token_2");
+        assert_eq!(
+            github_token_from_env().as_deref(),
+            Some("ghp_test_token_2")
+        );
+    }
+
+    /// Empty-string env var is treated as unset — we must not send an
+    /// `Authorization: Bearer ` header (with no token), which GitHub
+    /// would reject with 401 instead of falling back to the
+    /// unauthenticated quota.
+    #[test]
+    fn github_token_from_env_treats_empty_as_unset() {
+        let _lock = GH_TOKEN_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let _g1 = EnvVarGuard::set("GITHUB_TOKEN", "");
+        let _g2 = EnvVarGuard::set("GH_TOKEN", "");
+        assert!(github_token_from_env().is_none());
+    }
+
+    /// `GITHUB_TOKEN` takes precedence over `GH_TOKEN` when both are
+    /// set — matches `gh`'s documented precedence so a user with both
+    /// configured gets the canonical Actions-shaped token.
+    #[test]
+    fn github_token_from_env_github_takes_precedence_over_gh() {
+        let _lock = GH_TOKEN_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let _g1 = EnvVarGuard::set("GITHUB_TOKEN", "primary");
+        let _g2 = EnvVarGuard::set("GH_TOKEN", "secondary");
+        assert_eq!(github_token_from_env().as_deref(), Some("primary"));
     }
 }

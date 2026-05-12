@@ -174,18 +174,21 @@ jobs:
 
       - name: Smoke `coral self-upgrade --check-only`
         shell: bash
+        env:
+          # v0.34.x: `coral self-upgrade` now reads $GITHUB_TOKEN /
+          # $GH_TOKEN and adds `Authorization: Bearer <token>` so the
+          # quota is 5000 req/hour authenticated vs. 60 unauthenticated.
+          # Threading the workflow-default GITHUB_TOKEN through means
+          # the three OS matrix legs sharing an egress IP no longer
+          # exhaust the budget during a release smoke.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -uo pipefail
-          # `--check-only` queries the unauthenticated GitHub releases
-          # endpoint (60 req/hour/IP). On smoke matrix the three OS
-          # runners can share an egress IP and burn the budget,
-          # surfacing as a 403. The smoke goal here is "binary runs
-          # end-to-end without panic"; transient API failures are
-          # surfaced as warnings rather than smoke failures. Tracked
-          # for v0.35: thread $GITHUB_TOKEN into self_upgrade's
-          # `ureq::AgentBuilder` so authenticated requests get the
-          # higher 5000 req/hour quota.
+          # The warning fallback is preserved as defence-in-depth: if
+          # GitHub API has a generic outage (5xx, DNS, etc.), the
+          # smoke goal "binary runs end-to-end without panic" is still
+          # satisfied even if the network call fails.
           if ! coral self-upgrade --check-only 2>/tmp/upgrade.err; then
             cat /tmp/upgrade.err
-            echo "::warning::coral self-upgrade --check-only exited non-zero (likely GitHub API 403 rate limit). Smoke step continues."
+            echo "::warning::coral self-upgrade --check-only exited non-zero (GitHub API unreachable or rate-limited). Smoke step continues."
           fi
