@@ -4,9 +4,22 @@ on:
   push:
     tags:
       - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build (e.g. v0.32.0). Required for manual dispatch.'
+        required: true
+        type: string
 
 permissions:
   contents: write
+
+# The release tag this run targets. For tag-push triggers,
+# `github.ref_name` is already the tag (e.g. `v0.32.0`). For
+# workflow_dispatch, the operator supplies it via input. Used in
+# artifact names and the checkout ref.
+env:
+  RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
 
 jobs:
   build:
@@ -25,6 +38,11 @@ jobs:
             target: x86_64-pc-windows-msvc
     steps:
       - uses: actions/checkout@v4
+        with:
+          # For workflow_dispatch with an explicit tag input, check out
+          # that tag's commit. Push-triggered runs implicitly check out
+          # the pushed ref, so the default works there.
+          ref: ${{ github.event.inputs.tag || github.ref }}
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -57,7 +75,7 @@ jobs:
         if: runner.os != 'Windows'
         run: |
           set -euo pipefail
-          NAME="coral-${{ github.ref_name }}-${{ matrix.target }}"
+          NAME="coral-${{ env.RELEASE_TAG }}-${{ matrix.target }}"
           mkdir -p dist/$NAME
           cp target/${{ matrix.target }}/release/coral dist/$NAME/
           cp README.md LICENSE dist/$NAME/
@@ -71,7 +89,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $Name = "coral-${{ github.ref_name }}-${{ matrix.target }}"
+          $Name = "coral-${{ env.RELEASE_TAG }}-${{ matrix.target }}"
           New-Item -ItemType Directory -Path "dist/$Name" -Force | Out-Null
           Copy-Item "target/${{ matrix.target }}/release/coral.exe" "dist/$Name/"
           Copy-Item "README.md" "dist/$Name/"
@@ -171,7 +189,7 @@ jobs:
       - name: Assemble bundle directory (all platforms)
         run: |
           set -euo pipefail
-          TAG="${{ github.ref_name }}"
+          TAG="${{ env.RELEASE_TAG }}"
           BUNDLE="bundle"
           TMP="$BUNDLE/_unpack"
           mkdir -p "$BUNDLE/server/linux" "$BUNDLE/server/darwin" "$BUNDLE/server/win32" "$TMP"
@@ -237,7 +255,7 @@ jobs:
           # `npx -y @anthropic-ai/mcpb pack <dir> <output>` is the documented
           # invocation. If the CLI changes name back to @anthropic-ai/dxt, swap
           # the package name; the format is identical.
-          OUT="coral-${{ github.ref_name }}.mcpb"
+          OUT="coral-${{ env.RELEASE_TAG }}.mcpb"
           if ! npx -y @anthropic-ai/mcpb pack bundle "$OUT"; then
             echo "Official packer failed or unavailable; falling back to manual zip."
             (cd bundle && zip -r "../$OUT" .)
