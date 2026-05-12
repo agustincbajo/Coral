@@ -124,7 +124,13 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          Add-Content $env:GITHUB_PATH "$env:USERPROFILE\.coral\bin"
+          # install.ps1 puts the binary in $env:LOCALAPPDATA\Coral\bin
+          # by default (see install.ps1 line 32: -InstallDir). Patches
+          # the user PATH for new sessions, but the current workflow
+          # shell needs an explicit GITHUB_PATH append to resolve
+          # `coral` in subsequent steps. Match the installer's default
+          # path exactly so smoke steps find the just-installed binary.
+          Add-Content $env:GITHUB_PATH "$env:LOCALAPPDATA\Coral\bin"
 
       - name: Smoke `coral --version`
         shell: bash
