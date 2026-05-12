@@ -14,7 +14,15 @@ description = "Karpathy-style LLM Wiki maintainer for Git repos"
 [workspace.dependencies]
 clap = { version = "4.5", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# v0.34.0 onboarding (FR-ONB-26): `preserve_order` keeps the user's key
+# ordering when we patch `.claude/settings.json` via `coral self
+# register-marketplace`. Without it, serde_json reorders keys
+# alphabetically on round-trip, which would surprise users dotfiles-
+# managing their Claude config. The feature pulls in `indexmap` as the
+# Map backing (~30 KB, already in the tree via other deps); no new
+# transitives. Pin lives here so every crate consuming `serde_json`
+# from the workspace agrees on the feature set.
+serde_json = { version = "1", features = ["preserve_order"] }
 serde_yaml_ng = "0.10"
 regex = "1"
 walkdir = "2"
@@ -87,6 +95,42 @@ bincode = "1"
 # subcommand. Single-purpose, pure-Rust, ~30 KB; no new transitives
 # beyond `unicase` (already in the tree via `idna`).
 mime_guess = "2"
+# v0.34.0 onboarding (FR-ONB-32): SHA-256 verification of the binary
+# downloaded by `coral self-upgrade`. We already pull `sha2` into
+# `coral-core` for the BM25 cache key; promoting to a workspace dep
+# centralizes the version pin so `coral-cli` and `coral-core` can't
+# drift apart. Single-purpose, pure-Rust, ~30 KB; transitive
+# `cpufeatures` + `digest` were already in the tree via the existing
+# coral-core dep — no net-new transitives.
+sha2 = "0.10"
+# v0.34.0 onboarding (FR-ONB-32 Windows path): direct bindings to
+# `MoveFileExW` (and friends) so `coral self-upgrade` can do the
+# rename-then-replace dance Windows requires for an in-use `.exe`
+# (Unix can rename atomically while the binary is mapped; Windows
+# returns `ERROR_SHARING_VIOLATION`). Pinned to the same feature
+# subset MoveFileEx needs — nothing wider. ~5 MB unpacked but only
+# the requested module trees compile in, and the `windows-targets`
+# transitive is already pulled in by `tempfile`'s Windows backend.
+windows-sys = { version = "0.59", features = [
+    "Win32_Storage_FileSystem",
+    "Win32_Foundation",
+] }
+# v0.34.0 onboarding (FR-ONB-27): tiny synchronous HTTP client for the
+# 1-token provider ping in the `coral-doctor` mini-wizard (verifies
+# the API key the user just pasted works before we persist it). We
+# need exactly one POST per provider — not worth dragging `reqwest` +
+# tokio into the tree. `ureq` is sync, ~150 KB, with `rustls`/`native-
+# tls` opt-in; we take the default rustls path. Pure-Rust TLS chain
+# avoids OpenSSL system-lib coupling on Linux distros.
+ureq = "2"
+# v0.34.0 onboarding (FR-ONB-27): interactive prompts for the provider
+# mini-wizard (`Select`, `Password`, `Confirm`). `dialoguer` is the
+# de facto Rust prompt crate (~80 KB) — terminal-only, no TUI
+# framework dragged in. Used exclusively by `coral self-uninstall`
+# (`Confirm`) and `coral-doctor` (`Select` + `Password`); falls back
+# gracefully when stdin is not a TTY (we refuse to prompt and require
+# an explicit `--yes` flag instead).
+dialoguer = "0.11"
 coral-core = { path = "crates/coral-core", version = "0.33.0" }
 coral-env = { path = "crates/coral-env", version = "0.33.0" }
 coral-lint = { path = "crates/coral-lint", version = "0.33.0" }
