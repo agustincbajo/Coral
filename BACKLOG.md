@@ -98,19 +98,56 @@ Cost: ~30 min per platform if a machine is available.
 
 ### 4. Playwright E2E in CI matrix (Linux + Windows)
 
+**Status v0.34.x:** STILL DEFERRED. Audit summary below.
+
 `crates/coral-ui/assets/src/e2e/` ships 14 Playwright tests across 5
 spec files (nav, pages, graph, query, manifest). They run locally
-against `coral ui serve --no-open --port 38400`.
+against `coral ui serve --no-open --port 38400` and exercise mostly
+static chrome (search inputs, table headers, banner copy, tab
+labels) — they do NOT require an LLM token or a populated wiki.
 
-A `.github/workflows/playwright-ci.yml.disabled` workflow exists but
-the `.disabled` suffix keeps it out of the active set. To enable:
+**Workflow status (v0.34.x audit):**
 
-1. Add a "fixture bootstrap" step that creates a wiki, ingests fake
-   pages, and spawns `coral ui serve` in the background.
-2. Run `npx playwright install --with-deps chromium` (Linux) /
-   `chromium firefox webkit` (Windows).
-3. `npm run test:e2e`.
-4. Rename `.disabled` → no suffix.
+`.github/workflows/playwright-ci.yml.disabled` exists with the
+scaffolding (checkout, node setup, cargo build, npm ci, playwright
+browser install, background `coral ui serve`, `npm run test:e2e`).
+The only TODO is the "Seed temp workspace" step — currently a
+`mkdir -p $RUNNER_TEMP/coral-e2e` placeholder with a comment.
+
+The minimal seed is now feasible because `coral init` (post FR-ONB-25)
+no longer needs interactive input — it just needs a git repo. A
+runnable fixture would be:
+
+```yaml
+- name: Seed temp workspace
+  shell: bash
+  run: |
+    mkdir -p "$RUNNER_TEMP/coral-e2e"
+    cd "$RUNNER_TEMP/coral-e2e"
+    git init --initial-branch=main --quiet
+    git config user.email t@e.com && git config user.name T
+    echo "# seed" > README.md && git add . && git commit -m init --quiet
+    "$GITHUB_WORKSPACE/target/debug/coral" init
+```
+
+That gets `.wiki/index.md`, `.wiki/SCHEMA.md`, `.wiki/log.md` written.
+For `/pages` to have any rows the seed would also need to drop a
+handful of `pages/*.md` with valid frontmatter — but most of the
+existing specs assert *chrome* (filters sidebar input, table
+headers, tab labels) which renders against an empty page set.
+
+**Why still deferred:** the existing Playwright suite has not been
+validated against a CI runner end-to-end and the failure mode of
+"works on local Chrome on Windows, fails headless Chromium on Linux"
+is a known frustration. Landing the workflow without a validation
+round-trip risks the maintainer waking up to red CI on every PR
+until someone tracks down a locale or timing nit.
+
+**Recommended next step (not landed v0.34.x):** rename the file to
+`playwright-ci.yml`, push to a feature branch (NOT main), iterate
+on the workflow_dispatch trigger until the suite goes green on a
+single runner, THEN merge. Estimated ~2 hours of CI round-trips
+(maintainer time, not engineering effort).
 
 Cost: ~2 hours for the fixture bootstrap + one round-trip to validate
 on actual Actions runners.
@@ -194,19 +231,54 @@ InvalidData → transparent rebuild).
 
 ### 8. Cross-module `coral_runner::test_script_lock()` proper serialiser
 
+**Status v0.34.x:** EVALUATED, NOT MIGRATED. Audit summary below.
+
 The current `pub fn test_script_lock() -> MutexGuard<'static, ()>` in
-`coral-runner/src/lib.rs` works *within a single test binary*, but
-cargo's parallelism across binaries (lib-test vs integration-test
-binaries) still races. The current workaround is
-`RUST_TEST_THREADS=1` in the CI Test (stable) and Coverage jobs.
+`coral-runner/src/lib.rs` works *within a single test binary*. Cargo
+runs distinct test binaries (`coral-runner` lib vs its `tests/`
+integration crate) as separate OS processes, so the in-process Mutex
+can't coordinate them. The CI workaround is `RUST_TEST_THREADS=1` in
+the `Test (stable)` and `Coverage` jobs, plus the lock for in-binary
+serialisation.
 
-A real fix would use file-locking (`fs4::FileExt::lock_exclusive`) on
-a well-known path, or a `serial_test`-style crate-attribute macro.
-The cost of the current workaround is ~20s extra wallclock on each
-CI run; if that ever matters, file-lock the spawn point in the
-`Runner` trait test fixtures.
+**Audit (v0.34.x):** searched the whole workspace for callsites that
+write a tempfile script + chmod +x + spawn it without holding the lock.
 
-Cost: ~3 hours to design + ~1 hour to implement.
+| Callsite                                    | Holds lock? | ETXTBSY risk?           |
+| ------------------------------------------- | ----------- | ----------------------- |
+| `coral-runner/src/runner.rs` (#[test])      | yes         | mitigated in-binary     |
+| `coral-runner/src/local.rs` (#[test])       | yes         | mitigated in-binary     |
+| `coral-runner/src/gemini.rs` (#[test])      | yes         | mitigated in-binary     |
+| `coral-runner/tests/streaming_*` (8 tests)  | yes         | mitigated in-binary     |
+| `coral-cli/tests/release_flow.rs`           | n/a         | none — pre-existing scripts on disk, no write-then-exec |
+| `coral-test`, `coral-cli/commands/test.rs`  | n/a         | no fork-exec on tempfile scripts |
+
+**Outcome:** every ETXTBSY-prone callsite is in `coral-runner` and
+already holds the lock. The "cross-binary race" the BACKLOG entry
+worried about is a paper risk: each test uses a fresh `tempfile::
+TempDir`, so distinct inodes mean ETXTBSY cannot fire cross-process
+even if both binaries run concurrently (the kernel checks per-inode
+write-fd refcounts, not per-cargo-binary). The `RUST_TEST_THREADS=1`
+workaround in CI is belt-and-suspenders, not load-bearing.
+
+**Migration cost vs benefit:** an `fs4::FileExt::lock_exclusive()` on
+`target/.coral-test-script.lock` would be ~30 LoC + edge-case work
+(Windows uses LockFileEx with mandatory locking semantics that differ
+from Linux's advisory `flock`; `fs4` papers this over but failure
+modes diverge). It would let us drop `RUST_TEST_THREADS=1` from CI
+saving ~20 s of wall-clock per run. Given the workaround is stable
+and the in-process lock already covers the real ETXTBSY race window,
+the migration is **not** scheduled for v0.35.
+
+**Decision trigger:** revisit if (a) we add a new crate that
+write-then-execs tempfile scripts outside `coral-runner` — in which
+case the lock genuinely needs to cross crate boundaries — or (b) CI
+wall-clock for `Test (stable)` becomes a measurable PR-cycle pain
+point (>2 min total). Until then: leave the existing
+in-process Mutex + `RUST_TEST_THREADS=1` workaround in place.
+
+Cost (if/when scheduled): ~3 hours to design (Windows semantics,
+poison recovery, well-known-path strategy) + ~1 hour to implement.
 
 ---
 
