@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Coral SessionStart hook — OS-aware dispatcher (FR-ONB-9).
+#
+# Claude Code invokes a single `command` per SessionStart hook entry, and
+# its config has no built-in OS matcher (verified vs `code.claude.com/
+# docs/en/hooks` 2026-05). On Windows, Claude Code runs hook commands
+# under its bundled Git Bash, so this wrapper executes under bash on all
+# three platforms — we just route to the PowerShell sibling when the
+# shell reports Windows.
+#
+# Decision rationale (see `.claude-plugin/README.md` "Hook resolution"
+# section): the alternative — listing two hook entries with disjoint
+# OS guards — works for Unix but Windows has no portable way to skip a
+# bash hook from JSON config. A single bash wrapper that dispatches is
+# the only path that keeps both manifests identical across platforms.
+#
+# Budget: this wrapper itself is ~5-10ms (one `[[ ... ]]` test + one
+# `exec`). The PRD §6.3 budget targets apply to the dispatched child.
+
+set -u
+
+# Resolve own directory so we find siblings regardless of CWD or how
+# Claude Code spawned us.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Detect Windows. Git Bash, MSYS2, and Cygwin all set OS=Windows_NT;
+# `uname -s` returns MINGW*/MSYS*/CYGWIN* — testing both is belt-and-
+# suspenders cheap.
+case "${OS:-}${OSTYPE:-}$(uname -s 2>/dev/null)" in
+  *Windows_NT*|*MINGW*|*MSYS*|*CYGWIN*|*msys*|*cygwin*)
+    # Windows → invoke PowerShell sibling. -NoProfile keeps startup fast;
+    # -ExecutionPolicy Bypass avoids hitting AllSigned/Restricted policies
+    # the user may have set globally.
+    exec powershell.exe -NoProfile -ExecutionPolicy Bypass \
+      -File "${SCRIPT_DIR}/on-session-start.ps1"
+    ;;
+  *)
+    # Linux/macOS → invoke bash sibling.
+    exec bash "${SCRIPT_DIR}/on-session-start.sh"
+    ;;
+esac

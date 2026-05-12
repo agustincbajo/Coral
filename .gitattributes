@@ -28,3 +28,12 @@ crates/coral-ui/assets/src/node_modules/** linguist-vendored=true
 # Lockfiles are generated artifacts but kept under VC for reproducibility.
 Cargo.lock linguist-generated=false
 crates/coral-ui/assets/src/package-lock.json linguist-generated=true
+
+# v0.34.0 FR-ONB-9: Claude Code SessionStart hook scripts. Forced LF on
+# every platform — the bash wrapper + .sh sibling depend on LF line
+# endings (CRLF breaks the `#!/usr/bin/env bash` shebang). The .ps1 is
+# tolerant of either but we pin LF for consistency with the rest of
+# the plugin payload.
+.claude-plugin/scripts/on-session-start text eol=lf
+.claude-plugin/scripts/on-session-start.sh text eol=lf
+.claude-plugin/scripts/on-session-start.ps1 text eol=lf

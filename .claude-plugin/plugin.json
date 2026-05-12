@@ -24,5 +24,18 @@
         "RUST_LOG": "coral_mcp=info"
       }
     }
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/on-session-start"
+          }
+        ]
+      }
+    ]
   }
 }
