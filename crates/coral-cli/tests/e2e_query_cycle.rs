@@ -22,7 +22,14 @@ fn query_cycle_with_mock_runner() {
     let cur = std::env::current_dir().unwrap();
     std::env::set_current_dir(tmp.path()).unwrap();
 
-    init::run(InitArgs { force: false, yes: false }, Some(&wiki)).unwrap();
+    init::run(
+        InitArgs {
+            force: false,
+            yes: false,
+        },
+        Some(&wiki),
+    )
+    .unwrap();
 
     // Seed two pages.
     let body = |slug: &str, ptype: &str, content: &str| {
@@ -85,7 +92,14 @@ fn query_propagates_runner_error() {
     let cur = std::env::current_dir().unwrap();
     std::env::set_current_dir(tmp.path()).unwrap();
 
-    init::run(InitArgs { force: false, yes: false }, Some(&wiki)).unwrap();
+    init::run(
+        InitArgs {
+            force: false,
+            yes: false,
+        },
+        Some(&wiki),
+    )
+    .unwrap();
     let runner = MockRunner::new();
     runner.push_err(coral_runner::RunnerError::NotFound);
 
