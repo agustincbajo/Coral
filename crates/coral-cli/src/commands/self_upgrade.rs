@@ -861,9 +861,7 @@ mod tests {
     /// v0.33 behavior for users who haven't set up CI auth).
     #[test]
     fn github_token_from_env_none_when_both_unset() {
-        let _lock = GH_TOKEN_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
+        let _lock = GH_TOKEN_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let _g1 = EnvVarGuard::unset("GITHUB_TOKEN");
         let _g2 = EnvVarGuard::unset("GH_TOKEN");
         assert!(github_token_from_env().is_none());
@@ -872,15 +870,10 @@ mod tests {
     /// `GITHUB_TOKEN` is preferred and surfaced verbatim.
     #[test]
     fn github_token_from_env_reads_github_token() {
-        let _lock = GH_TOKEN_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
+        let _lock = GH_TOKEN_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let _g1 = EnvVarGuard::set("GITHUB_TOKEN", "ghp_test_token_1");
         let _g2 = EnvVarGuard::unset("GH_TOKEN");
-        assert_eq!(
-            github_token_from_env().as_deref(),
-            Some("ghp_test_token_1")
-        );
+        assert_eq!(github_token_from_env().as_deref(), Some("ghp_test_token_1"));
     }
 
     /// `GH_TOKEN` is the fallback when `GITHUB_TOKEN` is absent.
@@ -888,15 +881,10 @@ mod tests {
     /// gh CLI configured still benefit from authenticated quota.
     #[test]
     fn github_token_from_env_falls_back_to_gh_token() {
-        let _lock = GH_TOKEN_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
+        let _lock = GH_TOKEN_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let _g1 = EnvVarGuard::unset("GITHUB_TOKEN");
         let _g2 = EnvVarGuard::set("GH_TOKEN", "ghp_test_token_2");
-        assert_eq!(
-            github_token_from_env().as_deref(),
-            Some("ghp_test_token_2")
-        );
+        assert_eq!(github_token_from_env().as_deref(), Some("ghp_test_token_2"));
     }
 
     /// Empty-string env var is treated as unset — we must not send an
@@ -905,9 +893,7 @@ mod tests {
     /// unauthenticated quota.
     #[test]
     fn github_token_from_env_treats_empty_as_unset() {
-        let _lock = GH_TOKEN_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
+        let _lock = GH_TOKEN_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let _g1 = EnvVarGuard::set("GITHUB_TOKEN", "");
         let _g2 = EnvVarGuard::set("GH_TOKEN", "");
         assert!(github_token_from_env().is_none());
@@ -918,9 +904,7 @@ mod tests {
     /// configured gets the canonical Actions-shaped token.
     #[test]
     fn github_token_from_env_github_takes_precedence_over_gh() {
-        let _lock = GH_TOKEN_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
+        let _lock = GH_TOKEN_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let _g1 = EnvVarGuard::set("GITHUB_TOKEN", "primary");
         let _g2 = EnvVarGuard::set("GH_TOKEN", "secondary");
         assert_eq!(github_token_from_env().as_deref(), Some("primary"));

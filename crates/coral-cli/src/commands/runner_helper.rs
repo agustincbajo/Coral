@@ -553,7 +553,10 @@ endpoint = "http://my-proxy.local/v1/chat/completions"
     #[test]
     fn resolve_http_endpoint_falls_through_on_malformed_config() {
         let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let _g1 = EnvVarGuard::set("CORAL_HTTP_ENDPOINT", "http://envfallback/v1/chat/completions");
+        let _g1 = EnvVarGuard::set(
+            "CORAL_HTTP_ENDPOINT",
+            "http://envfallback/v1/chat/completions",
+        );
         let _g2 = EnvVarGuard::unset("CORAL_HTTP_API_KEY");
 
         let tmp = tempfile::TempDir::new().unwrap();
