@@ -101,3 +101,10 @@ assert_cmd = { workspace = true }
 predicates = { workspace = true }
 insta = { version = "1", features = ["yaml", "filters"] }
 zip = { workspace = true }
+
+# v0.34.0 onboarding (FR-ONB-32 Windows path): `MoveFileExW` for the
+# rename-then-replace dance `coral self-upgrade` does on Windows
+# (the running .exe can't be overwritten directly while it executes).
+# cfg-gated to windows targets so other platforms don't pay for it.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true }

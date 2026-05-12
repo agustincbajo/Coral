@@ -193,6 +193,15 @@ enum Cmd {
     /// `/plugin uninstall coral@coral` in Claude Code.
     #[command(name = "self-uninstall")]
     SelfUninstall(commands::self_uninstall::SelfUninstallArgs),
+    /// **v0.34.0** (FR-ONB-32): in-place upgrade of the running
+    /// binary to the latest same-major release (default) or an
+    /// explicit `--version vX.Y.Z`. Unix uses atomic rename; Windows
+    /// uses `MoveFileExW` rename-then-replace (the running .exe is
+    /// renamed to `.old` and removed on next reboot). `--check-only`
+    /// reports availability without downloading. Major-bumps require
+    /// re-running install.sh (anti-feature AF-9).
+    #[command(name = "self-upgrade")]
+    SelfUpgrade(commands::self_upgrade::SelfUpgradeArgs),
     /// **v0.34.0**: `coral self <subcommand>` parent group, kept
     /// in sync with the top-level hyphenated forms above so install
     /// scripts and skills can use either spelling (PRD §6.1 +
@@ -248,6 +257,8 @@ enum SelfSubCmd {
     RegisterMarketplace(commands::self_register_marketplace::RegisterMarketplaceArgs),
     /// Mirror of top-level `coral self-uninstall`.
     Uninstall(commands::self_uninstall::SelfUninstallArgs),
+    /// Mirror of top-level `coral self-upgrade`.
+    Upgrade(commands::self_upgrade::SelfUpgradeArgs),
 }
 
 #[derive(Subcommand, Debug)]
@@ -333,10 +344,12 @@ fn main() -> ExitCode {
         Cmd::Doctor(args) => commands::doctor::run(args),
         Cmd::SelfRegisterMarketplace(args) => commands::self_register_marketplace::run(args),
         Cmd::SelfUninstall(args) => commands::self_uninstall::run(args),
+        Cmd::SelfUpgrade(args) => commands::self_upgrade::run(args),
         Cmd::SelfGroup(args) => match args.command {
             SelfSubCmd::Check(a) => commands::self_check::run(a),
             SelfSubCmd::RegisterMarketplace(a) => commands::self_register_marketplace::run(a),
             SelfSubCmd::Uninstall(a) => commands::self_uninstall::run(a),
+            SelfSubCmd::Upgrade(a) => commands::self_upgrade::run(a),
         },
         Cmd::TestLockIncr { path } => run_test_lock_incr(&path),
     };
