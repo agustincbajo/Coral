@@ -1,63 +1,308 @@
 # Install
 
+> Full reference for `coral`-binary install, plugin wiring, upgrade, and
+> uninstall. For the 60-second copy-paste onboarding, see
+> [`README.md` § Getting Started in 60 seconds](../README.md#getting-started-in-60-seconds).
+
 ## Prerequisites
 
-- **Rust** 1.85+ (stable). Install via [rustup](https://rustup.rs/).
-- **Git** 2.30+ (for `git diff --name-status` and `git rev-parse`).
-- **Claude Code CLI** (`claude` in `PATH`). Install via [claude.com/code](https://claude.com/code). Required only for the LLM-backed subcommands (`bootstrap`, `ingest`, `query`, `consolidate`, `onboard`, `lint --semantic`). Structural lint, init, sync, and stats work without it.
+- **Git** 2.30+ — `coral init` requires a git repo; `coral diff` and
+  `coral affected` shell out to `git`.
+- **Claude Code CLI** (`claude` on PATH) — required only for the LLM-backed
+  subcommands (`bootstrap`, `ingest`, `query`, `consolidate`, `onboard`,
+  `lint --semantic`). If you don't have it yet, `coral doctor --wizard`
+  walks you through the four supported provider paths (Anthropic API key,
+  Gemini, local Ollama, or installing the `claude` CLI). Structural lint,
+  `init`, `sync`, and `stats` work without it.
+- **Optional:** `docker compose` v2.22+ for the `coral up` / `coral env`
+  family. `podman compose` and `docker-compose` v1 are also detected.
+- **Build-from-source only:** Rust 1.85+ (stable) via [rustup](https://rustup.rs/).
 
-## Install Coral CLI
+## Linux & macOS — one-line installer
 
-### Option A — from a tagged release (recommended)
-
-```bash
-cargo install --locked --git https://github.com/agustincbajo/Coral --tag v0.1.0 coral-cli
-```
-
-### Option B — from main (latest)
-
-```bash
-cargo install --locked --git https://github.com/agustincbajo/Coral coral-cli
-```
-
-### Option C — from source
+The Bash installer fetches the right release tarball for your platform/arch,
+verifies the SHA-256, drops `coral` on `$PATH`, and prints the plugin
+paste-block (or skips it under `--with-claude-config`).
 
 ```bash
-git clone https://github.com/agustincbajo/Coral && cd Coral
-cargo install --locked --path crates/coral-cli
+curl -fsSL https://raw.githubusercontent.com/agustincbajo/Coral/main/scripts/install.sh | bash
 ```
 
-Verify:
+### Flags
+
+| Flag                          | Purpose                                                                                                                                                                                  |
+|-------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `--version vX.Y.Z`            | Pin to a specific release tag (skips the GitHub `releases/latest` API lookup; faster, deterministic).                                                                                    |
+| `--with-claude-config`        | After the binary lands, run `coral self-register-marketplace` to patch the project-scope `.claude/settings.json` so Claude Code already knows about the Coral marketplace (FR-ONB-26).   |
+| `--skip-plugin-instructions`  | Don't print or write the 3-paste-line snippet at the end. Use this in CI / Dockerfile installs where the plugin lines are noise.                                                         |
+| `--help` / `-h`               | Print the inline help block and exit.                                                                                                                                                    |
+
+Examples:
 
 ```bash
-coral --version    # coral 0.1.0
-coral --help
+# Pin a version.
+curl -fsSL .../install.sh | bash -s -- --version v0.34.0
+
+# Auto-register the marketplace into THIS repo's .claude/settings.json
+# (idempotent; atomic backup of any pre-existing file alongside).
+curl -fsSL .../install.sh | bash -s -- --with-claude-config
+
+# CI/Docker — quiet install, no stray paste-files.
+curl -fsSL .../install.sh | bash -s -- --skip-plugin-instructions
 ```
 
-## CI setup (GitHub Actions)
+### Install location
 
-For automated wiki maintenance in your consumer repo, you need:
+- Writes to `/usr/local/bin/coral` if it's writable; otherwise falls back
+  to `~/.local/bin/coral` and reminds you to put that directory on PATH.
+- Idempotent — re-running over the same release is a no-op.
 
-1. **Claude Code OAuth token** — generate once via `claude setup-token` on your machine.
-2. **GitHub secret** — add the token as `CLAUDE_CODE_OAUTH_TOKEN` at the **organization** level (so all consumer repos inherit it).
+### WSL2 note (FR-ONB-31)
 
-Then either:
+If `install.sh` detects WSL2 (`/proc/version` contains `microsoft`) it
+prints:
 
-- **Use the Coral composite actions** in your `.github/workflows/wiki.yml`:
-   ```yaml
-   - uses: agustincbajo/Coral/.github/actions/ingest@v0.1.0
-     with:
-       claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-   ```
+```
+Detected WSL2. Coral binary installed for Linux.
+  If you use Claude Code on Windows host (not in WSL),
+  install the Windows binary instead via install.ps1.
+```
 
-- **Or copy the workflow template** that `coral sync` lays at `template/workflows/wiki-maintenance.yml`.
+It does NOT abort — running `coral` inside WSL is a supported configuration.
+The warning is for users whose Claude Code lives on the Windows side.
 
-The Hermes quality gate (`/.github/actions/validate`) is **opt-in** — wire it up explicitly when you want an independent LLM to validate wiki PRs before merge. See [USAGE — CI: Hermes quality gate](./USAGE.md#ci-hermes-quality-gate).
+## Windows — one-line installer
+
+The PowerShell installer fetches the same release artifact, drops it under
+`%LOCALAPPDATA%\Coral\bin`, and prepends that directory to your user PATH if
+missing. Run from a regular PowerShell prompt (no admin needed):
+
+```powershell
+iwr -useb https://raw.githubusercontent.com/agustincbajo/Coral/main/scripts/install.ps1 | iex
+```
+
+To pass parameters, fetch the script first:
+
+```powershell
+$installer = (iwr -useb https://raw.githubusercontent.com/agustincbajo/Coral/main/scripts/install.ps1).Content
+& ([scriptblock]::Create($installer)) -Version v0.34.0 -WithClaudeConfig
+```
+
+### Parameters
+
+| Parameter             | Equivalent of                          |
+|-----------------------|----------------------------------------|
+| `-Version vX.Y.Z`     | `--version vX.Y.Z`                     |
+| `-WithClaudeConfig`   | `--with-claude-config`                 |
+| `-SkipPluginInstructions` | `--skip-plugin-instructions`       |
+| `-InstallDir <path>`  | Override the default `%LOCALAPPDATA%\Coral\bin` |
+
+### Windows Defender SmartScreen (FR-ONB-31)
+
+On a fresh Windows machine, the first run of `coral.exe` may be blocked by
+SmartScreen because Coral does not (yet) carry an Authenticode signature.
+The installer prints, in yellow:
+
+```
+Windows Defender SmartScreen may block coral.exe on first run.
+  If so: right-click coral.exe -> Properties -> check "Unblock" -> OK.
+  Code signing is on the roadmap for v0.35.
+```
+
+### PATH refresh (FR-ONB-31)
+
+A user-scope PATH update doesn't propagate to a shell that started **before**
+the install. The installer prints, in yellow:
+
+```
+PATH updated for new sessions. Open a NEW PowerShell window to use 'coral'
+  (current shell still has old PATH outside this script).
+```
+
+If you absolutely need it now, `refreshenv` (from Chocolatey's `chocolateyProfile`)
+or restarting the shell are the two options.
+
+## Manual install (pre-built tarball)
+
+Each tagged release ships pre-built binaries on the [Releases page](https://github.com/agustincbajo/Coral/releases):
+
+- Linux x86_64 → `coral-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz`
+- macOS Apple Silicon → `coral-vX.Y.Z-aarch64-apple-darwin.tar.gz`
+- macOS Intel → `coral-vX.Y.Z-x86_64-apple-darwin.tar.gz`
+- Windows MSVC → `coral-vX.Y.Z-x86_64-pc-windows-msvc.zip`
+
+Each artifact has a `.sha256` sidecar. Verify, extract, place `coral`
+(or `coral.exe`) on PATH:
+
+```bash
+VERSION=v0.34.0
+TARGET=aarch64-apple-darwin
+curl -L -o coral.tar.gz \
+  "https://github.com/agustincbajo/Coral/releases/download/${VERSION}/coral-${VERSION}-${TARGET}.tar.gz"
+shasum -a 256 -c coral.tar.gz.sha256
+tar -xzf coral.tar.gz
+sudo mv "coral-${VERSION}-${TARGET}/coral" /usr/local/bin/
+coral --version
+```
+
+## Build from source
+
+```bash
+git clone https://github.com/agustincbajo/Coral
+cd Coral
+cargo build --release
+./target/release/coral --version
+
+# Or via cargo install (idempotent; no clone needed):
+cargo install --locked --git https://github.com/agustincbajo/Coral --tag v0.34.0 coral-cli
+```
+
+Windows GNU toolchain users: see the [README "Windows — extra prereqs"
+section](../README.md#windows--extra-prereqs-before-cargo-build) for the
+MSVC vs MinGW-w64 setup notes.
+
+## Verification
+
+```bash
+coral --version            # coral 0.34.0
+coral self-check --quick   # < 100 ms; reports binary, providers, wiki, CLAUDE.md state
+```
+
+`coral self-check --format=json` emits the full diagnostic envelope. Its
+schema is a frozen contract (see [`docs/PRD-v0.34-onboarding.md` Appendix F](PRD-v0.34-onboarding.md#19-apéndice-f-selfcheck-json-schema-nuevo-en-v14--frozen-contract)).
+`coral self-check --print-schema` emits the matching JSON Schema for CI
+contract checks.
+
+## Plugin install (Claude Code)
+
+Inside Claude Code, paste these three lines (one at a time — Claude Code's
+prompt parser does NOT honor `&&` chains):
+
+```
+/plugin marketplace add agustincbajo/Coral
+/plugin install coral@coral
+/reload-plugins
+```
+
+…or skip this step entirely by passing `--with-claude-config` to the
+installer (Linux/macOS) / `-WithClaudeConfig` (Windows), which writes the
+same `extraKnownMarketplaces` entry to `.claude/settings.json` for you.
+
+## Upgrade
+
+```bash
+coral self-upgrade                    # default: latest same-major (v0.34.x -> v0.34.y)
+coral self-upgrade --check-only       # report-only; never mutate
+coral self-upgrade --version v0.34.2  # pin to a specific same-major release
+```
+
+- **Major bumps** (e.g. v0.34 → v0.35) require re-running the install
+  script explicitly. The deliberate friction is AF-9 of the PRD —
+  schemas may change across majors and the `self-upgrade` cannot prove
+  the on-disk state is forward-compatible. The error message tells you
+  the exact next command.
+- **Windows**: the binary is replaced via `MoveFileEx` rename-then-replace
+  (Windows can't overwrite a `.exe` while it's executing). Post-upgrade
+  message reminds you that the next invocation in a new shell will use the
+  upgraded binary; the old one is unlinked on next reboot if locked.
+- **Linux/macOS**: atomic rename of `coral.new` over `coral` (the running
+  process keeps its file-descriptor — the next invocation is the new
+  binary).
+- Post-upgrade runs `coral self-check` and reports success/fail with the
+  new binary path. The Claude Code plugin auto-updates via the marketplace
+  on the next `/reload-plugins`; `self-upgrade` does NOT touch it.
 
 ## Uninstall
 
 ```bash
-cargo uninstall coral-cli
-rm -rf .wiki/                      # if you want to discard the wiki
-rm -f .coral-template-version
+coral self-uninstall            # remove binary + ~/.coral/ (config + logs)
+coral self-uninstall --keep-data  # remove binary, keep ~/.coral/
 ```
+
+`self-uninstall` deliberately does NOT touch `.wiki/` inside a repo — that
+content belongs to your repo, not to the binary. After binary removal it
+prints:
+
+```
+Plugin still registered in Claude Code.
+Remove with: /plugin uninstall coral@coral
+```
+
+## Troubleshooting
+
+### "Plugin shows Errors in Claude Code"
+
+```bash
+coral self-check --full
+```
+
+The output names the failing probe and gives an actionable `action:`
+command. Most common: `coral` not on PATH, or `claude` CLI version mismatch.
+
+### "No provider configured" / wizard didn't run
+
+```bash
+coral doctor --wizard
+```
+
+Four interactive paths: Anthropic API key, Gemini API key, local Ollama
+endpoint, or installing the `claude` CLI. The wizard writes
+`.coral/config.toml` per repo (chmod 600 on Unix; FR-ONB-27 + PRD Appendix E).
+
+### "`coral bootstrap` is expensive on this repo"
+
+```bash
+coral bootstrap --estimate                          # see the upper-bound first
+coral bootstrap --apply --max-cost=5.00             # hard cap; aborts mid-flight if exceeded
+coral bootstrap --apply --max-cost=5.00 --resume    # resume from checkpoint after a cap hit
+coral bootstrap --apply --max-pages=50              # cap by page count, not USD
+```
+
+The checkpoint lives at `.wiki/.bootstrap-state.json` (gitignored by
+`coral init`; FR-ONB-34). `--resume` skips the planner call and re-tries
+every page that is NOT `Completed`.
+
+### "Windows: `coral.exe` blocked / silently fails to launch"
+
+See the [Windows Defender SmartScreen](#windows-defender-smartscreen-fr-onb-31)
+section above. Right-click → Properties → "Unblock" → OK. A second symptom
+is "command not found" in a shell that pre-dates the install — open a new
+PowerShell window.
+
+### "WSL2: which binary do I want?"
+
+If you use Claude Code **inside WSL**, the Linux binary (`install.sh`) is
+correct. If your Claude Code is on the Windows host and your project tree
+is mounted via `\\wsl$\`, install the Windows binary (`install.ps1`) instead.
+Mixing them works but is harder to reason about — pick one host.
+
+### "Bootstrap exit code 2 — what does that mean?"
+
+`coral bootstrap --apply` exits 2 (PRD FR-ONB-29) when `--max-cost` halted
+the run mid-flight with a partial checkpoint on disk. The exit is distinct
+from 0 (success), 1 (findings), or 3 (internal error) so CI can detect it.
+Run `coral bootstrap --resume` to continue.
+
+## CI setup (GitHub Actions)
+
+For automated wiki maintenance in your consumer repo:
+
+1. **Claude Code OAuth token** — generate once via `claude setup-token`.
+2. **GitHub secret** — add the token as `CLAUDE_CODE_OAUTH_TOKEN` at the
+   **organization** level so all consumer repos inherit it.
+
+Then either:
+
+- **Use the Coral composite actions** in your `.github/workflows/wiki.yml`:
+  ```yaml
+  - uses: agustincbajo/Coral/.github/actions/ingest@v0.34.0
+    with:
+      claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+  ```
+
+- **Or copy the workflow template** that `coral sync` lays at
+  `template/workflows/wiki-maintenance.yml`.
+
+The Hermes quality gate (`/.github/actions/validate`) is **opt-in** — wire
+it up explicitly when you want an independent LLM to validate wiki PRs
+before merge. See [USAGE — CI: Hermes quality gate](./USAGE.md#ci-hermes-quality-gate).

@@ -13,20 +13,74 @@ Coral is a Karpathy-style LLM wiki for your code, scaled to microservice-shaped 
 
 > *"The IDE is Claude Code. The programmer is you + the LLM. The wiki is the living memory of your codebase. Coral is the manifest that makes both intelligible across N repos."*
 
-### Try it in 60 seconds
+---
+
+## Getting Started in 60 seconds
+
+> *A short GIF showing the full flow (install → first prompt → routing → bootstrap → query) is shipped in a follow-up release commit; see [`docs/getting-started.gif.placeholder`](docs/getting-started.gif.placeholder) for the storyboard. Until then, the two paste-blocks below are the canonical onboarding contract (PRD v1.4 §16 DoD #14).*
+
+### The fast path — one line + zero pastes (`--with-claude-config`)
 
 ```bash
-# Install (Linux/macOS — Windows prereqs below)
-cargo install --locked --git https://github.com/agustincbajo/Coral --tag v0.33.0 coral-cli
+# 1. Install the Coral binary AND register the marketplace in this project.
+curl -fsSL https://raw.githubusercontent.com/agustincbajo/Coral/main/scripts/install.sh \
+  | bash -s -- --with-claude-config
 
-# Scaffold a wiki in any git repo
-cd /path/to/your/repo
-coral init
-coral bootstrap --apply   # one-time LLM compile of .wiki/ — needs `claude` on $PATH
+# 2. Open Claude Code in this repo. Type anything ("hi", "set up coral",
+#    "where do I start?"). Coral's CLAUDE.md routes Claude to suggest
+#    the right next step (bootstrap, doctor, or a query).
+```
+
+On Windows:
+
+```powershell
+# Run from PowerShell — pins the binary under %LOCALAPPDATA%\Coral\bin.
+iwr -useb https://raw.githubusercontent.com/agustincbajo/Coral/main/scripts/install.ps1 `
+  | iex
+# Then `coral self-register-marketplace` from inside the target repo.
+```
+
+### The default path — 3 paste lines
+
+```bash
+# 1. Install the Coral binary (no Claude Code config patch).
+curl -fsSL https://raw.githubusercontent.com/agustincbajo/Coral/main/scripts/install.sh | bash
+
+# 2. Paste these 3 lines into Claude Code (one at a time, `&&` chains
+#    don't work in Claude Code's prompt parser):
+/plugin marketplace add agustincbajo/Coral
+/plugin install coral@coral
+/reload-plugins
+
+# 3. Type anything in Claude Code. CLAUDE.md + the SessionStart hook
+#    route Claude from there.
+```
+
+### What happens next
+
+1. The `SessionStart` hook runs `coral self-check --quick --format=json` and reports your repo state to Claude (silent, < 100 ms p95).
+2. Claude's first response — to **any** prompt — follows the routing block in `CLAUDE.md`:
+   - No `.wiki/` yet? → suggests `/coral:coral-bootstrap` (cost-confirmed).
+   - No LLM provider configured? → suggests `/coral:coral-doctor` (4-path mini-wizard).
+   - All set? → answers from your wiki via MCP.
+3. **Deterministic fallback**: if Claude doesn't suggest anything, type `/coral:coral-doctor`. That slash command has `disable-model-invocation: true`, so it always runs without spending tokens.
+
+### Don't have Claude Code yet?
+
+You can drive the same onboarding from your shell:
+
+```bash
+coral doctor --wizard      # 4-path provider mini-wizard
+                           # (Anthropic API key / Gemini / Ollama / install claude CLI)
+coral init                 # scaffolds .wiki/ + writes CLAUDE.md routing + updates .gitignore
+coral bootstrap --estimate # see the upper-bound cost first
+coral bootstrap --apply --max-cost=5.00
 coral query "how does authentication work?"
 ```
 
-That's the single-repo flow. Multi-repo, environments, tests, MCP, and session-distill all build on the same `coral` binary — see the [Quickstart](#quickstart) section below.
+For the full install reference (flags, troubleshooting, uninstall, upgrade) see [`docs/INSTALL.md`](docs/INSTALL.md).
+
+---
 
 ### Use it from Claude Code in one command
 
@@ -46,6 +100,7 @@ Prereq: you still need the `coral` binary on `$PATH` first — install it via th
 ## Table of contents
 
 **Getting started**
+- [Getting Started in 60 seconds](#getting-started-in-60-seconds) (fast path + default 3-paste path)
 - [What you get](#what-you-get) · [Why Coral](#why-coral) · [Install](#install)
 - [Quickstart](#quickstart) (single-repo, multi-repo, environments+tests, MCP server, session-distill)
 
