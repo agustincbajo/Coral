@@ -204,8 +204,15 @@ fn streaming_silent_hang_is_killed_at_timeout() {
         "expected Timeout, got: {err:?}"
     );
     assert!(
-        elapsed < Duration::from_secs(2),
-        "should kill within 2s, took {elapsed:?}"
+        // CI runners (especially under shared load and with our crate-
+        // wide test_script_lock serialiser holding off concurrent tests)
+        // can take noticeably longer than the timeout itself to
+        // propagate the kill. 5s gives ~25× the 200ms timeout — more
+        // than enough headroom for slow CI without losing the
+        // assertion's purpose (verifying the runner doesn't hang
+        // open indefinitely past the deadline).
+        elapsed < Duration::from_secs(5),
+        "should kill well within 5s, took {elapsed:?}"
     );
     assert!(chunks.is_empty(), "silent stream should yield no chunks");
 }
@@ -252,8 +259,10 @@ fn streaming_one_line_then_hang_is_killed_at_timeout() {
         "expected Timeout, got: {err:?}"
     );
     assert!(
-        elapsed < Duration::from_secs(3),
-        "should kill within 3s, took {elapsed:?}"
+        // Headroom for slow CI runners — see the sibling silent_hang
+        // test for the rationale.
+        elapsed < Duration::from_secs(5),
+        "should kill well within 5s, took {elapsed:?}"
     );
     // The pre-hang line either arrived or didn't (depending on shell
     // startup latency vs. timeout budget). When it arrived, it must

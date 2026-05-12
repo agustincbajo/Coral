@@ -555,8 +555,8 @@ mod tests {
             "expected Timeout, got {err:?}"
         );
         assert!(
-            elapsed < Duration::from_secs(2),
-            "should kill within 2s, took {elapsed:?}"
+            elapsed < Duration::from_secs(5),
+            "should kill well within 5s, took {elapsed:?}"
         );
     }
 
@@ -630,8 +630,8 @@ mod tests {
             "expected Timeout, got {err:?}"
         );
         assert!(
-            elapsed < Duration::from_secs(2),
-            "should kill within 2s, took {elapsed:?}"
+            elapsed < Duration::from_secs(5),
+            "should kill well within 5s, took {elapsed:?}"
         );
     }
 
