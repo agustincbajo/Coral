@@ -140,6 +140,12 @@
     "stats": {
       "nodes": "{{count}} nodes",
       "edges": "{{count}} edges"
+    },
+    "fallback": {
+      "no_webgl2_title": "Graph view requires WebGL 2",
+      "no_webgl2_body": "This browser or hardware-acceleration setup does not expose WebGL 2, which the Sigma renderer needs. The other views (Pages, Query, Manifest) work normally. To enable: turn hardware acceleration back on in your browser, update graphics drivers, or open Coral in a modern desktop Chrome / Firefox.",
+      "render_error_title": "The graph crashed while rendering",
+      "render_error_body": "Something went wrong inside the Sigma canvas. The rest of the UI is unaffected. Check the browser console for details or reload the page."
     }
   },
   "query": {

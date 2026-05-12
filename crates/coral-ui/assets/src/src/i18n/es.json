@@ -140,6 +140,12 @@
     "stats": {
       "nodes": "{{count}} nodos",
       "edges": "{{count}} aristas"
+    },
+    "fallback": {
+      "no_webgl2_title": "La vista del grafo requiere WebGL 2",
+      "no_webgl2_body": "Este navegador o configuración de aceleración por hardware no expone WebGL 2, que el renderer de Sigma necesita. Las otras vistas (Pages, Query, Manifest) funcionan normalmente. Para habilitar: activá la aceleración por hardware en tu navegador, actualizá los drivers de GPU, o abrí Coral en un Chrome / Firefox de escritorio moderno.",
+      "render_error_title": "El grafo falló al renderizar",
+      "render_error_body": "Algo falló dentro del canvas de Sigma. El resto de la UI no se ve afectada. Revisá la consola del navegador para más detalles o recargá la página."
     }
   },
   "query": {

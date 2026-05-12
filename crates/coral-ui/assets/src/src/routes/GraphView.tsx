@@ -4,6 +4,11 @@ import { useTranslation } from "react-i18next";
 import { RefreshCw } from "lucide-react";
 import { useGraph } from "@/features/graph/useGraph";
 import { GraphCanvas } from "@/features/graph/GraphCanvas";
+import {
+  GraphErrorBoundary,
+  GraphFallback,
+  hasWebGL2,
+} from "@/features/graph/GraphErrorBoundary";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Slider } from "@/components/ui/slider";
@@ -223,7 +228,13 @@ export function GraphView() {
               </div>
             </div>
           ) : data && data.nodes.length > 0 ? (
-            <GraphCanvas key={layoutSeed} payload={data} />
+            hasWebGL2() ? (
+              <GraphErrorBoundary fallback={<GraphFallback reason="render-error" />}>
+                <GraphCanvas key={layoutSeed} payload={data} />
+              </GraphErrorBoundary>
+            ) : (
+              <GraphFallback reason="no-webgl2" />
+            )
           ) : (
             <div className="rounded-lg border p-12 text-center text-muted-foreground">
               {t("graph.empty")}
