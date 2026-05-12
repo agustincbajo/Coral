@@ -100,13 +100,23 @@ pub fn validate_origin(state: &AppState, request: &Request) -> Result<(), ApiErr
     if origin.is_empty() || origin == "null" {
         return Ok(());
     }
-    let bound = state.bind_origin();
-    let lo_127 = format!("http://127.0.0.1:{}", state.port);
-    let lo_name = format!("http://localhost:{}", state.port);
-    if origin.eq_ignore_ascii_case(&bound)
-        || origin.eq_ignore_ascii_case(&lo_127)
-        || origin.eq_ignore_ascii_case(&lo_name)
-    {
+    let accepted = state.accepted_origins();
+    // Loopback aliases that we always accept (both schemes), so a user
+    // who binds to `0.0.0.0` but accesses via `localhost` doesn't get
+    // a spurious 403. The Host header check (`validate_host`) is the
+    // hard fence against DNS-rebinding; Origin just rejects obvious
+    // cross-site requests.
+    let aliases = [
+        format!("http://127.0.0.1:{}", state.port),
+        format!("https://127.0.0.1:{}", state.port),
+        format!("http://localhost:{}", state.port),
+        format!("https://localhost:{}", state.port),
+    ];
+    let matches = accepted
+        .iter()
+        .chain(aliases.iter())
+        .any(|c| origin.eq_ignore_ascii_case(c));
+    if matches {
         Ok(())
     } else {
         Err(ApiError::InvalidOrigin)

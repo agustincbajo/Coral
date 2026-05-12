@@ -13,7 +13,9 @@ interface FrameHandler {
   onError: (id: string, message: string) => void;
 }
 
-function parseFrames(buf: string): { frames: { event: string; data: string }[]; rest: string } {
+// Exported for unit testing. Pure function over the SSE wire format,
+// so it's safe to exercise in isolation without a fetch mock.
+export function parseFrames(buf: string): { frames: { event: string; data: string }[]; rest: string } {
   // Frames are separated by double newlines (\n\n). Each frame is a list
   // of `key: value` lines.
   const frames: { event: string; data: string }[] = [];

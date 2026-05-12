@@ -26,6 +26,7 @@ import { ConfidenceBar } from "@/components/ConfidenceBar";
 import { usePageDetail } from "@/features/pages/usePageDetail";
 import { useGraphStore, type ColorBy, type Layout, type SizeBy } from "@/stores/graph";
 import { formatDate } from "@/lib/utils";
+import { useCurrentRepo } from "@/lib/repo";
 
 function dayToIso(day: number): string {
   return new Date(day * 86_400_000).toISOString();
@@ -258,7 +259,8 @@ function NodePreview({
   onClose: () => void;
 }) {
   const { t } = useTranslation();
-  const { data, isLoading } = usePageDetail("default", slug ?? undefined);
+  const repo = useCurrentRepo();
+  const { data, isLoading } = usePageDetail(repo, slug ?? undefined);
   if (!slug) return null;
 
   const fm = data?.frontmatter;

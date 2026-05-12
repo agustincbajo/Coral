@@ -66,13 +66,34 @@ apply.
 | Query      | `/query`               | LLM-backed playground over `/api/v1/query`. Streams via SSE. Cites slugs.                              |
 | Manifest   | `/manifest`            | Tabs for `coral.toml`, `coral.lock`, and stats                                                         |
 
-### Feature that's only here
+### Pages — filter and inspect
+
+![Pages view in English: filter sidebar with page-type, status, confidence range, repo, valid-at; table of 20 wiki pages with type, status, confidence bar, generated date, backlinks columns](assets/ui-pages-en.png)
+
+### Graph — bi-temporal scrub of wikilinks
+
+![Graph view: ForceAtlas2 layout of 20 nodes coloured by status (verified=green, reviewed=blue, others=grey), node size proportional to in-degree, valid-at slider docked above with "as of now" label](assets/ui-graph-en.png)
 
 The **bi-temporal slider** on the Graph view lets you scrub through
 time and see only the wiki pages that were valid at the chosen date.
 This uses the `valid_from` / `valid_to` / `superseded_by` frontmatter
 fields that Coral already records — every other RAG tool drops this
 on the floor.
+
+### Query — streaming LLM playground
+
+![Query playground: textarea with placeholder, Local/Global/Hybrid mode radio, explicit LLM cost warning banner, Clear history and Send buttons](assets/ui-query-en.png)
+
+### Manifest — live stats
+
+![Manifest view, Stats tab: 20 pages, 91% average confidence, 46 total backlinks, status distribution bars (verified 60%, reviewed 30%, draft 10%), page-type distribution (concept 40%, module 25%, entity 10%, others 5% each)](assets/ui-manifest-en.png)
+
+### Spanish locale
+
+i18n ships with full Spanish bundles. The locale switcher in the top-right
+defaults to the browser's `navigator.language` and persists in `localStorage`.
+
+![Pages view in Spanish: filter labels translated to "TIPO DE PÁGINA / ESTADO / RANGO DE CONFIANZA / REPOSITORIO / VIGENTE AL", status badges as "Verificado / Borrador / Revisado"](assets/ui-pages.png)
 
 ---
 

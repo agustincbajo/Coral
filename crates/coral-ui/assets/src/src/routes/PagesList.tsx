@@ -10,11 +10,13 @@ import { StatusBadge } from "@/components/StatusBadge";
 import { ConfidenceBar } from "@/components/ConfidenceBar";
 import { formatRelative } from "@/lib/utils";
 import { useFiltersStore } from "@/stores/filters";
+import { useCurrentRepo } from "@/lib/repo";
 
 export function PagesList() {
   const { t, i18n } = useTranslation();
   const { data, isLoading, isError, error, refetch } = usePages();
   const { page, pageSize, setPage } = useFiltersStore();
+  const repo = useCurrentRepo();
 
   const total = data?.meta.total ?? 0;
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
@@ -118,7 +120,7 @@ export function PagesList() {
                         <tr key={p.slug} className="border-t hover:bg-muted/50">
                           <td className="px-3 py-2">
                             <Link
-                              to={`/pages/default/${encodeURIComponent(p.slug)}`}
+                              to={`/pages/${encodeURIComponent(repo)}/${encodeURIComponent(p.slug)}`}
                               className="font-medium text-primary hover:underline"
                             >
                               {p.slug}

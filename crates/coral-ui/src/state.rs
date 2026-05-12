@@ -65,9 +65,16 @@ pub struct AppState {
 }
 
 impl AppState {
-    /// Returns the loopback origin string used to validate `Origin`
-    /// headers on POST requests, e.g. `http://127.0.0.1:3838`.
-    pub fn bind_origin(&self) -> String {
-        format!("http://{}:{}", self.bind, self.port)
+    /// Returns every `Origin` header value that should be accepted on
+    /// mutating requests. Both `http://` and `https://` schemes are
+    /// included so the same binary works behind a TLS-terminating
+    /// reverse proxy (which rewrites Origin to `https://...`) without
+    /// needing a `--scheme` flag. Same host/port enforcement still
+    /// applies — only the scheme is permissive.
+    pub fn accepted_origins(&self) -> [String; 2] {
+        [
+            format!("http://{}:{}", self.bind, self.port),
+            format!("https://{}:{}", self.bind, self.port),
+        ]
     }
 }

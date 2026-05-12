@@ -46,11 +46,23 @@ pub fn serve(config: ServeConfig) -> Result<()> {
         );
     }
 
-    // Build the default runner. We don't fail if this errors — the
-    // runner is only invoked on `/api/v1/query`, and the rest of the
-    // read-only surface should remain usable on a system without
-    // `claude` installed.
-    let runner: Option<Arc<dyn Runner>> = Some(Arc::new(ClaudeRunner::new()) as Arc<dyn Runner>);
+    // Build the default runner *only if* the `claude` binary is
+    // resolvable. We don't fail startup if it isn't — read-only routes
+    // stay usable on a system without Claude installed, and the
+    // `/api/v1/query` handler explicitly returns
+    // `LLM_NOT_CONFIGURED` when `state.runner` is `None`.
+    //
+    // PATH lookup is a cheap one-off `which`-style scan; we cache
+    // the result in `state.runner`, so subsequent /query calls don't
+    // re-probe the filesystem.
+    let runner: Option<Arc<dyn Runner>> = if claude_binary_present() {
+        Some(Arc::new(ClaudeRunner::new()) as Arc<dyn Runner>)
+    } else {
+        tracing::warn!(
+            "coral ui serve: `claude` binary not found in PATH — /api/v1/query will return LLM_NOT_CONFIGURED"
+        );
+        None
+    };
 
     let state = Arc::new(AppState {
         bind: config.bind.clone(),
@@ -247,4 +259,54 @@ fn open_browser(url: &str) -> std::io::Result<()> {
 #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
 fn open_browser(url: &str) -> std::io::Result<()> {
     std::process::Command::new("xdg-open").arg(url).spawn().map(|_| ())
+}
+
+/// Probes PATH for the `claude` (or `claude.exe`) binary. Used at
+/// startup to decide whether to build a default runner. Cheap: no
+/// process spawn, only filesystem stat per PATH entry.
+fn claude_binary_present() -> bool {
+    let binary_names: &[&str] = if cfg!(target_os = "windows") {
+        &["claude.exe", "claude.cmd", "claude.bat"]
+    } else {
+        &["claude"]
+    };
+    let Ok(path_env) = std::env::var("PATH") else {
+        return false;
+    };
+    let sep = if cfg!(target_os = "windows") { ';' } else { ':' };
+    for dir in path_env.split(sep) {
+        if dir.is_empty() {
+            continue;
+        }
+        for name in binary_names {
+            let candidate = std::path::Path::new(dir).join(name);
+            if candidate.is_file() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn claude_binary_present_does_not_panic_on_missing_path() {
+        // SAFETY: Test mutates PATH then restores. Acceptable in
+        // single-test isolation; production code reads PATH read-only.
+        // Note: env operations are unsafe in 2024 edition.
+        let original = std::env::var("PATH").ok();
+        unsafe {
+            std::env::remove_var("PATH");
+        }
+        let result = claude_binary_present();
+        if let Some(p) = original {
+            unsafe {
+                std::env::set_var("PATH", p);
+            }
+        }
+        assert!(!result, "missing PATH should report no claude binary");
+    }
 }

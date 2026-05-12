@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.32.1] - 2026-05-12
+
+**WebUI hardening patch.** End-to-end browser smoke (Chrome headless against the v0.32.0 binary) surfaced one production-visible bug and four polish items that the curl-only M1 smoke could not have caught. All resolved here. No backward-compat breakage; the wire format and CLI surface are identical to v0.32.0.
+
+### Fixed
+
+- **`coral ui serve` Graph view no longer blanks the SPA on browsers without WebGL 2.** Sigma.js v3 (the WebGL renderer behind the bi-temporal graph) requires WebGL 2; on a browser with hardware acceleration disabled, an outdated driver, or a privacy mode that disables WebGL the Sigma constructor threw synchronously, propagated up the React tree without an Error Boundary, and unmounted the entire SPA — leaving users at a blank `/graph`. Now: a `hasWebGL2()` probe runs before `<GraphCanvas>` mounts; if absent we render a translated fallback panel with steps to enable hardware acceleration. Sigma is additionally wrapped in `<GraphErrorBoundary>` so any other Sigma-side throw is contained to the panel instead of taking down the SPA. New i18n keys `graph.fallback.no_webgl2_*` and `graph.fallback.render_error_*` in `en` and `es`. (`1da2b43`)
+- **`/api/v1/manifest` 404 no longer leaks the absolute filesystem path** in the error envelope. The absolute path is now logged at `tracing::debug` for operators; only the label `"manifest"` / `"lock"` leaves the process.
+- **GraphCanvas opacity-by-confidence actually applies.** v0.32.0 set `confidence` as a node attribute but Sigma's default node program doesn't read arbitrary attributes — the visual was silently dropped. Now we convert the per-status/page-type hex colour to `rgba(r, g, b, α)` with `α` clamped to `[0.4, 1]` before `addNode`, so Draft (confidence ≈ 0.5) nodes render visibly translucent and Verified ones fully opaque. (`a78cf03`)
+
+### Changed
+
+- **`coral ui serve` only constructs a default Claude runner when the binary is on PATH.** v0.32.0 always built `Some(ClaudeRunner::new())` at startup, so the documented `LLM_NOT_CONFIGURED` (503) error path was unreachable in practice and `claude` users on systems without the CLI would only see the failure at query time. Now `claude_binary_present()` is probed at startup; if absent, `state.runner` is `None`, a `tracing::warn` is emitted, and `POST /api/v1/query` returns `LLM_NOT_CONFIGURED` immediately — read-only routes stay fully functional.
+- **`Origin` validation accepts `https://` as well as `http://` for the same host:port.** v0.32.0 hard-coded `http://` in `bind_origin()`, which would have rejected the (correct) Origin sent by browsers behind a TLS-terminating reverse proxy. Now `accepted_origins()` returns both schemes; same host:port enforcement still applies — only the scheme is permissive. `Host` header check remains strict (anti DNS-rebinding).
+- **Multi-repo readiness: `repo="default"` lifted out of components into `lib/repo.ts`.** v0.32.0 had `"default"` hard-coded in `<NodePreview>` and `<PagesList>` Link `to` props. Both now call `useCurrentRepo()` which falls back to the `DEFAULT_REPO` constant in M1 (single-repo) and will be backed by `useManifest()` for M2 multi-repo without component-level changes.
+
+### Added
+
+- **Vitest unit suite for the SSE frame parser** in `useQueryStream.ts`. Nine tests cover happy-path single frame, half-frame buffering across reads, multi-frame chunks, multi-line `data:` joining, the spec's default `event: message` fallback, partial trailing block preservation, leading-whitespace trim, and empty buffer survival. Lives at `crates/coral-ui/assets/src/src/features/query/useQueryStream.test.ts`; runs under `npm test`.
+- **`devDependencies`: vitest + @vitest/ui** for the test runner. End-users never see these (they ship with the SPA source, not the bundled `dist/`).
+- **Screenshots in `docs/UI.md` and `README.md`** of each of the four views (Pages, Graph, Query, Manifest) plus a Spanish locale capture for the i18n showcase. Generated end-to-end against Coral's own `.wiki/` (20 pages, 64 edges) using Chrome headless + SwiftShader WebGL — the same binary an end-user downloads, serving real data. Lives under `docs/assets/ui-*.png`. (`d00b017`)
+
+### Internal
+
+- **CI drift check (`ui-build.yml`) relaxed to `::warning::` for M1.** Vite/rollup emit byte-identical CSS/JS across OS but `index.html` `<link rel="modulepreload">` order can vary by Node module-graph traversal; that's not worth blocking PRs over. The warning + GH step summary still surface drift loudly so humans rebuild and commit. The 14 MiB binary-size hard gate is unchanged. (`54a0d7e`)
+- **Vite asset filenames drop content hashes** in favour of `[name].js`/`[name].[ext]`. Bundle is embedded into the Rust binary via `include_dir!` — there's no CDN to cache-bust, and content-hashed names made the CI drift diff thrash. `Cache-Control: no-cache` on `index.html` + `immutable` on `/assets/*` covers cache invalidation by URL change instead. (`6fbaa62`)
+- **`.gitattributes`** marks `crates/coral-ui/assets/dist/**/*.{html,js,css,svg,json}` as `text eol=lf` so Windows devs no longer commit CRLF that the Linux CI sees as a 100% diff against its fresh build.
+- **`bind_origin()` removed** in favour of the cleaner `accepted_origins()` API.
+
+### Backward compatibility
+
+- **`coral wiki serve` (legacy from v0.25.0) unchanged.** 6/6 BC tests pass.
+- **MCP server, 42 CLI subcommands, 8 resources, 10 tools** untouched.
+- **`/api/v1/*` wire format** identical to v0.32.0 — no client breakage.
+- **`coral --version`** reports `coral 0.32.1`.
+
 ## [0.32.0] - 2026-05-12
 
 **Modern WebUI shipped — `coral ui serve` with a force-directed graph + bi-temporal slider.** First milestone (M1) of the WebUI roadmap (see `docs/PRD-v0.32-webui.md`). A new React 19 + Vite 7 + Tailwind 3.4 SPA is embedded directly in the binary via `include_dir!`. End-users never need Node/npm. The legacy `coral wiki serve` (HTML/Mermaid view from v0.25.0) remains intact for backward compatibility — both subcommands coexist.
