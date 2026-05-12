@@ -2,6 +2,7 @@
 
 pub mod atomic;
 pub mod cache;
+pub mod config;
 pub mod embeddings;
 pub mod embeddings_sqlite;
 pub mod error;
