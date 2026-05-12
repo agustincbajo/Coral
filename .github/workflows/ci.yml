@@ -57,6 +57,15 @@ jobs:
         # tests participate in CI. This is what closes audit cycle 5 item
         # B12 — do NOT drop `--all-features` here without adding a separate
         # matrix row that re-enables them.
+        #
+        # `RUST_TEST_THREADS=1` mirrors the Coverage job: serial execution
+        # is required because the fork-exec tests in `coral-runner` race
+        # on Linux's ETXTBSY check even with the in-process
+        # `test_script_lock()` Mutex (lock can't cross test-binary
+        # boundaries). Costs ~20s wallclock; the alternative was
+        # cherry-picking which crates to serialise, which is fragile.
+        env:
+          RUST_TEST_THREADS: 1
         run: cargo test --workspace --all-features
 
   msrv:
