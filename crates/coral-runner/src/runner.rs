@@ -539,6 +539,7 @@ mod tests {
     #[test]
     fn claude_runner_run_honors_timeout() {
         use std::time::Instant;
+        let _lock = crate::test_script_lock();
         let (_dir, script) = forever_yes_script();
         let r = ClaudeRunner::with_binary(&script);
         let prompt = Prompt {
@@ -610,6 +611,7 @@ mod tests {
     #[test]
     fn claude_runner_streaming_timeout_kills_child() {
         use std::time::Instant;
+        let _lock = crate::test_script_lock();
         let (_dir, script) = forever_yes_script();
         let r = ClaudeRunner::with_binary(&script);
         let mut chunks: Vec<String> = Vec::new();

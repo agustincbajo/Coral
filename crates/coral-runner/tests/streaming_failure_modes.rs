@@ -37,28 +37,11 @@
 
 #![cfg(unix)]
 
-use coral_runner::{ClaudeRunner, Prompt, Runner, RunnerError};
+use coral_runner::{ClaudeRunner, Prompt, Runner, RunnerError, test_script_lock};
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::PathBuf;
-use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
-
-/// Serialize every test in this file. The whole suite spawns small
-/// shell scripts from tempfiles, and Linux CI runners racy-fail with
-/// `ETXTBSY` (errno 26) when two parallel tests are simultaneously
-/// in the write-then-exec window — the kernel `do_open_execat` path
-/// rejects the spawn while the inode count says a writer is still
-/// holding it. Cargo runs integration tests in parallel by default;
-/// holding this mutex from `script()` until the spawn returns
-/// pins the contention to zero.
-static SCRIPT_LOCK: Mutex<()> = Mutex::new(());
-
-fn acquire_lock() -> MutexGuard<'static, ()> {
-    SCRIPT_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
 
 /// Build a tempdir shell script with the given body. Sets `0755` and
 /// returns the (TempDir, path) pair — caller must keep `TempDir` alive
@@ -97,7 +80,7 @@ fn script(body: &str) -> (TempDir, PathBuf) {
 /// because there's nothing truncated).
 #[test]
 fn streaming_two_complete_lines_then_clean_exit() {
-    let _lock = acquire_lock();
+    let _lock = test_script_lock();
     let (_dir, script_path) = script("printf 'first\\n'; printf 'second\\n'; exit 0");
     let r = ClaudeRunner::with_binary(&script_path);
     let mut chunks: Vec<String> = Vec::new();
@@ -133,7 +116,7 @@ fn streaming_two_complete_lines_then_clean_exit() {
 /// intentional.
 #[test]
 fn streaming_partial_final_line_is_surfaced_on_eof() {
-    let _lock = acquire_lock();
+    let _lock = test_script_lock();
     let (_dir, script_path) =
         script("printf 'first\\n'; printf 'second\\n'; printf 'partial-no-newline'; exit 0");
     let r = ClaudeRunner::with_binary(&script_path);
@@ -168,7 +151,7 @@ fn streaming_partial_final_line_is_surfaced_on_eof() {
 /// `RunnerError::NonZeroExit` or `RunnerError::AuthFailed`.
 #[test]
 fn streaming_partial_then_nonzero_exit_returns_err() {
-    let _lock = acquire_lock();
+    let _lock = test_script_lock();
     let (_dir, script_path) = script("printf 'first\\n'; printf 'partial-no-newline'; exit 1");
     let r = ClaudeRunner::with_binary(&script_path);
     let mut chunks: Vec<String> = Vec::new();
@@ -200,7 +183,7 @@ fn streaming_partial_then_nonzero_exit_returns_err() {
 /// loop can't accidentally let it run unbounded.
 #[test]
 fn streaming_silent_hang_is_killed_at_timeout() {
-    let _lock = acquire_lock();
+    let _lock = test_script_lock();
     // `sleep 30` writes nothing to stdout — the runner's recv_timeout
     // path fires first.
     let (_dir, script_path) = script("sleep 30");
@@ -250,7 +233,7 @@ fn streaming_silent_hang_is_killed_at_timeout() {
 /// orphan-shell case as flake.
 #[test]
 fn streaming_one_line_then_hang_is_killed_at_timeout() {
-    let _lock = acquire_lock();
+    let _lock = test_script_lock();
     let (_dir, script_path) = script("printf 'partial\\n'; exec sleep 30");
     let r = ClaudeRunner::with_binary(&script_path);
     let mut chunks: Vec<String> = Vec::new();
@@ -291,7 +274,7 @@ fn streaming_one_line_then_hang_is_killed_at_timeout() {
 /// then exits. All 200 lines must arrive in order.
 #[test]
 fn streaming_many_chunks_arrive_in_order() {
-    let _lock = acquire_lock();
+    let _lock = test_script_lock();
     let (_dir, script_path) =
         script("i=0; while [ $i -lt 200 ]; do printf 'line-%03d\\n' $i; i=$((i+1)); done; exit 0");
     let r = ClaudeRunner::with_binary(&script_path);
@@ -323,7 +306,7 @@ fn streaming_many_chunks_arrive_in_order() {
 /// `on_chunk` must be invoked zero times.
 #[test]
 fn streaming_empty_stdout_clean_exit_succeeds() {
-    let _lock = acquire_lock();
+    let _lock = test_script_lock();
     let (_dir, script_path) = script("exit 0");
     let r = ClaudeRunner::with_binary(&script_path);
     let mut chunks: Vec<String> = Vec::new();
@@ -346,7 +329,7 @@ fn streaming_empty_stdout_clean_exit_succeeds() {
 /// is captured into `RunOutput.stderr`.
 #[test]
 fn streaming_stderr_only_clean_exit_succeeds_without_chunks() {
-    let _lock = acquire_lock();
+    let _lock = test_script_lock();
     let (_dir, script_path) = script("printf 'this is stderr\\n' >&2; exit 0");
     let r = ClaudeRunner::with_binary(&script_path);
     let mut chunks: Vec<String> = Vec::new();

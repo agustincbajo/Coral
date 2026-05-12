@@ -173,19 +173,7 @@ impl Runner for LocalRunner {
 mod tests {
     use super::*;
     #[cfg(unix)]
-    use std::sync::{Mutex, MutexGuard};
-
-    /// Serialize tests that fork-exec a fresh shell script. Same
-    /// rationale as the streaming-failure-modes suite: Linux ETXTBSY
-    /// race under parallel test execution.
-    #[cfg(unix)]
-    static SCRIPT_LOCK: Mutex<()> = Mutex::new(());
-    #[cfg(unix)]
-    fn acquire_lock() -> MutexGuard<'static, ()> {
-        SCRIPT_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
+    use crate::test_script_lock;
 
     #[test]
     fn build_args_passes_user_prompt_under_dash_p() {
@@ -302,7 +290,7 @@ mod tests {
     fn local_runner_non_zero_scrubs_bearer_token_from_error() {
         use std::io::Write as _;
         #[cfg(unix)]
-        let _lock = acquire_lock();
+        let _lock = test_script_lock();
         let dir = tempfile::TempDir::new().expect("tempdir");
         let script = dir.path().join("fake-llama.sh");
         {

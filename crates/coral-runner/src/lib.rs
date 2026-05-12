@@ -30,3 +30,29 @@ pub use multi_step::{
 };
 pub use prompt::PromptBuilder;
 pub use runner::{ClaudeRunner, Prompt, RunOutput, Runner, RunnerError, RunnerResult};
+
+/// Test-only serialiser for code that writes + fork-execs a small
+/// shell script. The Linux kernel `do_open_execat` ETXTBSY race
+/// (errno 26) fires when two parallel tests are in the
+/// write-then-exec window even when they target distinct tempfiles.
+/// Cargo runs the lib's `#[test]`s in one binary and each
+/// integration test in its own — having a `pub` lock here (rather
+/// than module-scoped) means all callers across both binaries can
+/// share the same Mutex *within a single binary*. The integration-
+/// test binary still gets its own static (Rust runs the lib's
+/// `lib.rs` for each binary separately), but every test inside
+/// that binary now coordinates through it.
+///
+/// Tests acquire via `let _lock = test_script_lock();` and hold
+/// through the spawn. Marked `pub` (not `pub(crate)`) so integration
+/// tests under `tests/` can reach it via `coral_runner::test_script_lock()`.
+/// Effectively a no-op at runtime in release builds — `OnceLock`
+/// init is one-shot and `Mutex::lock` on uncontended access is
+/// a single atomic CAS.
+pub fn test_script_lock() -> std::sync::MutexGuard<'static, ()> {
+    use std::sync::{Mutex, OnceLock};
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
