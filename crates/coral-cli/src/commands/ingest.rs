@@ -701,20 +701,23 @@ mod tests {
 
     // ── PDF docs ingestion tests (M3.7) ─────────────────────────────
 
-    // Flaky in CI (both stable and coverage jobs) — passes locally on
-    // Windows but fails on Linux with `ExitCode(unix_exit_status(1))`
-    // vs expected `SUCCESS`. Pre-existing instability surfaced when
-    // ci.yml started running again post-v0.32.2 unblock. The failure
-    // is not caused by the --include-docs path itself (the docs dir
-    // doesn't exist so that branch is a warning-only no-op) — likely a
-    // CWD / MockRunner interaction. Ignored until the root cause is
-    // isolated; tracked for a future patch.
+    // v0.34.x patch: fixed for real this time. Original failure mode
+    // was NOT a CWD / MockRunner race — it was the v0.30.x audit B7
+    // exit-policy: `total_applied == 0 && !warnings.is_empty() &&
+    // !plan.plan.is_empty()` returns FAILURE. The original fixture
+    // emitted a plan with `update noop` against an empty wiki, which
+    // legitimately tripped that gate. Re-targeted the test at its
+    // actual intent (verify `--include-docs` triggers the PDF scanner
+    // path) by using an empty plan, so the warning-for-missing-docs
+    // path is the only behavior under test and the B7 policy stays
+    // dormant. The `CWD_LOCK` is still acquired because
+    // `run_with_runner` calls `std::env::current_dir()` to resolve git
+    // state — concurrent tests mutating CWD would still race.
     #[test]
-    #[ignore = "flaky on Linux CI; pre-existing, see CHANGELOG v0.32.2 release notes"]
     fn include_docs_flag_enables_pdf_scanning() {
-        // When --include-docs is set, the ingest command attempts to scan docs_dir.
-        // Here we verify the flag parsing and that it triggers the docs path
-        // (which gracefully handles a missing docs dir).
+        // When --include-docs is set, the ingest command attempts to scan
+        // docs_dir. We verify the flag parsing and that it triggers the
+        // docs path (which gracefully handles a missing docs dir).
         let _guard = CWD_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let tmp = TempDir::new().unwrap();
         let cur = std::env::current_dir().unwrap();
@@ -725,7 +728,12 @@ mod tests {
         std::env::set_current_dir(tmp.path()).unwrap();
 
         let runner = MockRunner::new();
-        runner.push_ok("plan:\n  - slug: noop\n    action: update\n    rationale: x");
+        // Empty plan: no create/update/retire entries to fail. We're
+        // testing the PDF-scan branch, not the plan-application branch.
+        // An empty plan with --include-docs and a missing docs dir is
+        // a legitimate no-op (warnings without entries → SUCCESS per
+        // the B7 policy).
+        runner.push_ok("plan: []");
         // docs/ dir does NOT exist — should produce a warning but not error.
         let exit = run_with_runner(
             IngestArgs {
