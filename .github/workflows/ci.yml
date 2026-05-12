@@ -292,9 +292,19 @@ jobs:
   coverage:
     name: Coverage (cargo-llvm-cov)
     runs-on: ubuntu-latest
-    # Coverage is informational. Don't block PRs on a transient regression
-    # — the test job above is the hard gate.
-    continue-on-error: true
+    # Coverage IS a gate as of v0.34.x: BACKLOG #5 / PRD §10 KPI ("≥70%"
+    # integration coverage). The job runs `cargo llvm-cov` with
+    # `--fail-under-lines` to fail when measured coverage drops below the
+    # configured floor.
+    #
+    # NOTE on the floor value (CORAL_COV_MIN_LINES):
+    # The 70% target lives in the PRD. We start the gate at a more
+    # forgiving 55% floor that has empirical headroom on the v0.34.1
+    # workspace and ratchet upward as suites grow. The escalation plan
+    # is documented in BACKLOG.md item #5. Bump the env below — do NOT
+    # silently widen it back down without a CHANGELOG entry.
+    env:
+      CORAL_COV_MIN_LINES: "55"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -320,6 +330,19 @@ jobs:
         env:
           RUST_TEST_THREADS: 1
         run: cargo llvm-cov --workspace --all-features --summary-only
+      # Hard gate: fail the job if the line coverage falls below the
+      # floor declared in the job-level env above. `--fail-under-lines`
+      # is a first-class cargo-llvm-cov flag; the previous run already
+      # produced + cached profraw data, so this second pass only
+      # re-summarises (no re-test). Output looks like:
+      #   error: 53.42% < 55% lines
+      # which surfaces on the Actions log instantly.
+      - name: Enforce coverage floor
+        env:
+          RUST_TEST_THREADS: 1
+        run: |
+          cargo llvm-cov report \
+            --fail-under-lines "${CORAL_COV_MIN_LINES}"
       - name: Upload lcov artifact
         uses: actions/upload-artifact@v4
         with:

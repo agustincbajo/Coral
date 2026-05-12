@@ -8,6 +8,16 @@
 //!
 //! Graceful shutdown on SIGINT/SIGTERM via signal-hook (same pattern as
 //! `coral monitor up`).
+//!
+//! **DEPRECATION (since v0.34.1, removal scheduled v0.36.0):** the modern
+//! WebUI (`coral ui serve`) shipped in v0.32.0 and obsoletes this legacy
+//! HTTP browser. It supersedes every feature here (index, graph, health)
+//! and adds bi-temporal slicing, force-directed graph, manifest /
+//! interfaces / drift / affected / tools / guarantee views, etc. The
+//! command still runs but prints a one-line deprecation notice on
+//! startup. Migration: replace `coral wiki serve` with `coral ui serve`
+//! verbatim — the default port is the same (`3838`) and `--bind` is
+//! honored identically. Backlog item #9 (BACKLOG.md) tracks the removal.
 
 use anyhow::{Context, Result};
 use clap::Args;
@@ -32,6 +42,18 @@ pub struct ServeArgs {
 }
 
 pub fn run(args: ServeArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
+    // Deprecation notice. v0.34.1 announces the deprecation; the
+    // command keeps full functionality through the v0.35.x line and
+    // is scheduled for removal in v0.36.0. Migration: `coral ui serve`
+    // (same default port + bind args) supersedes every endpoint
+    // exposed here.
+    eprintln!(
+        "warn: `coral wiki serve` is deprecated since v0.34.1 \
+         and will be removed in v0.36.0. Use `coral ui serve` \
+         instead — same `--port` / `--bind` flags, modern SPA with \
+         graph + bi-temporal slider."
+    );
+
     let wiki_dir = wiki_root
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| std::path::PathBuf::from(".wiki"));

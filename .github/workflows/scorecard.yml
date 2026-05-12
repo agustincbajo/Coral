@@ -19,7 +19,12 @@ jobs:
           persist-credentials: false
 
       - name: Run Scorecard
-        uses: ossf/scorecard-action@v2
+        # `@v2` was retired upstream — runs failed with `unable to find
+        # version v2`. Pin to a specific 2.4.x tag (current major branch)
+        # so dependency-update bots can bump us deliberately rather than
+        # silently breaking when OSSF renames a major. v2.4.2 was the
+        # latest tag at the time of this bump (post v0.34.1).
+        uses: ossf/scorecard-action@v2.4.2
         with:
           results_file: results.sarif
           results_format: sarif

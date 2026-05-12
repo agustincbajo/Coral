@@ -5,11 +5,16 @@ production. None block users today; all are polish, infrastructure, or
 GTM follow-ups. Listed by category, not priority — the maintainer
 picks the order.
 
-Last updated: 2026-05-12, **mid v0.34.0 sprint** (M1 onboarding stack
-landed weeks 1–6; release week 7–8 pending). None of the 10 backlog
-entries below was within scope of M1; they remain open against
-v0.35.0+ unless re-prioritised. M1 added its own set of follow-ups
-that live in the PRD §15 timeline rather than here.
+Last updated: 2026-05-12, **post v0.34.1 patch**. The M1 onboarding
+stack shipped as v0.34.0 (weeks 1–6 + tag + post-release smoke matrix
+verde across Linux/macOS/Windows) plus a same-day patch v0.34.1
+closing three post-release tech-debt items (GITHUB_TOKEN auth in
+self-upgrade, Windows hook latency rewrite, Ollama config bridge).
+None of the 10 backlog entries below was within scope of M1; they
+remain open against v0.35.0+ unless re-prioritised. M1's own
+follow-up list lives in the PRD §15 timeline rather than here; the
+3 items that closed in the v0.34.1 patch are documented at the
+bottom of this file under "v0.34.0 sprint status (shipped)".
 
 ---
 
@@ -114,31 +119,33 @@ on actual Actions runners.
 
 ### 5. Formal `llvm-cov` ≥ 70% threshold enforcement
 
-The Coverage job in `.github/workflows/ci.yml` runs `cargo llvm-cov`
-on every PR and uploads the lcov report. Currently
-`continue-on-error: true` is set, so the job's red/green state is
-informational only.
+**Status v0.34.x:** PARTIALLY LANDED. The Coverage job in
+`.github/workflows/ci.yml` now enforces a line-coverage floor via
+`cargo llvm-cov report --fail-under-lines $CORAL_COV_MIN_LINES`, and
+`continue-on-error` has been dropped. The floor is currently set to
+**55%** (env `CORAL_COV_MIN_LINES` in the job definition) as a
+conservative starting point we know the workspace clears today; the
+PRD KPI target of **70%** remains the destination.
 
-PRD §10 KPI: "Cobertura de tests de integración del REST API ≥ 70%".
-The actual measured coverage is ~85% on `coral-ui::routes` but
-nothing enforces it.
+**Escalation plan** (bump the env var, no code changes needed):
+- v0.34.x  — floor at 55% (current).
+- v0.35.0  — bump to 60% after adding `coral-runner::http` golden tests
+  and exercising the SSE-push path (currently the lowest covered file
+  per `cargo llvm-cov --summary-only`).
+- v0.36.0  — bump to 65% after the `coral-cli::commands::doctor` wizard
+  paths get end-to-end coverage (currently only the happy-path is
+  exercised).
+- v0.37.0  — reach the PRD 70% KPI; revisit only if coverage measurably
+  regresses on a refactor.
 
-To enforce:
+Each bump should land in its own PR with a brief CHANGELOG entry; never
+*lower* the floor without a written justification.
 
-```yaml
-- name: Coverage gate
-  run: |
-    cargo llvm-cov --workspace --all-features --summary-only \
-      | tee /tmp/cov.txt
-    LINES=$(grep -oP 'TOTAL\s+\d+\s+\d+\s+\K[\d.]+' /tmp/cov.txt)
-    if [ "$(echo "$LINES < 70" | bc -l)" = "1" ]; then
-      echo "::error::coverage $LINES% below 70% threshold"
-      exit 1
-    fi
-```
-
-Cost: ~30 min including baseline measurement to set the threshold
-empirically.
+**Why not 70% immediately?** Without a freshly-measured baseline in CI,
+the safe default is "set the floor strictly below the current measured
+value so legitimate PRs aren't artificially blocked, then tighten via
+the ratchet above." Measure once `Coverage` lands on `main`, then bump
+the env var in a follow-up commit.
 
 ---
 
@@ -260,11 +267,14 @@ Coral v0.33.0 is in production with:
 
 The seven open items above are sequel work, not unfinished business.
 
-### v0.34.0 sprint status (mid-flight)
+### v0.34.0 sprint status (shipped)
 
 PRD `docs/PRD-v0.34-onboarding.md` v1.4 — onboarding-stack milestone M1.
-Weeks 1–6 landed (commits up to the post-`docs(readme,install)` cleanup
-commit):
+Tagged `v0.34.0` on 2026-05-12; same-day patch `v0.34.1` closed three
+post-release tech-debt items. Both releases published with full Sigstore
+provenance + smoke matrix verified across Linux/macOS/Windows.
+
+**v0.34.0 deliverables (M1 weeks 1–6, all 34 FRs):**
 
 - ✅ `coral self-check` (App. F frozen schema), `coral self-upgrade`
   (cross-platform), `coral self-uninstall`, `coral self-register-marketplace`
@@ -275,12 +285,22 @@ commit):
 - ✅ `SessionStart` hook (cross-platform) + 4 new CI tests (hyperfine, output-size, naming-collision, Ollama gated)
 - ✅ README "Getting Started in 60 seconds" + `docs/INSTALL.md` rewrite (FR-ONB-21, DoD M1 #14)
 - ✅ Week 3 validator B2 closed (init outside git fails actionably) + week 2 nits 1 & 2 (resolve_provider 1×, comment alignment)
+- ✅ Tag `v0.34.0` → `release.yml` ran the cross-platform smoke matrix (8/8 jobs green)
+- ✅ Post-release-smoke matrix verde (Linux 5s / macOS 9s / Windows 25s)
 
-Outstanding for weeks 7–8 (release):
+**v0.34.1 patch deliverables (post-release tech debt):**
 
-- Version bump `v0.33.0` → `v0.34.0` (workspace `Cargo.toml`, `plugin.json`, `marketplace.json`)
-- Tag `v0.34.0` → `release.yml` runs the cross-platform smoke matrix
-- Record + commit `docs/assets/getting-started.gif` (replaces the placeholder)
-- Hotfix buffer for cross-platform issues surfaced by post-release smoke
+- ✅ `coral self-upgrade` authenticates via `$GITHUB_TOKEN` / `$GH_TOKEN` (raises GitHub API quota 60 → 5000 req/hour; eliminates 403 flake on smoke matrix)
+- ✅ `on-session-start.ps1` rewritten without `Start-Job` double-host (`System.Diagnostics.Process` + `BeginOutputReadLine` + `WaitForExit`); latency dropped mean 644→367 ms, max 890→394 ms; CI threshold cut 1200 → 600 ms
+- ✅ `[provider.ollama]` config from `coral doctor --wizard` now bridges into `--provider=http` automatically; BC preserved for v0.33 users with `CORAL_HTTP_ENDPOINT` env
+- ✅ Post-release-smoke workflow auto-fires via `workflow_run` trigger (previously needed manual `workflow_dispatch`)
 
-These are NOT backlog entries — they are scheduled release-week work.
+**Outstanding for v0.35:**
+
+- Record + commit `docs/assets/getting-started.gif` (replaces the placeholder) — needs screen capture
+- GTM communication (tweet, HN, Discord, marketplace push) — tone decision is maintainer's call
+- Calibration crowd-sourced data n ≥ 30 for `--estimate` ±15% accuracy (M2 target per PRD §10)
+- Anthropic official marketplace submission — human-to-human conversation required
+- Gemini + Anthropic provider config bridge (extends the v0.34.1 Ollama bridge to the other two providers — in flight as of the v0.34.1-post quick-wins batch)
+
+These outstanding items are scheduled v0.35 work, NOT regressions.
