@@ -276,19 +276,39 @@ jobs:
           generate_release_notes: true
           fail_on_unmatched_files: true
 
+  # Build provenance (SLSA L3 equivalent) via GitHub's official
+  # `actions/attest-build-provenance` action. Replaces the legacy
+  # `slsa-framework/slsa-github-generator` reusable workflow which has
+  # been failing its `final` outcome step since v0.30.0 (bug
+  # in the upstream action's success propagation; the actual provenance
+  # was still produced and uploaded, but the wrapper exited non-zero
+  # and turned every release.yml run red).
+  #
+  # `attest-build-provenance` is the GitHub-maintained successor: it
+  # writes an in-toto attestation to the GitHub Attestations API
+  # (and signs it via the Sigstore public-good instance) for every
+  # subject digest you hand it. Verifier-side, consumers use
+  # `gh attestation verify <artifact>` (or the `cosign verify-blob-attestation`
+  # equivalent) and get the same SLSA-shaped predicate.
   provenance:
-    name: SLSA provenance
+    name: Build provenance attestation
     needs: release
+    runs-on: ubuntu-latest
     permissions:
-      actions: read
       id-token: write
-      contents: write
-    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
-    with:
-      base64-subjects-as-file: ""
-      # The SLSA generator attests to the artifacts already uploaded to the
-      # release. We reference them via the upload-artifact names produced by
-      # the build job. When the generator resolves subjects from uploaded
-      # artifacts it produces an in-toto provenance statement attached to
-      # the release automatically.
-      upload-assets: true
+      contents: read
+      attestations: write
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Attest provenance for all release binaries
+        uses: actions/attest-build-provenance@v2
+        with:
+          # Only attest binaries, not the .sha256 sidecars.
+          subject-path: |
+            dist/coral-*.tar.gz
+            dist/coral-*.zip
+            dist/coral-*.mcpb

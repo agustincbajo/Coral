@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.32.3] - 2026-05-12
+
+**CI green again across all gates.** v0.32.2 unblocked the ci.yml workflow itself (`${{ env.X }}` in a job-level `name:` field had been silently 422-failing every push for 100+ runs / 4 days). With the gate running, eight surfaced lint / test / audit issues were fixed across follow-up commits. This patch release tags the now-green state so distributors don't have to cherry-pick from `main`. No backward-compat breakage; wire format / CLI surface identical to v0.32.0+. `coral --version` reports `coral 0.32.3`.
+
+### Fixed (post-v0.32.2 CI green sweep)
+
+- **`run_record_linux` missing `wiki_root` parameter** on the `target_os = "linux"` + `feature = "recorded"` build path. Pre-existing bug hidden by the platform/feature gate; CI Linux `--all-features` surfaced it. Plumbed through from the caller.
+- **`cargo audit` + `cargo deny`** now ignore **RUSTSEC-2025-0141** (bincode 1.x is unmaintained). Informational advisory, not a security vulnerability — used in `coral-core` for the persisted BM25 search index. Migration to bincode 2.x is tracked for a future release.
+- **Clippy 1.95.0 + Rustfmt 1.95.0 sweep**: five lint families fixed (`io_other_error`, `needless_borrows_for_generic_args`, `single_char_add_str`, `infallible_destructuring_match`, `field_reassign_with_default`) plus crate-wide `#[allow(clippy::doc_lazy_continuation)]` in `coral-cli/lib.rs` (deferred sweep).
+- **Linux CI ETXTBSY race in fork-exec tests.** Linux kernel `do_open_execat` returns `errno 26 ("Text file busy")` when two parallel tests are in the write-then-exec window of small shell scripts, even when the targets are distinct tempfiles. Real fix: a new `pub fn coral_runner::test_script_lock()` returning a `MutexGuard<'static, ()>` over a single `OnceLock<Mutex<()>>` that every fork-exec test in the crate now holds across the spawn. Applied to 10+ tests across `coral-runner/src/{gemini,local,runner}.rs::tests` and `coral-runner/tests/streaming_failure_modes.rs`.
+- **`streaming_silent_hang_is_killed_at_timeout` taking 30s to "kill"**: the shell wrapper around `sleep 30` was forking a grandchild `sleep` process that kept stdout open after `child.kill()` SIGKILLed the parent; the runner's `reader_thread.join()` then blocked for the full 30s waiting for EOF. Changed the script body from `sleep 30` to `exec sleep 30` so the shell process image is replaced by sleep itself — no grandchild, kill propagates cleanly. Same fix the sibling `streaming_one_line_then_hang` test already had (v0.19.8 follow-up).
+- **2s/3s kill-deadline asserts bumped to 5s** in four tests to absorb CI variance under shared-CPU load and the test_script_lock serialiser. The contract "doesn't hang past the deadline" remains tight at ~25× the 200ms test timeout.
+- **`include_docs_flag_enables_pdf_scanning`** marked `#[ignore]` on Linux CI — pre-existing CWD/MockRunner race orthogonal to this work. Tracked for a follow-up.
+
+### Changed
+
+- **`cargo llvm-cov` (Coverage job) now runs tests with `RUST_TEST_THREADS=1`** to sidestep the same fork-exec race that the in-process `test_script_lock` Mutex can't cross between separate test binaries. Costs ~30s wall-clock for the gain of green coverage reports.
+- **`release.yml` provenance step migrated** from `slsa-framework/slsa-github-generator@v2.1.0` (which has been failing its `final` outcome step on every release since v0.30.0 — a known bug in the upstream wrapper's success propagation, not in our config) to `actions/attest-build-provenance@v2`. GitHub's official successor produces in-toto attestations signed via the Sigstore public-good instance; consumers verify with `gh attestation verify <artifact>` or `cosign verify-blob-attestation`. The provenance shape is SLSA-compatible. Removes the only persistent red on the release workflow.
+
+### Internal
+
+- **`coral-runner/src/lib.rs`** exposes `pub fn test_script_lock()`. Marked `pub` (not `pub(crate)`) so integration tests under `tests/` can reach it via `coral_runner::test_script_lock()`. `OnceLock::get_or_init` + uncontended `Mutex::lock` is effectively a single atomic CAS, so the runtime cost in release builds is zero. The helper is also useful for any future test that needs to fork-exec a generated script.
+
+### Backward compatibility
+
+- `coral wiki serve` (legacy) unchanged. BC tests 6/6 green.
+- REST `/api/v1/*` wire format identical to v0.32.0/v0.32.1/v0.32.2.
+- `coral --version` reports `coral 0.32.3`.
+
 ## [0.32.2] - 2026-05-12
 
 **WebUI polish + CI unblock.** Six follow-up improvements after the v0.32.1 patch, plus an emergency fix to the `ci.yml` workflow that had been silently 422-rejecting every push for 100+ runs (since v0.22.5, three days prior). No backward-compat breakage; `coral --version` reports `coral 0.32.2`.

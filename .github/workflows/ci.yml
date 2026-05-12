@@ -182,8 +182,21 @@ jobs:
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
       - name: Generate coverage report
+        # `RUST_TEST_THREADS=1` forces serial test execution across the
+        # whole workspace. Required because `cargo llvm-cov`'s
+        # instrumentation widens the ETXTBSY race window for the
+        # fork-exec tests in `coral-runner` (the bearer-scrub fixtures
+        # specifically) — those tests already coordinate via the
+        # `test_script_lock()` Mutex *inside* a single binary, but
+        # llvm-cov also parallelises across test binaries, which the
+        # in-process lock can't reach. Serial execution sidesteps the
+        # whole issue at the cost of ~30s longer wallclock here.
+        env:
+          RUST_TEST_THREADS: 1
         run: cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info
       - name: Print summary line
+        env:
+          RUST_TEST_THREADS: 1
         run: cargo llvm-cov --workspace --all-features --summary-only
       - name: Upload lcov artifact
         uses: actions/upload-artifact@v4
