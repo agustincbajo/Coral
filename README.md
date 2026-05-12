@@ -192,9 +192,10 @@ Unit tests don't tell you if your microservices actually work together. End-to-e
 - **`coral test guarantee --can-i-deploy <env>`.** Aggregates lint + contract drift + functional tests + flake rate into a single **GREEN / YELLOW / RED** verdict. Use it as the last step of CI: green means the change *might* ship; red means it definitely shouldn't. Yellow flags warning-class drift (e.g. a new optional field added) that you can ship but should track.
 - **Recorded captures (`coral test record`, Linux).** Capture real HTTP traffic during exploratory testing with `keploy record`, replay it deterministically on every CI run as `coral test --kind recorded`. Closes the loop on "the test passes but production behaves differently."
 - **JUnit XML out.** Every test runner emits JUnit XML so it slots into existing CI dashboards (GitHub Actions test reporting, GitLab, Jenkins, etc.) without per-tool plugins.
-- **Honest about the test pyramid.** Coral lives in the [microservice honeycomb middle layer](https://martinfowler.com/articles/2021-test-shapes.html) — integration + smoke + contract. **Use `cargo test` / `pytest` / `jest` for unit tests; use Playwright for full browser E2E.** Coral does the middle that's chronically under-served.
 
 The combination — env bring-up + declarative TestCases + pre-flight contract gate + aggregate verdict — is what turns "20 minutes of bash, then maybe it works" into "one command, deterministic exit code, parseable output."
+
+> **Scope, honestly.** Coral lives in the [microservice honeycomb middle layer](https://martinfowler.com/articles/2021-test-shapes.html) — integration, smoke, contract. Use `cargo test` / `pytest` / `jest` for unit tests; use Playwright for full browser E2E. Coral does the middle that's chronically under-served.
 
 **Coral mcp serve** exposes the wiki + manifest + lockfile + test results to *any* MCP-speaking agent, so your AI workflows operate on the same structured ground truth your team operates on. Per the [MCP 2025-11-25 spec](https://modelcontextprotocol.io/specification/2025-11-25), pinned in `coral-mcp::PROTOCOL_VERSION`.
 

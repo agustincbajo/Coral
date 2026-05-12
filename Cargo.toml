@@ -104,21 +104,9 @@ strip = true
 opt-level = 3
 panic = "abort"
 
-# `[profile.dev]` debug-info tuning. With the workspace's 10 crates +
-# `include_dir!` embedding the SPA bundle + 4 integration-test binaries,
-# `debug = "full"` (the default) produces ~200 MB binaries per test
-# fixture. Across iterative `cargo build` / `cargo test` cycles with
-# different `--features` combinations, `target/debug` routinely hit
-# 30+ GB during the v0.32.x WebUI sprint.
-#
-# `line-tables-only` keeps panic backtraces and `cargo test` failure
-# locations readable while dropping the per-variable DWARF tables that
-# account for ~60% of binary size. Variables in `gdb`/`lldb` may show
-# as "<optimized out>" but for a CLI/server crate that's an acceptable
-# trade — and `cargo build` (no profile flag) keeps full debug info
-# via `profile.test` if a contributor needs it.
-#
-# Reduces `target/debug/coral.exe` from ~200 MB to ~80 MB (-60%).
-# See `docs/DEVELOPMENT.md` for the full disk-management mechanics.
+# Compact DWARF: panic backtraces + test failure locations stay readable,
+# per-variable tables drop. Cuts debug binaries by ~60%. Override with
+# `RUSTFLAGS="-C debuginfo=2"` if you need lldb/gdb variable inspection.
+# Full rationale + numbers: docs/DEVELOPMENT.md.
 [profile.dev]
 debug = "line-tables-only"
