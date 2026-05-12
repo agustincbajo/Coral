@@ -32,6 +32,15 @@ chrono = { workspace = true }
 walkdir = { workspace = true }
 regex = { workspace = true }
 rayon = { workspace = true }
+# v0.34.0 onboarding (FR-ONB-30): lockfile + atomic write for
+# `.wiki/.bootstrap-state.json` checkpoints. fs4 is already a
+# workspace dep (used by coral-core::atomic); promoting consumes
+# zero extra dependencies.
+fs4 = { workspace = true }
+# v0.34.0 onboarding (FR-ONB-30): SHA-256 fingerprint of the bootstrap
+# plan persisted in the checkpoint. Lets --resume detect when the
+# plan changed between runs and refuse to silently overwrite.
+sha2 = { workspace = true }
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 # v0.34.0 onboarding (FR-ONB-6, FR-ONB-7): derives `JsonSchema` for the
 # `SelfCheck` struct so `coral self-check --print-schema` emits a

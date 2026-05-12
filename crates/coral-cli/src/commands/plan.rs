@@ -3,11 +3,11 @@
 use coral_core::error::{CoralError, Result as CoralResult};
 use coral_core::frontmatter::{Confidence, Frontmatter, PageType, Status};
 use coral_core::page::Page;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Action {
     Create,
@@ -15,7 +15,11 @@ pub enum Action {
     Retire,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+/// v0.34.0 (FR-ONB-30): `Serialize` was added so the full plan can
+/// be persisted inside `.wiki/.bootstrap-state.json` (the `--resume`
+/// checkpoint). The existing `Deserialize` path used to parse the
+/// LLM's YAML output is unchanged.
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PlanEntry {
     pub slug: String,
     /// Optional in YAML: when missing (e.g. bootstrap output) we default to Create.
@@ -32,7 +36,7 @@ fn default_action() -> Action {
     Action::Create
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Plan {
     pub plan: Vec<PlanEntry>,
 }

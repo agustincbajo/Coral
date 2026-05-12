@@ -1,5 +1,7 @@
 use anyhow::{Context, Result};
+use chrono::Utc;
 use clap::Args;
+use coral_core::cost::{Provider, estimate_cost_from_tokens};
 use coral_core::frontmatter::PageType;
 use coral_core::gitdiff;
 use coral_core::index::{IndexEntry, WikiIndex};
@@ -10,7 +12,13 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use super::plan::{Action, Plan, build_page, page_type_subdir};
+use super::plan::{Action, Plan, PlanEntry, build_page, page_type_subdir};
+
+pub mod estimate;
+pub mod state;
+
+use estimate::{plan_cost_estimate, print_estimate};
+use state::{BootstrapLock, BootstrapState, PageStatus};
 
 #[derive(Args, Debug, Default)]
 pub struct BootstrapArgs {
