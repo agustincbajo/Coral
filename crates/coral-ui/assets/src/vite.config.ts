@@ -19,6 +19,16 @@ export default defineConfig({
     chunkSizeWarningLimit: 600,
     rollupOptions: {
       output: {
+        // Fixed filenames (no content hash) so the bundle is byte-stable
+        // across OS/Node versions. The Rust binary embeds these via
+        // `include_dir!`, and the CI drift check compares the committed
+        // dist/ against a fresh CI build — content-hashed names made
+        // that diff thrash. Cache-busting still works because we set
+        // `Cache-Control: no-cache` on index.html and let the assets/
+        // subtree be `max-age=31536000, immutable` per filename.
+        entryFileNames: "assets/[name].js",
+        chunkFileNames: "assets/[name].js",
+        assetFileNames: "assets/[name].[ext]",
         manualChunks: {
           sigma: [
             "sigma",

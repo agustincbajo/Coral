@@ -12,6 +12,16 @@
 
 crates/coral-ui/assets/dist/** linguist-generated=true merge=ours
 
+# Force LF on every text artifact under dist/. Without this, Windows
+# devs commit CRLF and the CI drift check (which runs on Linux) sees
+# a 100% diff against its fresh build. LF is what Vite emits.
+crates/coral-ui/assets/dist/**/*.html text eol=lf
+crates/coral-ui/assets/dist/**/*.js text eol=lf
+crates/coral-ui/assets/dist/**/*.css text eol=lf
+crates/coral-ui/assets/dist/**/*.svg text eol=lf
+crates/coral-ui/assets/dist/**/*.json text eol=lf
+crates/coral-ui/assets/dist/**/*.map text eol=lf
+
 # node_modules is gitignored, but in case something slips, mark it.
 crates/coral-ui/assets/src/node_modules/** linguist-vendored=true
 
