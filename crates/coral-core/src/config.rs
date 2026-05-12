@@ -223,6 +223,111 @@ pub fn config_path(cwd: &Path) -> PathBuf {
     cwd.join(".coral").join("config.toml")
 }
 
+/// Enumeration of providers whose credentials live in `.coral/config.toml`.
+///
+/// Used by [`resolve_provider_credentials`] as the dispatch key. We
+/// keep this small and explicit (rather than parsing the
+/// `ProviderName` enum from `coral-cli`) so that the core crate has
+/// zero dependency on the CLI's flag-parsing types.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CredentialProvider {
+    /// `[provider.anthropic]` — `api_key` is mandatory in the schema.
+    Anthropic,
+    /// `[provider.gemini]` — `api_key` is mandatory in the schema.
+    Gemini,
+}
+
+/// Resolved provider credentials suitable for bridging from
+/// `.coral/config.toml` to a runner subprocess.
+///
+/// Returned by [`resolve_provider_credentials`]. Callers typically
+/// inject `api_key` into the spawned subprocess via `cmd.env(...)` so
+/// it lands as `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` for the CLI the
+/// runner shells out to. `model` is non-`None` because the schema's
+/// `serde(default)` populates a sensible default — callers can apply
+/// it via `Prompt.model` or leave the user's `--model` flag in charge.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedProviderCredentials {
+    /// API key (never empty if returned `Some`; empty config values
+    /// are treated as "no config" and the function returns `None`).
+    pub api_key: String,
+    /// Model id from the config block.
+    pub model: String,
+}
+
+/// Bridge `[provider.anthropic]` / `[provider.gemini]` → runner subprocess.
+///
+/// Resolution mirrors the `[provider.ollama]` → `HttpRunner` pattern
+/// added in v0.34.1 ([`coral_cli::commands::runner_helper`]):
+///
+/// 1. **Config wins**: if the requested block exists in
+///    `<cwd>/.coral/config.toml`, return `Some(_)` with the key + model
+///    from that block. The caller is expected to override the
+///    subprocess env with the returned `api_key` — config explicitly
+///    *beats* a pre-set env var, so a user who switches keys via
+///    `coral doctor --wizard` doesn't have to also `unset
+///    ANTHROPIC_API_KEY` in their shell.
+/// 2. **Fall through**: returns `None` when the file is absent, the
+///    block is absent, the `api_key` is empty/whitespace, or the file
+///    is malformed (one-line stderr warning emitted for malformed
+///    files — operational continuity beats a hard crash).
+///
+/// Empty `api_key` is treated as "no config" so that a half-finished
+/// wizard run (or a manually-edited file with `api_key = ""`) doesn't
+/// silently inject an empty env var that the CLI subprocess would
+/// surface as a confusing auth error.
+///
+/// BC contract (v0.33 → v0.34.x): the caller layers env-var fallback
+/// on top — if this returns `None`, callers continue to inherit
+/// `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` from the parent process env,
+/// preserving every v0.33-era pipeline that exports keys via env.
+pub fn resolve_provider_credentials(
+    provider: CredentialProvider,
+    cwd: &Path,
+) -> Option<ResolvedProviderCredentials> {
+    let cfg = match load_from_repo(cwd) {
+        Ok(c) => c,
+        Err(e) => {
+            // Match the resolver-helper pattern in `coral_cli::commands::runner_helper`:
+            // a malformed config file is NOT fatal here. A user mid-wizard
+            // with a half-written file should still be able to fall back
+            // to their env var. One-line stderr breadcrumb so the missed
+            // config is visible.
+            eprintln!(
+                "warning: could not parse {}/.coral/config.toml ({e}); \
+                 falling back to env-var auth",
+                cwd.display()
+            );
+            return None;
+        }
+    };
+
+    match provider {
+        CredentialProvider::Anthropic => cfg.provider.anthropic.as_ref().and_then(|a| {
+            let key = a.api_key.trim();
+            if key.is_empty() {
+                None
+            } else {
+                Some(ResolvedProviderCredentials {
+                    api_key: key.to_string(),
+                    model: a.model.clone(),
+                })
+            }
+        }),
+        CredentialProvider::Gemini => cfg.provider.gemini.as_ref().and_then(|g| {
+            let key = g.api_key.trim();
+            if key.is_empty() {
+                None
+            } else {
+                Some(ResolvedProviderCredentials {
+                    api_key: key.to_string(),
+                    model: g.model.clone(),
+                })
+            }
+        }),
+    }
+}
+
 /// Loads `.coral/config.toml` from `<cwd>/`. Returns `Self::default()`
 /// when the file is absent — that is the v0.33 → v0.34 zero-state
 /// migration: v0.33 users never wrote one.
@@ -483,6 +588,156 @@ max_tokens_per_page = 4096
             .anthropic
             .expect("anthropic survives round-trip");
         assert_eq!(anth.api_key, "sk-ant-test");
+    }
+
+    // ── resolve_provider_credentials tests ───────────────────────────
+    //
+    // The function is the read half of the wizard → runner bridge: the
+    // wizard writes `[provider.anthropic]` / `[provider.gemini]` blocks,
+    // these tests verify the read path. Sister of
+    // `resolve_http_endpoint_*` in `coral_cli::commands::runner_helper`.
+
+    /// No config file → `None`. This is the v0.33 fast-path: a user
+    /// who never ran the wizard has no `.coral/config.toml` and must
+    /// keep falling back to env vars.
+    #[test]
+    fn resolve_credentials_returns_none_when_no_config() {
+        let dir = TempDir::new().unwrap();
+        assert!(
+            resolve_provider_credentials(CredentialProvider::Anthropic, dir.path()).is_none()
+        );
+        assert!(
+            resolve_provider_credentials(CredentialProvider::Gemini, dir.path()).is_none()
+        );
+    }
+
+    /// `[provider.anthropic]` block in config returns the key + model.
+    /// Whitespace around the key is trimmed (paranoia for hand-edited
+    /// files).
+    #[test]
+    fn resolve_credentials_reads_anthropic_block() {
+        let dir = TempDir::new().unwrap();
+        let coral = dir.path().join(".coral");
+        std::fs::create_dir_all(&coral).unwrap();
+        std::fs::write(
+            coral.join("config.toml"),
+            r#"schema_version = 1
+[provider.anthropic]
+api_key = "sk-ant-abc"
+model = "claude-haiku-4-5"
+"#,
+        )
+        .unwrap();
+
+        let creds = resolve_provider_credentials(CredentialProvider::Anthropic, dir.path())
+            .expect("anthropic creds must resolve");
+        assert_eq!(creds.api_key, "sk-ant-abc");
+        assert_eq!(creds.model, "claude-haiku-4-5");
+
+        // Same file, gemini block absent → gemini lookup returns None.
+        assert!(
+            resolve_provider_credentials(CredentialProvider::Gemini, dir.path()).is_none(),
+            "gemini block was not written; lookup must not invent credentials"
+        );
+    }
+
+    /// `[provider.gemini]` block similarly. Default model field
+    /// applies when omitted (via the schema's `serde(default)`).
+    #[test]
+    fn resolve_credentials_reads_gemini_block_with_default_model() {
+        let dir = TempDir::new().unwrap();
+        let coral = dir.path().join(".coral");
+        std::fs::create_dir_all(&coral).unwrap();
+        // Deliberately omit `model` to exercise the serde default.
+        std::fs::write(
+            coral.join("config.toml"),
+            r#"schema_version = 1
+[provider.gemini]
+api_key = "AIza-xyz"
+"#,
+        )
+        .unwrap();
+
+        let creds = resolve_provider_credentials(CredentialProvider::Gemini, dir.path())
+            .expect("gemini creds must resolve");
+        assert_eq!(creds.api_key, "AIza-xyz");
+        assert_eq!(creds.model, "gemini-2.0-flash");
+    }
+
+    /// Both providers can coexist in a single config.toml. v0.34.x
+    /// wizard re-run overwrites only the chosen block, so this shape
+    /// occurs in practice for users who pick Anthropic then later add
+    /// Gemini.
+    #[test]
+    fn resolve_credentials_reads_both_providers_from_same_file() {
+        let dir = TempDir::new().unwrap();
+        let coral = dir.path().join(".coral");
+        std::fs::create_dir_all(&coral).unwrap();
+        std::fs::write(
+            coral.join("config.toml"),
+            r#"schema_version = 1
+[provider.anthropic]
+api_key = "sk-ant-1"
+model = "claude-sonnet-4-5"
+
+[provider.gemini]
+api_key = "gem-2"
+model = "gemini-2.0-flash"
+"#,
+        )
+        .unwrap();
+
+        let a = resolve_provider_credentials(CredentialProvider::Anthropic, dir.path())
+            .expect("anthropic");
+        let g = resolve_provider_credentials(CredentialProvider::Gemini, dir.path())
+            .expect("gemini");
+        assert_eq!(a.api_key, "sk-ant-1");
+        assert_eq!(a.model, "claude-sonnet-4-5");
+        assert_eq!(g.api_key, "gem-2");
+        assert_eq!(g.model, "gemini-2.0-flash");
+    }
+
+    /// Empty `api_key` field returns `None`, not `Some("")`. A half-
+    /// finished wizard run (user hit cancel mid-prompt and a previous
+    /// flow left an empty string) shouldn't inject `ANTHROPIC_API_KEY=""`
+    /// into the subprocess — that would surface as a confusing
+    /// "invalid_api_key" auth error rather than the more actionable
+    /// "no key configured" path.
+    #[test]
+    fn resolve_credentials_treats_empty_api_key_as_none() {
+        let dir = TempDir::new().unwrap();
+        let coral = dir.path().join(".coral");
+        std::fs::create_dir_all(&coral).unwrap();
+        std::fs::write(
+            coral.join("config.toml"),
+            r#"schema_version = 1
+[provider.anthropic]
+api_key = ""
+model = "claude-haiku-4-5"
+"#,
+        )
+        .unwrap();
+        assert!(
+            resolve_provider_credentials(CredentialProvider::Anthropic, dir.path()).is_none(),
+            "empty api_key must be treated as 'no credentials'"
+        );
+    }
+
+    /// Malformed config doesn't crash — operational continuity: a
+    /// user whose config is corrupt should still be able to run with
+    /// an explicit env var. Mirrors the same fallthrough rule
+    /// `resolve_http_endpoint` follows for the Ollama bridge.
+    #[test]
+    fn resolve_credentials_returns_none_on_malformed_config() {
+        let dir = TempDir::new().unwrap();
+        let coral = dir.path().join(".coral");
+        std::fs::create_dir_all(&coral).unwrap();
+        std::fs::write(coral.join("config.toml"), "schema_version = 1\n[provider.anthropic\n")
+            .unwrap();
+        // No panic, returns None — caller will fall through to env var.
+        assert!(
+            resolve_provider_credentials(CredentialProvider::Anthropic, dir.path()).is_none()
+        );
     }
 
     /// Unix-only: post-write the file is chmod 600 (owner rw, group/
