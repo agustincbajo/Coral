@@ -155,6 +155,98 @@ jobs:
           test -f "$TMP/.wiki/log.md"
           test -f "$TMP/.wiki/SCHEMA.md"
 
+  hook-budget:
+    # v0.34.0 FR-ONB-9: the SessionStart hook script must respect the
+    # PRD §6.3 latency budget:
+    #   * Linux  / macOS p95 < 150 ms
+    #   * Windows         p95 < 400 ms
+    # We measure with `hyperfine`, which gives mean + std + min + max
+    # across N runs. We use `max` as a conservative proxy for p95 on the
+    # default 20-run sample (small samples + the runner noise floor make
+    # a true percentile calculation flaky; max-of-20 is what hyperfine
+    # exports natively and runs ~ p95 in practice).
+    #
+    # The hook needs `coral` on PATH so we cargo-build the binary first
+    # and prepend `target/release` to PATH. Each platform installs
+    # hyperfine via its native package manager: apt, brew, choco.
+    name: Hook budget (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            threshold_ms: 150
+            install: 'sudo apt-get update -y && sudo apt-get install -y hyperfine'
+          - os: macos-latest
+            threshold_ms: 150
+            install: 'brew install hyperfine'
+          - os: windows-latest
+            threshold_ms: 400
+            install: 'choco install -y hyperfine'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: hook-${{ matrix.os }}
+      - name: Install hyperfine
+        shell: bash
+        run: ${{ matrix.install }}
+      - name: cargo build --release --bin coral
+        run: cargo build --release --bin coral
+      - name: hyperfine SessionStart hook (unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$PWD/target/release:$PATH"
+          # Sanity: the wrapper exists + is executable.
+          test -x .claude-plugin/scripts/on-session-start
+          # 5 warmup runs prime the binary cache; 20 runs is enough for
+          # max-of-20 to land near the p95 on a non-isolated runner.
+          hyperfine \
+            --warmup 5 \
+            --runs 20 \
+            --export-json hook-bench.json \
+            "bash .claude-plugin/scripts/on-session-start.sh"
+          # Extract max in seconds + convert to ms with awk (no jq on
+          # macOS runners by default; this avoids the dep).
+          MAX_S=$(python3 -c "import json; print(json.load(open('hook-bench.json'))['results'][0]['max'])")
+          MAX_MS=$(python3 -c "print(int($MAX_S * 1000))")
+          echo "max=${MAX_MS}ms threshold=${{ matrix.threshold_ms }}ms"
+          if [ "$MAX_MS" -gt "${{ matrix.threshold_ms }}" ]; then
+            echo "::error::Hook max latency ${MAX_MS}ms exceeds budget ${{ matrix.threshold_ms }}ms (PRD §6.3 FR-ONB-9)"
+            exit 1
+          fi
+      - name: hyperfine SessionStart hook (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:Path = "$PWD\target\release;$env:Path"
+          if (-not (Test-Path '.claude-plugin/scripts/on-session-start.ps1')) {
+            throw "hook script missing"
+          }
+          hyperfine `
+            --warmup 5 `
+            --runs 20 `
+            --export-json hook-bench.json `
+            "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .claude-plugin/scripts/on-session-start.ps1"
+          $bench = Get-Content hook-bench.json | ConvertFrom-Json
+          $maxMs = [int]($bench.results[0].max * 1000)
+          $threshold = ${{ matrix.threshold_ms }}
+          Write-Output ("max={0}ms threshold={1}ms" -f $maxMs, $threshold)
+          if ($maxMs -gt $threshold) {
+            Write-Output ("::error::Hook max latency {0}ms exceeds budget {1}ms (PRD §6.3 FR-ONB-9)" -f $maxMs, $threshold)
+            exit 1
+          }
+      - name: Upload hook-bench.json
+        uses: actions/upload-artifact@v4
+        with:
+          name: hook-bench-${{ matrix.os }}
+          path: hook-bench.json
+          retention-days: 14
+
   audit:
     name: Security audit (cargo-audit)
     runs-on: ubuntu-latest
