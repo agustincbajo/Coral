@@ -285,26 +285,24 @@ mod tests {
 
     /// v0.19.6 audit H2: stderr that contains a bearer-shaped header
     /// must be scrubbed before being wrapped in `RunnerError::*`.
-    ///
-    /// Flaky on Linux CI: ExecutableFileBusy (errno 26) when spawning
-    /// the freshly-written `fake-gemini.sh` while another parallel
-    /// test holds a write handle to a similarly-named tempfile. Same
-    /// race pattern as the streaming-failure-modes suite. Bearer-scrub
-    /// logic itself is also unit-tested at the regex level in
-    /// `tests::scrub_authorization_header_*` (no fork+exec), so the
-    /// invariant remains covered.
     #[test]
-    #[ignore = "flaky on Linux CI: ExecutableFileBusy under parallel test execution"]
     fn gemini_runner_non_zero_scrubs_bearer_token_from_error() {
+        use std::io::Write as _;
         let dir = tempfile::TempDir::new().expect("tempdir");
         let script = dir.path().join("fake-gemini.sh");
-        std::fs::write(
-            &script,
-            "#!/bin/sh\n\
-             echo 'request failed; received Authorization: Bearer sk-ant-secret-xxx' 1>&2\n\
-             exit 1\n",
-        )
-        .expect("write");
+        // Linux CI fix: `sync_all()` + explicit drop before exec avoids
+        // `ETXTBSY` (errno 26) under parallel test load. Same race the
+        // streaming-failure-modes helper hits.
+        {
+            let mut f = std::fs::File::create(&script).expect("create script");
+            f.write_all(
+                b"#!/bin/sh\n\
+                  echo 'request failed; received Authorization: Bearer sk-ant-secret-xxx' 1>&2\n\
+                  exit 1\n",
+            )
+            .expect("write");
+            f.sync_all().expect("sync");
+        }
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

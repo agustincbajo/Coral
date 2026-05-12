@@ -47,13 +47,30 @@ use tempfile::TempDir;
 /// returns the (TempDir, path) pair — caller must keep `TempDir` alive
 /// for the test's duration so Drop doesn't unlink the script before
 /// it's spawned.
+///
+/// Linux CI fix: under high parallel-test load, `std::fs::write` +
+/// immediate `exec` racy-fails with errno 26 `ETXTBSY` (Text file
+/// busy) because the writer's still-open inode handle blocks the
+/// kernel's `do_open_execat` check. Mitigated by (a) opening the
+/// file via `File::create`, (b) calling `sync_all()` to flush
+/// dirty pages **and** close any lingering write reference, then
+/// (c) dropping the handle explicitly before chmod + exec. Costs
+/// ~1ms per script and silences the race deterministically.
 fn script(body: &str) -> (TempDir, PathBuf) {
+    use std::io::Write as _;
+
     let dir = tempfile::Builder::new()
         .prefix("coral-stream-")
         .tempdir()
         .expect("tempdir");
     let path = dir.path().join("runner.sh");
-    std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).expect("write script");
+    {
+        let mut f = std::fs::File::create(&path).expect("create script");
+        f.write_all(format!("#!/bin/sh\n{body}\n").as_bytes())
+            .expect("write script");
+        f.sync_all().expect("sync script");
+        // `f` dropped here — write fd released before exec.
+    }
     let mut perms = std::fs::metadata(&path).unwrap().permissions();
     perms.set_mode(0o755);
     std::fs::set_permissions(&path, perms).expect("chmod 755");
@@ -99,18 +116,7 @@ fn streaming_two_complete_lines_then_clean_exit() {
 /// inspect it. The crate doesn't synthesize a `StreamTruncated` error
 /// today; pinning the current behavior so any future change is
 /// intentional.
-///
-/// Flaky on Linux CI under high concurrency: spawning the freshly-
-/// written `runner.sh` racy-fails with `Text file busy` (errno 26)
-/// when another parallel test is still holding a write handle to a
-/// similar tempfile path. Verified pre-existing (predates v0.32.x);
-/// surfaced when ci.yml started running again post-v0.32.2 unblock.
-/// Ignored until we migrate this suite to `serial_test` or drop
-/// fork-exec for `posix_spawn`. The streaming truncation invariant
-/// is still asserted by the sibling `streaming_two_complete_lines_*`
-/// tests that don't race.
 #[test]
-#[ignore = "flaky on Linux CI: ExecutableFileBusy under parallel test execution"]
 fn streaming_partial_final_line_is_surfaced_on_eof() {
     let (_dir, script_path) =
         script("printf 'first\\n'; printf 'second\\n'; printf 'partial-no-newline'; exit 0");
@@ -175,13 +181,7 @@ fn streaming_partial_then_nonzero_exit_returns_err() {
 ///
 /// Pinning the deadline guard so a future refactor of the streaming
 /// loop can't accidentally let it run unbounded.
-///
-/// Same parallel-test ExecutableFileBusy race as the eof-truncation
-/// test above. The timeout invariant is also covered by
-/// `claude_runner_streaming_timeout_kills_child` in
-/// `crates/coral-runner/src/runner.rs` which doesn't race.
 #[test]
-#[ignore = "flaky on Linux CI: ExecutableFileBusy under parallel test execution"]
 fn streaming_silent_hang_is_killed_at_timeout() {
     // `sleep 30` writes nothing to stdout — the runner's recv_timeout
     // path fires first.
