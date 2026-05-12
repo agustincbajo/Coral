@@ -172,21 +172,21 @@ impact.
 
 ### 7. `bincode` 1.x → 2.x migration
 
-`RUSTSEC-2025-0141`: bincode 1.x is unmaintained. Currently ignored
-in `deny.toml` and `cargo audit --ignore`. Not a security
-vulnerability, just no longer accepting bug fixes upstream.
+**Status v0.34.x:** CLOSED. `coral-core::search_index::{save_index,
+load_index}` migrated to bincode 2.x via the serde integration
+(`bincode::serde::encode_to_vec` + `decode_from_slice`,
+`bincode::config::standard()`). `deny.toml` no longer ignores
+RUSTSEC-2025-0141 and `cargo audit` runs without the `--ignore` flag.
 
-Used by `coral-core::search_index` for persisting the BM25 index to
-disk. Migration is non-trivial: bincode 2.x changed its encode/decode
-API (no more `serialize`/`deserialize`, now `encode`/`decode` with
-explicit `Configuration`).
-
-Acceptance: `coral-core::search_index::{save_index, load_index}` use
-bincode 2.x, deny.toml stops ignoring the advisory, the on-disk
-format is migrated cleanly (or invalidated + rebuilt on first
-v0.34.0 boot).
-
-Cost: 4–8 hours including writing the format-migration codepath.
+On-disk format migration: 2.x is NOT wire-compatible with 1.x. Legacy
+`.coral/search-index.bin` files written by v0.33.x silently fail to
+decode → `load_index` emits a single `tracing::warn!` and
+`search_with_index` rebuilds the cache from the in-memory corpus. No
+user action required; the second `coral` invocation hits the freshly-
+written 2.x cache. Two new regression tests pin the contract:
+`bincode2_encode_decode_roundtrip` (round-trip equality) and
+`load_index_rebuilds_on_legacy_format_mismatch` (garbage-bytes →
+InvalidData → transparent rebuild).
 
 ---
 

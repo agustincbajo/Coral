@@ -84,12 +84,28 @@ proptest = "1"
 # Single-purpose, ~40 KB, pure-C with a thin Rust wrapper; no new Rust
 # transitives beyond the `libmimalloc-sys` build-script.
 mimalloc = { version = "0.1", default-features = false }
-# v0.25.0 M3.1: persisted BM25 search index. bincode 1.x gives a simple
-# encode/decode API for the pre-computed index struct (document frequencies,
-# term vectors, doc lengths). Sub-millisecond load vs multi-ms rebuild on
-# 5000+ page wikis. Single-purpose, pure-Rust, ~20 KB; no new transitives
-# beyond byteorder (already in the tree via rusqlite).
-bincode = "1"
+# v0.25.0 M3.1: persisted BM25 search index. Sub-millisecond load vs
+# multi-ms rebuild on 5000+ page wikis.
+#
+# v0.34.x migration: 1.x → 2.x. bincode 1.x is unmaintained
+# (RUSTSEC-2025-0141). We use the `serde` integration (not the native
+# `bincode::Encode`/`Decode` derives) so the `SearchIndex` struct keeps
+# its single set of `Serialize`/`Deserialize` derives — same serde
+# attrs work for JSON, TOML, and the on-disk index. The serde
+# integration costs one extra adapter layer at encode/decode time
+# (microseconds, irrelevant next to disk I/O) and saves us from
+# maintaining two parallel sets of derives.
+#
+# On-disk format change: 2.x is NOT wire-compatible with 1.x. The
+# `load_index` codepath in `coral-core::search_index` catches a
+# DecodeError, logs the format mismatch, and lets `search_with_index`
+# rebuild the cache transparently on the next call — no user action
+# required. Old `.coral/search-index.bin` files are silently invalidated.
+#
+# Single-purpose, pure-Rust, ~30 KB. `default-features = false` drops
+# the `derive` feature (we don't use the proc-macros) but keeps `std` +
+# `alloc` so `to_vec` / `from_slice` are available.
+bincode = { version = "2", default-features = false, features = ["std", "serde"] }
 # v0.32.0 webui: MIME-type detection for `coral-ui`'s embedded static
 # assets (CSS/JS/HTML/png/svg) served by the new `coral ui serve`
 # subcommand. Single-purpose, pure-Rust, ~30 KB; no new transitives

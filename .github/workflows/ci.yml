@@ -271,11 +271,11 @@ jobs:
       - name: Install cargo-audit
         run: cargo install --locked cargo-audit
       - name: cargo audit
-        # RUSTSEC-2025-0141 (bincode is unmaintained) is informational,
-        # not a security advisory. Migration to bincode 2.x is tracked
-        # for a future release; ignoring here keeps the audit gate
-        # focused on real vulnerabilities.
-        run: cargo audit --deny warnings --ignore RUSTSEC-2025-0141
+        # v0.34.x: dropped the `--ignore RUSTSEC-2025-0141` flag after
+        # the bincode 1.x → 2.x migration. If a new advisory lands and
+        # needs a deliberate ignore window, add it back with an inline
+        # justification AND a BACKLOG entry naming the fix release.
+        run: cargo audit --deny warnings
 
   deny:
     name: Licenses + duplicate versions (cargo-deny)

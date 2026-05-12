@@ -180,8 +180,13 @@ impl SearchIndex {
     /// mid-write can never leave a torn / zero-length file on disk.
     /// Readers (incl. parallel `coral` processes) see either the OLD
     /// contents or the NEW contents, never garbage.
+    ///
+    /// Encoding: bincode 2.x via the serde integration, standard
+    /// configuration (variable-int + little-endian fixed-array). Old
+    /// 1.x files are not readable; see [`Self::load_index`] for the
+    /// graceful-rebuild story.
     pub fn save_index(&self, path: &Path) -> std::io::Result<()> {
-        let encoded = bincode::serialize(self)
+        let encoded = bincode::serde::encode_to_vec(self, bincode::config::standard())
             .map_err(|e| std::io::Error::other(format!("bincode encode: {e}")))?;
         crate::atomic::atomic_write_bytes(path, &encoded).map_err(|e| match e {
             crate::error::CoralError::Io { source, .. } => source,
@@ -190,16 +195,37 @@ impl SearchIndex {
     }
 
     /// Load the index from disk.
+    ///
+    /// Returns `Err(InvalidData)` on any decode failure — including the
+    /// legacy bincode-1.x → 2.x format mismatch (RUSTSEC-2025-0141
+    /// migration). Callers above [`search_with_index`] interpret the
+    /// error as "cache is stale, rebuild from corpus" and never
+    /// surface it to the user. We log via `tracing::warn!` so the
+    /// migration is observable in `coral`'s default-INFO logs.
     pub fn load_index(path: &Path) -> std::io::Result<Self> {
         let mut file = fs::File::open(path)?;
         let mut buf = Vec::new();
         file.read_to_end(&mut buf)?;
-        bincode::deserialize(&buf).map_err(|e| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("bincode decode: {e}"),
-            )
-        })
+        bincode::serde::decode_from_slice::<Self, _>(&buf, bincode::config::standard())
+            .map(|(value, _bytes_read)| value)
+            .map_err(|e| {
+                // The most common failure on first v0.34.x boot will be
+                // a pre-existing v0.33.x `search-index.bin` written by
+                // bincode 1.x. Surface it once at WARN; `search_with_index`
+                // rebuilds transparently. Other decode errors (truncated
+                // file, mid-write power loss before tmp+rename swap)
+                // hit the same recovery path.
+                tracing::warn!(
+                    target: "coral_core::search_index",
+                    path = %path.display(),
+                    error = %e,
+                    "search index decode failed — treating as stale and rebuilding (likely bincode 1.x legacy format from a pre-v0.34 install)"
+                );
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("bincode decode: {e}"),
+                )
+            })
     }
 
     /// Return the default index file path for a given wiki root.
@@ -754,6 +780,110 @@ mod tests {
             loaded.n_docs > 0,
             "post-contention index must contain documents"
         );
+    }
+
+    // ─── bincode 2.x migration (RUSTSEC-2025-0141) ───
+
+    /// Pin the new on-disk codec: bincode 2.x via the serde integration,
+    /// `bincode::config::standard()` (variable-int + LE fixed-array).
+    /// A roundtrip through `encode_to_vec` + `decode_from_slice` MUST
+    /// preserve every public field of `SearchIndex`. This is regression
+    /// insurance against an accidental codec swap (e.g. flipping the
+    /// integer encoding to fixed-int).
+    #[test]
+    fn bincode2_encode_decode_roundtrip() {
+        let pages = vec![
+            page("outbox", "outbox dispatcher polls"),
+            page("order", "order references outbox"),
+        ];
+        let original = SearchIndex::build(&pages);
+
+        // Encode via bincode 2.x serde integration.
+        let bytes = bincode::serde::encode_to_vec(&original, bincode::config::standard()).unwrap();
+
+        // Decode back; verify the byte stream consumed matches the
+        // input length (no trailing garbage).
+        let (decoded, consumed): (SearchIndex, usize) =
+            bincode::serde::decode_from_slice(&bytes, bincode::config::standard()).unwrap();
+        assert_eq!(
+            consumed,
+            bytes.len(),
+            "bincode 2.x should consume the entire encoded buffer"
+        );
+
+        // Field-by-field equality. We can't `#[derive(PartialEq)]` on
+        // `SearchIndex` because `HashMap` field ordering is non-
+        // deterministic across allocations, but content equality is
+        // exactly what we need.
+        assert_eq!(decoded.content_hash, original.content_hash);
+        assert_eq!(decoded.n_docs, original.n_docs);
+        assert!((decoded.avgdl - original.avgdl).abs() < 1e-12);
+        assert_eq!(decoded.df, original.df);
+        for (slug, orig_entry) in &original.docs {
+            let dec_entry = decoded.docs.get(slug).expect("slug missing post-roundtrip");
+            assert_eq!(dec_entry.tf, orig_entry.tf);
+            assert_eq!(dec_entry.doc_len, orig_entry.doc_len);
+        }
+    }
+
+    /// v0.34.x migration: bincode 1.x → 2.x changed the wire format
+    /// (no more fixint default, removed `LE`/`BE` configuration flags,
+    /// added explicit length prefixes for collections). Old
+    /// `search-index.bin` files written by v0.33.x and earlier CANNOT
+    /// be decoded by 2.x.
+    ///
+    /// Behaviour contract: `load_index` returns `Err(InvalidData)` on
+    /// any decode failure (legacy file, truncated file, garbage); the
+    /// `search_with_index` caller swallows the error and rebuilds the
+    /// cache from the in-memory corpus. The user sees no error.
+    ///
+    /// We can't ship a real v0.33 bincode-1 fixture file here without
+    /// dragging the old crate back in as a dev-dep — instead we
+    /// simulate the failure with deliberately-garbage bytes that
+    /// definitely don't decode as a valid `SearchIndex`.
+    #[test]
+    fn load_index_rebuilds_on_legacy_format_mismatch() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let wiki_root = tmp.path();
+        let index_path = SearchIndex::default_path(wiki_root);
+
+        // Pre-populate the cache file with bytes that look like an old
+        // index but won't decode as bincode 2.x. The header pattern is
+        // close enough that the failure mode mirrors what a v0.33 user
+        // would actually hit on first v0.34 boot: a file exists, has
+        // non-trivial size, parses to garbage.
+        fs::create_dir_all(index_path.parent().unwrap()).unwrap();
+        let garbage: Vec<u8> = (0..=255u8).cycle().take(1024).collect();
+        fs::write(&index_path, &garbage).unwrap();
+
+        // Direct `load_index` call: must report decode failure with
+        // `InvalidData` so the upper layer recognises "stale cache".
+        let err =
+            SearchIndex::load_index(&index_path).expect_err("load_index must reject garbage bytes");
+        assert_eq!(
+            err.kind(),
+            std::io::ErrorKind::InvalidData,
+            "decode failure must surface as InvalidData (got {err:?})"
+        );
+
+        // High-level search call: must transparently rebuild and
+        // return non-empty results despite the stale file on disk.
+        let pages = vec![
+            page("outbox", "outbox dispatcher polls every second"),
+            page("order", "order references outbox"),
+        ];
+        let results = search_with_index(&pages, "outbox", 5, wiki_root, false);
+        assert!(
+            !results.is_empty(),
+            "search must transparently rebuild over a stale-format cache file"
+        );
+
+        // After the rebuild, the cache file is a valid bincode-2.x
+        // payload that decodes cleanly.
+        let reloaded =
+            SearchIndex::load_index(&index_path).expect("post-rebuild cache must decode cleanly");
+        assert!(reloaded.n_docs > 0);
+        assert_eq!(reloaded.n_docs, pages.len());
     }
 
     #[test]
