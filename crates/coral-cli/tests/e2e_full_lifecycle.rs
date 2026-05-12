@@ -48,8 +48,13 @@ fn full_lifecycle_with_mock_runner() {
     // Step 2: bootstrap with mock runner (responds with a YAML page list).
     std::fs::write(cwd.join("README.md"), "# repo").unwrap();
     let runner = MockRunner::new();
+    // v0.34.0 (FR-ONB-30 refactor): bootstrap now parses the plan
+    // even on the default-dry-run path so the planner output gets
+    // a YAML schema check on every call. The fixture was a bare
+    // sequence in v0.33; rewritten as a `plan:` mapping per the
+    // bootstrap template contract.
     runner.push_ok(
-        "- slug: order\n  type: module\n  rationale: top-level entity\n- slug: outbox\n  type: concept\n  rationale: pattern used for delivery",
+        "plan:\n  - slug: order\n    type: module\n    rationale: top-level entity\n  - slug: outbox\n    type: concept\n    rationale: pattern used for delivery",
     );
     bootstrap::run_with_runner(BootstrapArgs::default(), Some(&wiki), &runner).unwrap();
     assert_eq!(runner.calls().len(), 1);
@@ -129,12 +134,8 @@ fn full_lifecycle_with_mock_runner() {
     );
     bootstrap::run_with_runner(
         BootstrapArgs {
-            model: None,
-            provider: None,
-            dry_run: false,
             apply: true,
-            from_symbols: false,
-            path: None,
+            ..Default::default()
         },
         Some(&wiki),
         &runner_b,

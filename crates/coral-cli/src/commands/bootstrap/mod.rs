@@ -1,13 +1,16 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
 use clap::Args;
-use coral_core::cost::{Provider, estimate_cost_from_tokens};
+use coral_core::config;
+use coral_core::cost::{
+    PlanEntryEstimate, Provider, estimate_cost_from_tokens, estimate_tokens_for_entry,
+};
 use coral_core::frontmatter::PageType;
 use coral_core::gitdiff;
 use coral_core::index::{IndexEntry, WikiIndex};
 use coral_core::log::WikiLog;
 use coral_core::symbols::{self, Symbol, SymbolKind};
-use coral_runner::{Prompt, Runner};
+use coral_runner::{Prompt, Runner, RunnerError};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -19,6 +22,11 @@ pub mod state;
 
 use estimate::{plan_cost_estimate, print_estimate};
 use state::{BootstrapLock, BootstrapState, PageStatus};
+
+/// Exit code reserved for "partial run — `--max-cost` halted bootstrap
+/// mid-flight". PRD FR-ONB-29: distinct from 0 (success), 1
+/// (findings), 2 (usage error), 3 (internal). Picked 2 per the PRD.
+pub const EXIT_MAX_COST_REACHED: u8 = 2;
 
 #[derive(Args, Debug, Default)]
 pub struct BootstrapArgs {
@@ -43,6 +51,31 @@ pub struct BootstrapArgs {
     /// Only used with `--from-symbols`.
     #[arg(long)]
     pub path: Option<PathBuf>,
+    /// v0.34.0 (FR-ONB-12): show cost estimate (upper-bound + margin)
+    /// without running the bootstrap. Implies --dry-run for the
+    /// page-write phase.
+    #[arg(long, conflicts_with = "apply")]
+    pub estimate: bool,
+    /// v0.34.0 (FR-ONB-29): abort mid-flight (and pre-flight) if the
+    /// running cost exceeds this USD value. Pre-flight: if estimate's
+    /// upper-bound exceeds this, exit before any LLM call. Mid-flight:
+    /// page-by-page gate using real Runner.usage cost (or heuristic
+    /// fallback when usage is unavailable). On abort, the checkpoint
+    /// at .wiki/.bootstrap-state.json is marked partial=true and
+    /// `coral bootstrap --resume` continues.
+    #[arg(long, value_name = "USD")]
+    pub max_cost: Option<f64>,
+    /// v0.34.0 (FR-ONB-30): resume from .wiki/.bootstrap-state.json
+    /// checkpoint. Skips planner re-call (the persisted plan is
+    /// re-used verbatim) and re-tries every page that is NOT
+    /// Completed. Conflicts with --dry-run / --estimate.
+    #[arg(long, conflicts_with_all = ["dry_run", "estimate"])]
+    pub resume: bool,
+    /// v0.34.0 (FR-ONB-12 large-repo hint): limit to the first N
+    /// pages by plan order. Useful for very large repos where the
+    /// full bootstrap would exceed --max-cost.
+    #[arg(long, value_name = "N")]
+    pub max_pages: Option<usize>,
 }
 
 pub fn run(args: BootstrapArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
@@ -70,31 +103,52 @@ pub fn run_with_runner(
         );
     }
 
-    // Walk repo (exclude .git, .wiki, target, node_modules) to collect file list.
     let cwd = std::env::current_dir().context("getting cwd")?;
-    let files = collect_repo_files(&cwd)?;
-    let listing = files
-        .iter()
-        .take(200) // cap to keep prompts bounded
-        .map(|p| p.display().to_string())
-        .collect::<Vec<_>>()
-        .join("\n");
 
-    let prompt_template =
-        super::prompt_loader::load_or_fallback("bootstrap", BOOTSTRAP_SYSTEM_FALLBACK);
-    let prompt = Prompt {
-        system: Some(prompt_template.content),
-        user: format!(
-            "Repo file listing (truncated to 200):\n{listing}\n\nSuggest 5–15 wiki pages to seed `.wiki/`. Output a YAML plan as in the bootstrap prompt template."
-        ),
-        model: args.model,
-        cwd: None,
-        timeout: None,
+    // Resolve provider name once — used by cost model + state.provider.
+    let provider_name =
+        super::runner_helper::resolve_provider(args.provider.as_deref())
+            .map_err(|e| anyhow::anyhow!(e))?;
+    let cost_provider = match provider_name {
+        super::runner_helper::ProviderName::Claude => Provider::Claude,
+        super::runner_helper::ProviderName::Gemini => Provider::Gemini,
+        super::runner_helper::ProviderName::Http => Provider::Http,
+        super::runner_helper::ProviderName::Local => Provider::Local,
     };
+    // Bootstrap thresholds from `.coral/config.toml` (FR-ONB-14).
+    let cfg = config::load_from_repo(&cwd).unwrap_or_default();
+    let big_repo_threshold = cfg.bootstrap.big_repo_threshold_usd;
 
-    let out = runner
-        .run(&prompt)
-        .map_err(|e| anyhow::anyhow!("runner failed: {e}"))?;
+    // ---- --resume path: skip plan generation entirely --------------------
+    if args.resume {
+        let state =
+            BootstrapState::load(&root)?.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "--resume requires an existing checkpoint at {}; \
+                     none found. Run `coral bootstrap --apply` first.",
+                    BootstrapState::path(&root).display()
+                )
+            })?;
+        let _lock = BootstrapLock::acquire(&root)?;
+        let resume_max_cost = args.max_cost.or(state.max_cost_usd);
+        return apply_pages(&root, &cwd, runner, cost_provider, state, resume_max_cost);
+    }
+
+    // ---- Plan generation (one runner call) -------------------------------
+    let plan = generate_plan(runner, &cwd, args.model.clone())?;
+    let mut plan = plan.plan;
+
+    // FR-ONB-12 large-repo limit.
+    if let Some(n) = args.max_pages {
+        plan.truncate(n);
+    }
+
+    // ---- --estimate path -------------------------------------------------
+    if args.estimate {
+        let (loc, files_count) = repo_size(&cwd).unwrap_or((0, 0));
+        print_estimate(&plan, cost_provider, loc, files_count, big_repo_threshold)?;
+        return Ok(ExitCode::SUCCESS);
+    }
 
     // Resolve mode: dry-run | apply | default (=> dry-run with notice).
     let apply = args.apply;
@@ -107,26 +161,68 @@ pub fn run_with_runner(
 
     if dry_run {
         println!("# Bootstrap suggestions (review before applying)\n");
-        println!("{}", out.stdout);
+        // Render the plan back as YAML-ish output so dry-run is still
+        // useful as a preview. Existing tests check for slug content.
+        println!("plan:");
+        for e in &plan {
+            println!("  - slug: {}", e.slug);
+            if let Some(t) = e.r#type {
+                println!("    type: {t:?}");
+            }
+            if let Some(c) = e.confidence {
+                println!("    confidence: {c}");
+            }
+            if !e.rationale.is_empty() {
+                println!("    rationale: {}", e.rationale);
+            }
+            if let Some(b) = &e.body {
+                let trimmed = b.lines().next().unwrap_or("").trim();
+                println!("    body: |");
+                println!("      {trimmed}");
+            }
+        }
         println!("\n# (run with --apply to write pages, update index and append log)");
         return Ok(ExitCode::SUCCESS);
     }
 
-    // Apply path: parse → write pages → upsert index → log.
-    let plan = match Plan::parse(&out.stdout) {
-        Ok(p) => p,
-        Err(e) => {
-            println!("# Raw runner output (failed to parse as YAML):\n");
-            println!("{}", out.stdout);
-            anyhow::bail!("failed to parse plan: {e}");
+    // ---- --apply path: per-page loop + checkpoints + cost gating ---------
+    // FR-ONB-29 pre-flight gate: if upper_bound > max_cost, abort
+    // before paying for any LLM call.
+    if let Some(max_cost) = args.max_cost {
+        let est = plan_cost_estimate(&plan, cost_provider);
+        if est.usd_upper_bound > max_cost {
+            anyhow::bail!(
+                "Estimated upper bound (${:.2}) exceeds --max-cost (${:.2}). \
+                 Try: --max-pages=N or remove --max-cost.",
+                est.usd_upper_bound,
+                max_cost
+            );
         }
-    };
+    }
 
-    // Soft-fail with a loud WARN: pre-v0.19.3 a missing/broken git would
-    // silently poison every page's `last_updated_commit` to the literal
-    // string `"HEAD"`. Now we surface the underlying error so users at
-    // least understand why their pages got stamped that way.
-    let head = match gitdiff::head_sha(&cwd) {
+    let _lock = BootstrapLock::acquire(&root)?;
+    let max_cost = args.max_cost;
+    let state = BootstrapState::fresh(plan, cost_provider.label().into(), max_cost);
+    state.save_atomic(&root)?;
+    apply_pages(&root, &cwd, runner, cost_provider, state, max_cost)
+}
+
+/// FR-ONB-30 + FR-ONB-29: walk the plan one page at a time. Each
+/// page gets its own runner call (or, when the LLM-emitted plan
+/// already carries a `body`, we reuse it for free). Cost accumulates
+/// across the loop using real `Runner.usage` when present, falling
+/// back to the heuristic when `None`. `--max-cost` gates before
+/// every page; an exceeded budget marks the state `partial=true`
+/// and exits 2 with a resume hint.
+fn apply_pages(
+    root: &Path,
+    cwd: &Path,
+    runner: &dyn Runner,
+    cost_provider: Provider,
+    mut state: BootstrapState,
+    max_cost: Option<f64>,
+) -> Result<ExitCode> {
+    let head = match gitdiff::head_sha(cwd) {
         Ok(sha) => sha,
         Err(e) => {
             tracing::warn!(
@@ -137,33 +233,96 @@ pub fn run_with_runner(
             "HEAD".to_string()
         }
     };
-    let mut created = 0usize;
-    let mut skipped: Vec<String> = Vec::new();
-
     let idx_path = root.join("index.md");
     let idx_content = std::fs::read_to_string(&idx_path).context("reading .wiki/index.md")?;
     let mut index = WikiIndex::parse(&idx_content)?;
 
-    for entry in &plan.plan {
-        // Bootstrap assumes `create`; tolerate the field being absent (default Create).
+    let mut created = 0usize;
+    let mut skipped: Vec<String> = Vec::new();
+    let mut partial = false;
+
+    // Iterate by index so we can update state.pages[i] in-place.
+    let plan_len = state.plan.len();
+    for i in 0..plan_len {
+        // Skip pages already completed (resume).
+        if matches!(state.pages[i].status, PageStatus::Completed) {
+            continue;
+        }
+        let entry = state.plan[i].clone();
+
         if entry.action != Action::Create {
             skipped.push(format!(
                 "{} (action={:?} not supported in bootstrap)",
                 entry.slug, entry.action
             ));
+            state.pages[i].status = PageStatus::Failed;
+            state.pages[i].error =
+                Some(format!("unsupported action {:?}", entry.action));
+            state.save_atomic(root)?;
             continue;
         }
-        let page = match build_page(entry, &head, &root) {
+
+        // FR-ONB-29 mid-flight gate. Projected cost for THIS page
+        // uses the heuristic; if we've already exceeded, halt.
+        let projected_page_cost = project_page_cost(&entry, cost_provider);
+        if let Some(cap) = max_cost {
+            if state.cost_spent_usd + projected_page_cost > cap {
+                eprintln!(
+                    "Stopped at ${:.2} (cap ${cap:.2}). Run `coral bootstrap --resume` to continue.",
+                    state.cost_spent_usd
+                );
+                state.partial = true;
+                state.save_atomic(root)?;
+                partial = true;
+                break;
+            }
+        }
+
+        // ---- Mark InProgress + checkpoint --------------------------------
+        state.pages[i].status = PageStatus::InProgress;
+        state.save_atomic(root)?;
+
+        // ---- Generate body if absent -------------------------------------
+        let mut entry_with_body = entry.clone();
+        let mut real_usage: Option<coral_runner::TokenUsage> = None;
+        if entry.body.is_none() {
+            // One runner call per page (FR-ONB-30).
+            let page_prompt = build_page_prompt(&entry, cwd);
+            match runner.run(&page_prompt) {
+                Ok(out) => {
+                    entry_with_body.body = Some(out.stdout.clone());
+                    real_usage = out.usage;
+                }
+                Err(e) => {
+                    eprintln!("warn: per-page runner failed for `{}`: {e}", entry.slug);
+                    state.pages[i].status = PageStatus::Failed;
+                    state.pages[i].error = Some(format!("{e}"));
+                    state.save_atomic(root)?;
+                    skipped.push(entry.slug.clone());
+                    // Auth/not-found failures are terminal — surface them.
+                    if matches!(e, RunnerError::AuthFailed(_) | RunnerError::NotFound) {
+                        return Err(anyhow::anyhow!("runner failed: {e}"));
+                    }
+                    continue;
+                }
+            }
+        }
+
+        // ---- Write page + update index -----------------------------------
+        let page = match build_page(&entry_with_body, &head, root) {
             Ok(p) => p,
             Err(e) => {
                 eprintln!("warn: skipping `{}`: {e}", entry.slug);
+                state.pages[i].status = PageStatus::Failed;
+                state.pages[i].error = Some(format!("{e}"));
+                state.save_atomic(root)?;
                 skipped.push(entry.slug.clone());
                 continue;
             }
         };
         page.write()?;
         let rel_path =
-            page_relative_path(&root, page.frontmatter.page_type, &page.frontmatter.slug);
+            page_relative_path(root, page.frontmatter.page_type, &page.frontmatter.slug);
         index.upsert(IndexEntry {
             slug: page.frontmatter.slug.clone(),
             page_type: page.frontmatter.page_type,
@@ -172,6 +331,36 @@ pub fn run_with_runner(
             status: page.frontmatter.status,
             last_updated_commit: page.frontmatter.last_updated_commit.clone(),
         });
+
+        // ---- Record cost + mark Completed --------------------------------
+        let (input, output, cost_usd) = if let Some(u) = real_usage {
+            let est = estimate_cost_from_tokens(u.input_tokens, u.output_tokens, cost_provider);
+            (u.input_tokens, u.output_tokens, est.usd_estimate)
+        } else {
+            // No body call (pre-existing body in plan, e.g. bootstrap
+            // shape used by every v0.33 test fixture) → zero cost for
+            // this page. If we did call the runner but it returned
+            // None usage, fall back to the heuristic for the same
+            // entry.
+            if entry.body.is_some() {
+                (0, 0, 0.0)
+            } else {
+                let est = plan_cost_estimate(&[entry.clone()], cost_provider);
+                (
+                    est.input_tokens,
+                    est.output_tokens,
+                    est.usd_estimate,
+                )
+            }
+        };
+        state.pages[i].input_tokens = input;
+        state.pages[i].output_tokens = output;
+        state.pages[i].cost_usd = cost_usd;
+        state.pages[i].status = PageStatus::Completed;
+        state.pages[i].completed_at = Some(Utc::now());
+        state.pages[i].error = None;
+        state.cost_spent_usd += cost_usd;
+        state.save_atomic(root)?;
         created += 1;
     }
 
@@ -199,10 +388,13 @@ pub fn run_with_runner(
             format!(" Skipped: {}.", skipped.join(", "))
         }
     );
+
+    if partial {
+        return Ok(ExitCode::from(EXIT_MAX_COST_REACHED));
+    }
     // v0.30.x audit #B7: if the LLM produced a plan but every entry was
-    // skipped (e.g., all action != Create, or all build_page() failed),
-    // exit non-zero so CI / scripts can detect the no-op-on-failure
-    // case. Pre-fix this returned SUCCESS even when nothing was written.
+    // skipped, exit non-zero so CI / scripts can detect the no-op-on-
+    // failure case.
     if created == 0 && !skipped.is_empty() {
         eprintln!(
             "bootstrap: no pages created; {} skipped — surfacing as failure",
@@ -211,6 +403,94 @@ pub fn run_with_runner(
         return Ok(ExitCode::FAILURE);
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// FR-ONB-30: planner call — generate just the plan skeleton from the
+/// repo file listing. Returns the parsed `Plan` (with entries that
+/// may or may not have inline `body` content depending on what the
+/// model emitted).
+fn generate_plan(runner: &dyn Runner, cwd: &Path, model: Option<String>) -> Result<Plan> {
+    let files = collect_repo_files(cwd)?;
+    let listing = files
+        .iter()
+        .take(200)
+        .map(|p| p.display().to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let prompt_template =
+        super::prompt_loader::load_or_fallback("bootstrap", BOOTSTRAP_SYSTEM_FALLBACK);
+    let prompt = Prompt {
+        system: Some(prompt_template.content),
+        user: format!(
+            "Repo file listing (truncated to 200):\n{listing}\n\nSuggest 5–15 wiki pages to seed `.wiki/`. Output a YAML plan as in the bootstrap prompt template."
+        ),
+        model,
+        cwd: None,
+        timeout: None,
+    };
+    let out = runner
+        .run(&prompt)
+        .map_err(|e| anyhow::anyhow!("runner failed: {e}"))?;
+    match Plan::parse(&out.stdout) {
+        Ok(p) => Ok(p),
+        Err(e) => {
+            println!("# Raw runner output (failed to parse as YAML):\n");
+            println!("{}", out.stdout);
+            anyhow::bail!("failed to parse plan: {e}")
+        }
+    }
+}
+
+/// Build the per-page prompt for the page-body call (FR-ONB-30). Kept
+/// small — system text is the same bootstrap template, user content
+/// names the slug + rationale + page type so the LLM writes one
+/// focused Markdown body.
+fn build_page_prompt(entry: &PlanEntry, _cwd: &Path) -> Prompt {
+    let system = format!(
+        "You are the Coral wiki bibliotecario. Write ONE Markdown page body for the wiki slug \
+         provided. Output the Markdown body directly — no YAML envelope, no code fence, no \
+         meta-commentary. Aim for ~3 KB. The page type is `{:?}`.",
+        entry.r#type.unwrap_or(PageType::Module)
+    );
+    let user = format!(
+        "Slug: {}\nRationale: {}\n\nWrite the Markdown body now.",
+        entry.slug, entry.rationale
+    );
+    Prompt {
+        system: Some(system),
+        user,
+        model: None,
+        cwd: None,
+        timeout: None,
+    }
+}
+
+/// Cheap pre-page cost projection for the mid-flight gate. Uses the
+/// same coral_core::cost heuristic the upfront estimate does.
+fn project_page_cost(entry: &PlanEntry, provider: Provider) -> f64 {
+    let est = PlanEntryEstimate {
+        body_len_chars: entry.body.as_deref().map(str::len).unwrap_or(0),
+        rationale_len_chars: entry.rationale.len(),
+    };
+    let (input, output) = estimate_tokens_for_entry(&est);
+    estimate_cost_from_tokens(input, output, provider).usd_estimate
+}
+
+/// Best-effort `(LOC, file_count)` snapshot of the repo for the
+/// `--estimate` first line. We approximate LOC as the sum of file
+/// sizes / 50 (a rough character-to-line ratio); the real count is
+/// not worth a second walk. Returns `(0, 0)` on any error.
+fn repo_size(root: &Path) -> Result<(usize, usize)> {
+    let files = collect_repo_files(root)?;
+    let mut total_bytes: u64 = 0;
+    for rel in &files {
+        let abs = root.join(rel);
+        if let Ok(md) = std::fs::metadata(&abs) {
+            total_bytes = total_bytes.saturating_add(md.len());
+        }
+    }
+    let loc = (total_bytes / 50) as usize;
+    Ok((loc, files.len()))
 }
 
 // ─── From-symbols path ─────────────────────────────────────────────────────
@@ -940,5 +1220,281 @@ mod tests {
         };
         let trait_syms: Vec<&Symbol> = vec![&t1, &t2];
         assert_eq!(infer_page_type(&trait_syms), PageType::Interface);
+    }
+
+    // ─── v0.34.0 (M1) — FR-ONB-12, 29, 30 ─────────────────────────────────
+
+    /// FR-ONB-12: `--estimate` prints the cost projection to stdout
+    /// and does NOT write any pages. The runner is invoked exactly
+    /// once (for plan generation).
+    #[test]
+    fn estimate_does_not_write_pages() {
+        let _guard = CWD_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = TempDir::new().unwrap();
+        let cur = std::env::current_dir().unwrap();
+        let wiki = tmp.path().join(".wiki");
+        seed_wiki_with_index(&wiki);
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let runner = MockRunner::new();
+        runner.push_ok(
+            "plan:\n  - slug: alpha\n    type: module\n    confidence: 0.6\n    rationale: anchor\n",
+        );
+        let exit = run_with_runner(
+            BootstrapArgs {
+                estimate: true,
+                ..Default::default()
+            },
+            Some(&wiki),
+            &runner,
+        )
+        .unwrap();
+        std::env::set_current_dir(&cur).unwrap();
+
+        assert_eq!(exit, ExitCode::SUCCESS);
+        assert!(
+            !wiki.join("modules").join("alpha.md").exists(),
+            "--estimate must not write pages"
+        );
+        // Planner called once.
+        assert_eq!(runner.calls().len(), 1);
+    }
+
+    /// FR-ONB-29 pre-flight gate: `--max-cost` smaller than the
+    /// estimated upper bound aborts BEFORE any page-body call. The
+    /// runner is called once (for the plan), then we bail.
+    #[test]
+    fn max_cost_preflight_aborts_when_upper_bound_exceeds_cap() {
+        let _guard = CWD_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = TempDir::new().unwrap();
+        let cur = std::env::current_dir().unwrap();
+        let wiki = tmp.path().join(".wiki");
+        seed_wiki_with_index(&wiki);
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        // 100-page plan against Claude → upper bound > $2 (way more
+        // than the $0.01 cap below).
+        let mut plan_yaml = String::from("plan:\n");
+        for i in 0..100 {
+            plan_yaml.push_str(&format!(
+                "  - slug: slug-{i}\n    type: module\n    confidence: 0.6\n    rationale: r\n"
+            ));
+        }
+        let runner = MockRunner::new();
+        runner.push_ok(plan_yaml);
+
+        let res = run_with_runner(
+            BootstrapArgs {
+                apply: true,
+                max_cost: Some(0.01),
+                ..Default::default()
+            },
+            Some(&wiki),
+            &runner,
+        );
+        std::env::set_current_dir(&cur).unwrap();
+        let err = res.expect_err("must abort pre-flight");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("Estimated upper bound") && msg.contains("exceeds"),
+            "unexpected error: {msg}"
+        );
+        // Plan call only; no per-page calls.
+        assert_eq!(runner.calls().len(), 1);
+    }
+
+    /// FR-ONB-29 mid-flight gate: 3-page plan, --max-cost=$1.50,
+    /// real per-page usage of 100k input + 100k output = $1.80 cost
+    /// per page. Page 1 lands ($1.80 spent), Page 2 gate triggers,
+    /// state is marked partial, exit code is 2.
+    #[test]
+    fn max_cost_midflight_halts_and_marks_partial() {
+        let _guard = CWD_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = TempDir::new().unwrap();
+        let cur = std::env::current_dir().unwrap();
+        let wiki = tmp.path().join(".wiki");
+        seed_wiki_with_index(&wiki);
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        // Plan with NO body — forces per-page LLM calls.
+        let plan = "plan:\n  \
+            - slug: alpha\n    type: module\n    confidence: 0.6\n    rationale: a\n  \
+            - slug: beta\n    type: module\n    confidence: 0.6\n    rationale: b\n  \
+            - slug: gamma\n    type: module\n    confidence: 0.6\n    rationale: c\n";
+        let runner = MockRunner::new();
+        runner.push_ok(plan);
+        // Page 1 body call: 100k input + 100k output = $0.30 (Claude).
+        // We pick a max_cost of $0.50 so page 1 lands (gate uses
+        // projected cost, ~$0.014 for an empty-body entry; well
+        // under the cap). After page 1 lands ($0.30 spent), page 2
+        // gate: $0.30 + $0.014 > $0.50? Pick the cost numbers + cap
+        // so the gate fires on page 2.
+        let big_usage = coral_runner::TokenUsage {
+            input_tokens: 100_000,
+            output_tokens: 100_000,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+        };
+        runner.push_ok_with_usage("# alpha\n\nbody", big_usage);
+        // Should never be called.
+        runner.push_ok("# beta\n\nbody");
+
+        // 3 empty-body entries: pre-flight estimate ≈ 3 * (1500
+        // input × $3/MTok + 800 output × $15/MTok) ≈ $0.05, upper
+        // bound ≈ $0.07. Pre-flight passes with cap=$1.00.
+        // Mid-flight: page 1 real cost = 100k × $3/MTok + 100k ×
+        // $15/MTok = $0.30 + $1.50 = $1.80 → exceeds cap of $1.00
+        // when page 2 gate fires ($1.80 + projected > $1.00 → halt).
+        let exit = run_with_runner(
+            BootstrapArgs {
+                apply: true,
+                max_cost: Some(1.0),
+                ..Default::default()
+            },
+            Some(&wiki),
+            &runner,
+        )
+        .expect("must complete with partial exit code");
+        std::env::set_current_dir(&cur).unwrap();
+
+        // Exit code 2 = partial / max-cost reached.
+        assert_eq!(format!("{exit:?}"), format!("{:?}", ExitCode::from(2)));
+
+        // State on disk is `partial: true` with page 1 Completed.
+        let state = BootstrapState::load(&wiki).unwrap().expect("state file");
+        assert!(state.partial, "state must be marked partial");
+        assert_eq!(state.pages.len(), 3);
+        assert_eq!(state.pages[0].status, PageStatus::Completed);
+        assert!(state.cost_spent_usd > 0.0);
+    }
+
+    /// FR-ONB-30: `--resume` re-uses the persisted plan and skips
+    /// `Completed` pages. We seed a state with page[0] already
+    /// Completed and page[1] Pending; one runner call (page 2 body)
+    /// is enough.
+    #[test]
+    fn resume_skips_completed_pages_and_finishes_pending() {
+        let _guard = CWD_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = TempDir::new().unwrap();
+        let cur = std::env::current_dir().unwrap();
+        let wiki = tmp.path().join(".wiki");
+        seed_wiki_with_index(&wiki);
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        // Build a state with two pages, page 0 already Completed.
+        let plan = vec![
+            PlanEntry {
+                slug: "alpha".into(),
+                action: Action::Create,
+                r#type: Some(PageType::Module),
+                confidence: Some(0.6),
+                rationale: "first".into(),
+                body: Some("# alpha".into()),
+            },
+            PlanEntry {
+                slug: "beta".into(),
+                action: Action::Create,
+                r#type: Some(PageType::Module),
+                confidence: Some(0.6),
+                rationale: "second".into(),
+                body: None,
+            },
+        ];
+        let mut state = BootstrapState::fresh(plan, "claude-sonnet-4-5".into(), None);
+        state.pages[0].status = PageStatus::Completed;
+        state.save_atomic(&wiki).unwrap();
+
+        let runner = MockRunner::new();
+        // Only one runner call expected (page 2 body).
+        runner.push_ok("# beta\n\nbody");
+
+        let exit = run_with_runner(
+            BootstrapArgs {
+                apply: true,
+                resume: true,
+                ..Default::default()
+            },
+            Some(&wiki),
+            &runner,
+        )
+        .unwrap();
+        std::env::set_current_dir(&cur).unwrap();
+
+        assert_eq!(exit, ExitCode::SUCCESS);
+        // Page 2 wrote.
+        assert!(wiki.join("modules").join("beta.md").exists());
+        // Runner called exactly once (the body call for page 2 —
+        // the planner is NOT re-called on --resume).
+        assert_eq!(runner.calls().len(), 1);
+        // State now has both pages Completed.
+        let final_state = BootstrapState::load(&wiki).unwrap().unwrap();
+        assert_eq!(final_state.pages[0].status, PageStatus::Completed);
+        assert_eq!(final_state.pages[1].status, PageStatus::Completed);
+    }
+
+    /// FR-ONB-30: `--resume` without a checkpoint errors out
+    /// actionably.
+    #[test]
+    fn resume_without_checkpoint_errors_actionably() {
+        let _guard = CWD_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = TempDir::new().unwrap();
+        let cur = std::env::current_dir().unwrap();
+        let wiki = tmp.path().join(".wiki");
+        seed_wiki_with_index(&wiki);
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let runner = MockRunner::new();
+        let res = run_with_runner(
+            BootstrapArgs {
+                apply: true,
+                resume: true,
+                ..Default::default()
+            },
+            Some(&wiki),
+            &runner,
+        );
+        std::env::set_current_dir(&cur).unwrap();
+        let err = res.expect_err("must error without state file");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("--resume requires"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    /// FR-ONB-30: `--apply` writes the checkpoint with a fingerprint
+    /// + the full plan persisted, and on completion every page is
+    /// Completed.
+    #[test]
+    fn apply_writes_checkpoint_with_completed_pages() {
+        let _guard = CWD_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = TempDir::new().unwrap();
+        let cur = std::env::current_dir().unwrap();
+        let wiki = tmp.path().join(".wiki");
+        seed_wiki_with_index(&wiki);
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let runner = MockRunner::new();
+        // Plan with body inline = per-page calls skipped; cost = 0.
+        runner.push_ok(
+            "plan:\n  - slug: alpha\n    type: module\n    confidence: 0.6\n    rationale: a\n    body: |\n      # alpha\n",
+        );
+
+        let exit = run_with_runner(
+            BootstrapArgs {
+                apply: true,
+                ..Default::default()
+            },
+            Some(&wiki),
+            &runner,
+        )
+        .unwrap();
+        std::env::set_current_dir(&cur).unwrap();
+
+        assert_eq!(exit, ExitCode::SUCCESS);
+        let state = BootstrapState::load(&wiki).unwrap().expect("state");
+        assert_eq!(state.pages.len(), 1);
+        assert_eq!(state.pages[0].status, PageStatus::Completed);
+        assert!(!state.plan_fingerprint.is_empty());
     }
 }
