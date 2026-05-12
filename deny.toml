@@ -19,12 +19,19 @@ feature-depth = 1
 
 [advisories]
 yanked = "warn"
-# RUSTSEC-2025-0141 (bincode 1.x unmaintained) was removed in v0.34.x
-# when the BM25 search index in `coral-core::search_index` migrated to
-# bincode 2.x via the serde integration. Keep this list empty so any
-# new advisory surfaces as a hard failure rather than getting
-# papered over.
-ignore = []
+ignore = [
+    # RUSTSEC-2025-0141 (bincode unmaintained, informational).
+    # The advisory covers ALL bincode versions (1.x AND 2.x) — the
+    # upstream team stopped maintaining the crate on 2025-12-16 after a
+    # harassment incident. v0.34.x migrated coral-core::search_index
+    # from bincode 1.x → 2.x anyway because 2.x is on a more recent
+    # maintained fork (see https://git.sr.ht/~stygianentity/bincode)
+    # and the API surface we use (serde integration + standard config)
+    # is stable. Long-term we may swap to postcard / bitcode / rkyv —
+    # tracked separately. Not a security vulnerability; informational
+    # only.
+    "RUSTSEC-2025-0141",
+]
 
 [licenses]
 # Spell each allowed license explicitly. Add as needed; grep-able log.

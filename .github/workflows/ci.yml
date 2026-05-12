@@ -271,11 +271,12 @@ jobs:
       - name: Install cargo-audit
         run: cargo install --locked cargo-audit
       - name: cargo audit
-        # v0.34.x: dropped the `--ignore RUSTSEC-2025-0141` flag after
-        # the bincode 1.x → 2.x migration. If a new advisory lands and
-        # needs a deliberate ignore window, add it back with an inline
-        # justification AND a BACKLOG entry naming the fix release.
-        run: cargo audit --deny warnings
+        # RUSTSEC-2025-0141 (bincode unmaintained) covers ALL bincode
+        # versions (1.x AND 2.x). v0.34.x migrated coral-core to 2.x
+        # for the more recent API + fork but the advisory still
+        # applies. Informational, not a security vulnerability — see
+        # the inline justification in deny.toml.
+        run: cargo audit --deny warnings --ignore RUSTSEC-2025-0141
 
   deny:
     name: Licenses + duplicate versions (cargo-deny)
