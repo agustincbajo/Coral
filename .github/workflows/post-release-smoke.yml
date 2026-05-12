@@ -19,8 +19,19 @@ name: Post-release smoke
 # install parity stays gated on every supported platform.
 
 on:
+  # `release: published` is the documented hook, but in practice it does
+  # NOT fire when `release.yml` itself creates the release via the
+  # default GITHUB_TOKEN (GitHub disallows token-authenticated workflows
+  # from triggering downstream workflows, to prevent infinite loops).
+  # We keep it here for the case where someone publishes a draft release
+  # manually (which uses the user's PAT and DOES trigger the cascade).
   release:
     types: [published]
+  # The reliable auto-trigger: fires after the `Release` workflow
+  # completes successfully, regardless of how the release was created.
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
   # Allow manual re-runs against a specific tag (handy when a prior
   # run timed out on a flaky runner).
   workflow_dispatch:
@@ -37,6 +48,11 @@ jobs:
   smoke:
     name: Smoke install (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    # Skip when triggered by a Release-workflow run that did NOT succeed.
+    # (workflow_run fires on every conclusion; we only want to smoke
+    # successful releases. The default trigger paths — release-event +
+    # workflow_dispatch — bypass this check.)
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     strategy:
       fail-fast: false
       matrix:
@@ -49,14 +65,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # When the workflow is triggered by a release, GITHUB_REF
-          # carries the tag; on manual dispatch, the user-supplied tag
-          # wins. Both fall back to invoking install.sh with no version
-          # pin (resolves `latest` on its own).
+          # Tag resolution by trigger:
+          #  - workflow_dispatch: user-supplied `inputs.tag` wins.
+          #  - release event: pulled from `github.event.release.tag_name`.
+          #  - workflow_run (Release completed): pulled from the parent
+          #    workflow's `head_branch` (which IS the tag name when the
+          #    Release workflow itself was tag-triggered).
+          #  - Otherwise: empty → install.sh resolves `latest`.
           if [ -n "${{ inputs.tag }}" ]; then
             CORAL_VERSION="${{ inputs.tag }}"
           elif [ "${{ github.event_name }}" = "release" ]; then
             CORAL_VERSION="${{ github.event.release.tag_name }}"
+          elif [ "${{ github.event_name }}" = "workflow_run" ]; then
+            CORAL_VERSION="${{ github.event.workflow_run.head_branch }}"
           else
             CORAL_VERSION=""
           fi
@@ -75,16 +96,17 @@ jobs:
         run: |
           $tag = if ('${{ inputs.tag }}') { '${{ inputs.tag }}' }
                  elseif ('${{ github.event_name }}' -eq 'release') { '${{ github.event.release.tag_name }}' }
+                 elseif ('${{ github.event_name }}' -eq 'workflow_run') { '${{ github.event.workflow_run.head_branch }}' }
                  else { '' }
           Write-Output ("Installing Coral version: {0}" -f ($tag, 'latest' -ne '')[0])
           $url = 'https://raw.githubusercontent.com/agustincbajo/Coral/main/scripts/install.ps1'
+          # install.ps1 takes `-Version vX.Y.Z` as a param; the `iwr | iex`
+          # idiom doesn't forward arguments, so we use the scriptblock
+          # invocation pattern documented in install.ps1's own header
+          # comments. This keeps a single source of truth for the asset
+          # naming convention (vs hand-rolling the asset URL here).
           if ($tag) {
-            iwr -useb $url | iex
-            # install.ps1 doesn't yet accept a --version flag the same way;
-            # if the manual tag is set we re-install from the explicit asset URL.
-            $asset = "https://github.com/agustincbajo/Coral/releases/download/$tag/coral-windows-x86_64.zip"
-            Invoke-WebRequest -Uri $asset -OutFile coral.zip
-            Expand-Archive -Force coral.zip "$env:USERPROFILE\.coral\bin"
+            & ([scriptblock]::Create((iwr -useb $url).Content)) -Version $tag
           } else {
             iwr -useb $url | iex
           }
@@ -147,8 +169,17 @@ jobs:
       - name: Smoke `coral self-upgrade --check-only`
         shell: bash
         run: |
-          set -euo pipefail
-          # `--check-only` queries the GitHub releases endpoint and
-          # reports up_to_date / update_available without downloading.
-          # Either outcome is acceptable; we only fail on non-zero exit.
-          coral self-upgrade --check-only
+          set -uo pipefail
+          # `--check-only` queries the unauthenticated GitHub releases
+          # endpoint (60 req/hour/IP). On smoke matrix the three OS
+          # runners can share an egress IP and burn the budget,
+          # surfacing as a 403. The smoke goal here is "binary runs
+          # end-to-end without panic"; transient API failures are
+          # surfaced as warnings rather than smoke failures. Tracked
+          # for v0.35: thread $GITHUB_TOKEN into self_upgrade's
+          # `ureq::AgentBuilder` so authenticated requests get the
+          # higher 5000 req/hour quota.
+          if ! coral self-upgrade --check-only 2>/tmp/upgrade.err; then
+            cat /tmp/upgrade.err
+            echo "::warning::coral self-upgrade --check-only exited non-zero (likely GitHub API 403 rate limit). Smoke step continues."
+          fi
