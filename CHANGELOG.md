@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.32.0] - 2026-05-12
+
+**Modern WebUI shipped — `coral ui serve` with a force-directed graph + bi-temporal slider.** First milestone (M1) of the WebUI roadmap (see `docs/PRD-v0.32-webui.md`). A new React 19 + Vite 7 + Tailwind 3.4 SPA is embedded directly in the binary via `include_dir!`. End-users never need Node/npm. The legacy `coral wiki serve` (HTML/Mermaid view from v0.25.0) remains intact for backward compatibility — both subcommands coexist.
+
 ### Added
 
 - **`coral ui serve` — REST API + embedded modern WebUI (v0.32.0 M1).** A new
