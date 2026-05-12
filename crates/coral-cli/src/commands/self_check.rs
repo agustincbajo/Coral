@@ -679,10 +679,7 @@ fn probe_ui_server() -> Option<UiHealth> {
     let mut last_err: Option<String> = None;
     for _ in 0..15 {
         std::thread::sleep(Duration::from_millis(200));
-        match agent
-            .get("http://127.0.0.1:38400/health")
-            .call()
-        {
+        match agent.get("http://127.0.0.1:38400/health").call() {
             Ok(resp) => {
                 response_status = Some(resp.status());
                 reachable = resp.status() == 200;
@@ -1261,10 +1258,7 @@ mod tests {
             // the note must be either absent (reachable) or describe
             // the timeout (reachable=false).
             if !h.reachable {
-                assert!(
-                    h.note.is_some(),
-                    "unreachable probe must carry a note"
-                );
+                assert!(h.note.is_some(), "unreachable probe must carry a note");
             }
         }
     }

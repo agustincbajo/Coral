@@ -61,8 +61,7 @@ pub fn run(args: SelfUpgradeArgs) -> Result<ExitCode> {
     let current_version = env!("CARGO_PKG_VERSION").to_string();
     let target_version = match args.version.as_deref() {
         Some(explicit) => normalize_version(explicit).to_string(),
-        None => fetch_latest_release_tag()
-            .context("looking up the latest release from GitHub")?,
+        None => fetch_latest_release_tag().context("looking up the latest release from GitHub")?,
     };
 
     // --check-only short-circuits before any major-bump or download
@@ -90,8 +89,8 @@ pub fn run(args: SelfUpgradeArgs) -> Result<ExitCode> {
         );
     }
 
-    let current_exe = std::env::current_exe()
-        .context("locating the running binary via current_exe()")?;
+    let current_exe =
+        std::env::current_exe().context("locating the running binary via current_exe()")?;
     let target_filename = platform_asset_filename(&target_version)?;
     let download_url = format!(
         "https://github.com/{REPO}/releases/download/{tag}/{name}",
@@ -101,14 +100,12 @@ pub fn run(args: SelfUpgradeArgs) -> Result<ExitCode> {
     let sha_url = format!("{download_url}.sha256");
 
     println!("Downloading {target_filename} ...");
-    let tmpdir = tempfile::tempdir()
-        .context("creating temp dir for upgrade download")?;
+    let tmpdir = tempfile::tempdir().context("creating temp dir for upgrade download")?;
     let archive_path = tmpdir.path().join(&target_filename);
     download_to(&download_url, &archive_path)
         .with_context(|| format!("downloading {download_url}"))?;
     let sha_path = tmpdir.path().join(format!("{target_filename}.sha256"));
-    download_to(&sha_url, &sha_path)
-        .with_context(|| format!("downloading {sha_url}"))?;
+    download_to(&sha_url, &sha_path).with_context(|| format!("downloading {sha_url}"))?;
 
     println!("Verifying SHA-256 ...");
     verify_sha256(&archive_path, &sha_path)?;
@@ -173,10 +170,7 @@ pub(crate) fn platform_asset_filename(tag: &str) -> Result<String> {
 }
 
 fn host_target_triple() -> Result<&'static str> {
-    let triple = match (
-        std::env::consts::OS,
-        std::env::consts::ARCH,
-    ) {
+    let triple = match (std::env::consts::OS, std::env::consts::ARCH) {
         ("linux", "x86_64") => "x86_64-unknown-linux-gnu",
         ("macos", "x86_64") => "x86_64-apple-darwin",
         ("macos", "aarch64") => "aarch64-apple-darwin",
@@ -216,20 +210,16 @@ fn download_to(url: &str, dest: &Path) -> Result<()> {
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(30))
         .timeout_read(Duration::from_secs(300))
-        .user_agent(concat!(
-            "coral-self-upgrade/",
-            env!("CARGO_PKG_VERSION")
-        ))
+        .user_agent(concat!("coral-self-upgrade/", env!("CARGO_PKG_VERSION")))
         .build();
     let resp = agent
         .get(url)
         .call()
         .map_err(|e| anyhow!("HTTP GET failed: {e}"))?;
     let mut reader = resp.into_reader();
-    let mut out = std::fs::File::create(dest)
-        .with_context(|| format!("creating {}", dest.display()))?;
-    std::io::copy(&mut reader, &mut out)
-        .with_context(|| format!("writing {}", dest.display()))?;
+    let mut out =
+        std::fs::File::create(dest).with_context(|| format!("creating {}", dest.display()))?;
+    std::io::copy(&mut reader, &mut out).with_context(|| format!("writing {}", dest.display()))?;
     Ok(())
 }
 
@@ -247,8 +237,8 @@ pub(crate) fn verify_sha256(archive: &Path, sha_file: &Path) -> Result<()> {
         .to_lowercase();
 
     let mut hasher = Sha256::new();
-    let mut file = std::fs::File::open(archive)
-        .with_context(|| format!("opening {}", archive.display()))?;
+    let mut file =
+        std::fs::File::open(archive).with_context(|| format!("opening {}", archive.display()))?;
     let mut buf = [0u8; 64 * 1024];
     loop {
         let n = file.read(&mut buf)?;
@@ -354,10 +344,10 @@ fn extract_from_zip(
     // — reuse it here so we don't shell out to PowerShell's
     // Expand-Archive (which is fine but adds a process boundary the
     // tests can't drive easily).
-    let file = std::fs::File::open(archive)
-        .with_context(|| format!("opening {}", archive.display()))?;
-    let mut zip = zip::ZipArchive::new(file)
-        .with_context(|| format!("reading zip {}", archive.display()))?;
+    let file =
+        std::fs::File::open(archive).with_context(|| format!("opening {}", archive.display()))?;
+    let mut zip =
+        zip::ZipArchive::new(file).with_context(|| format!("reading zip {}", archive.display()))?;
     let mut found: Option<PathBuf> = None;
     for i in 0..zip.len() {
         let mut entry = zip.by_index(i)?;
@@ -497,13 +487,7 @@ fn replace_windows(current_exe: &Path, new_path: &Path) -> Result<()> {
     // process, antivirus, etc.) we schedule it for delete-on-reboot
     // so the upgrade doesn't fail outright — the new binary will
     // still land via step (b).
-    let moved = unsafe {
-        MoveFileExW(
-            cur_w.as_ptr(),
-            old_w.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING,
-        )
-    };
+    let moved = unsafe { MoveFileExW(cur_w.as_ptr(), old_w.as_ptr(), MOVEFILE_REPLACE_EXISTING) };
     if moved == 0 {
         // Schedule the stale exe for delete-on-reboot; ignore the
         // result because the next MoveFileExW is what matters.
@@ -519,13 +503,7 @@ fn replace_windows(current_exe: &Path, new_path: &Path) -> Result<()> {
     // (b) Place the new binary at the canonical path. This must
     // succeed; if it doesn't we're in a half-upgraded state and the
     // user needs a manual recovery.
-    let placed = unsafe {
-        MoveFileExW(
-            new_w.as_ptr(),
-            cur_w.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING,
-        )
-    };
+    let placed = unsafe { MoveFileExW(new_w.as_ptr(), cur_w.as_ptr(), MOVEFILE_REPLACE_EXISTING) };
     if placed == 0 {
         let err = std::io::Error::last_os_error();
         bail!(
@@ -576,10 +554,7 @@ fn post_upgrade_verify(current_exe: &Path, tag: &str) -> Result<()> {
 pub(crate) fn fetch_latest_release_tag() -> Result<String> {
     let agent = ureq::AgentBuilder::new()
         .timeout(Duration::from_secs(15))
-        .user_agent(concat!(
-            "coral-self-upgrade/",
-            env!("CARGO_PKG_VERSION")
-        ))
+        .user_agent(concat!("coral-self-upgrade/", env!("CARGO_PKG_VERSION")))
         .build();
     let resp = agent
         .get(RELEASES_API)
@@ -643,7 +618,10 @@ mod tests {
             "release asset names start with `coral-<tag>-`: got {name}"
         );
         if cfg!(target_os = "windows") {
-            assert!(name.ends_with(".zip"), "Windows release ships .zip: got {name}");
+            assert!(
+                name.ends_with(".zip"),
+                "Windows release ships .zip: got {name}"
+            );
         } else {
             assert!(
                 name.ends_with(".tar.gz"),
@@ -675,8 +653,7 @@ mod tests {
             "0000000000000000000000000000000000000000000000000000000000000000  payload.bin\n",
         )
         .unwrap();
-        let err = verify_sha256(&payload, &bad_sha)
-            .expect_err("non-matching sha256 must reject");
+        let err = verify_sha256(&payload, &bad_sha).expect_err("non-matching sha256 must reject");
         assert!(
             err.to_string().contains("SHA-256 mismatch"),
             "error must name the failure: {err}"
@@ -724,8 +701,8 @@ mod tests {
         {
             let file = std::fs::File::create(&archive).unwrap();
             let mut zw = zip::ZipWriter::new(file);
-            let opts: zip::write::FileOptions<'_, ()> =
-                zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+            let opts: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
             zw.start_file(inner, opts).unwrap();
             use std::io::Write;
             zw.write_all(b"FAKE-COR4L-EXE").unwrap();
