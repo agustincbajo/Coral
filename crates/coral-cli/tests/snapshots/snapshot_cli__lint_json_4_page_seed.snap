@@ -5,37 +5,65 @@ expression: stdout
 {
   "issues": [
     {
+      "code": "commit_not_in_git",
+      "severity": "warning",
+      "page": ".wiki\\concepts\\idempotency.md",
+      "message": "Commit '[COMMIT_SHA]' for page 'idempotency' not found in repo history",
+      "context": "[COMMIT_SHA]"
+    },
+    {
       "code": "low_confidence",
       "severity": "warning",
-      "page": ".wiki/concepts/idempotency.md",
+      "page": ".wiki\\concepts\\idempotency.md",
       "message": "Confidence 0.5 below threshold 0.6",
       "context": null
     },
     {
       "code": "orphan_page",
       "severity": "warning",
-      "page": ".wiki/concepts/idempotency.md",
+      "page": ".wiki\\concepts\\idempotency.md",
       "message": "Page 'idempotency' has no inbound backlinks",
       "context": null
     },
     {
+      "code": "commit_not_in_git",
+      "severity": "warning",
+      "page": ".wiki\\concepts\\outbox.md",
+      "message": "Commit '[COMMIT_SHA]' for page 'outbox' not found in repo history",
+      "context": "[COMMIT_SHA]"
+    },
+    {
       "code": "source_not_found",
       "severity": "warning",
-      "page": ".wiki/concepts/outbox.md",
+      "page": ".wiki\\concepts\\outbox.md",
       "message": "Source path 'src/outbox/dispatcher.rs' for page 'outbox' not found on disk",
       "context": "src/outbox/dispatcher.rs"
     },
     {
-      "code": "source_not_found",
+      "code": "commit_not_in_git",
       "severity": "warning",
-      "page": ".wiki/flows/checkout-flow.md",
-      "message": "Source path 'src/checkout/saga.rs' for page 'checkout-flow' not found on disk",
-      "context": "src/checkout/saga.rs"
+      "page": ".wiki\\flows\\checkout-flow.md",
+      "message": "Commit '[COMMIT_SHA]' for page 'checkout-flow' not found in repo history",
+      "context": "[COMMIT_SHA]"
     },
     {
       "code": "source_not_found",
       "severity": "warning",
-      "page": ".wiki/modules/order.md",
+      "page": ".wiki\\flows\\checkout-flow.md",
+      "message": "Source path 'src/checkout/saga.rs' for page 'checkout-flow' not found on disk",
+      "context": "src/checkout/saga.rs"
+    },
+    {
+      "code": "commit_not_in_git",
+      "severity": "warning",
+      "page": ".wiki\\modules\\order.md",
+      "message": "Commit '[COMMIT_SHA]' for page 'order' not found in repo history",
+      "context": "[COMMIT_SHA]"
+    },
+    {
+      "code": "source_not_found",
+      "severity": "warning",
+      "page": ".wiki\\modules\\order.md",
       "message": "Source path 'src/order/handler.rs' for page 'order' not found on disk",
       "context": "src/order/handler.rs"
     }

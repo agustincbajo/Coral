@@ -211,7 +211,27 @@ mod tests {
     /// Initialize a fresh `.wiki/` in `tmp` via `coral init`, then
     /// overwrite `log.md` with hand-written entries so end-to-end tests
     /// have stable, deterministic content to filter against.
+    ///
+    /// v0.34.0 cleanup B2: `coral init` now requires a real git HEAD,
+    /// so we materialise one with an empty commit before invoking it.
     fn init_wiki_with_log(tmp: &TempDir) {
+        for args in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.email", "history-test@coral.local"][..],
+            &["config", "user.name", "Coral History Test"][..],
+            &["commit", "-q", "--allow-empty", "-m", "fixture"][..],
+        ] {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(tmp.path())
+                .status()
+                .expect("git invocation failed");
+            assert!(
+                status.success(),
+                "git {args:?} failed in {}",
+                tmp.path().display()
+            );
+        }
         Command::cargo_bin("coral")
             .unwrap()
             .current_dir(tmp.path())

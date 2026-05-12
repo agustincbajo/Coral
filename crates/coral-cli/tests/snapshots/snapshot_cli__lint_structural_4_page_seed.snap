@@ -5,16 +5,24 @@ expression: stdout
 # Lint report
 
 - 🚨 Critical: 0
-- ⚠️ Warning: 5
+- ⚠️ Warning: 9
 - ℹ️ Info: 0
 
 ## ⚠️ Warning
 
-- **LowConfidence** in `.wiki/concepts/idempotency.md`: Confidence 0.5 below threshold 0.6
-- **OrphanPage** in `.wiki/concepts/idempotency.md`: Page 'idempotency' has no inbound backlinks
-- **SourceNotFound** in `.wiki/concepts/outbox.md`: Source path 'src/outbox/dispatcher.rs' for page 'outbox' not found on disk
+- **CommitNotInGit** in `.wiki\concepts\idempotency.md`: Commit '[COMMIT_SHA]' for page 'idempotency' not found in repo history
+  Context: [COMMIT_SHA]
+- **LowConfidence** in `.wiki\concepts\idempotency.md`: Confidence 0.5 below threshold 0.6
+- **OrphanPage** in `.wiki\concepts\idempotency.md`: Page 'idempotency' has no inbound backlinks
+- **CommitNotInGit** in `.wiki\concepts\outbox.md`: Commit '[COMMIT_SHA]' for page 'outbox' not found in repo history
+  Context: [COMMIT_SHA]
+- **SourceNotFound** in `.wiki\concepts\outbox.md`: Source path 'src/outbox/dispatcher.rs' for page 'outbox' not found on disk
   Context: src/outbox/dispatcher.rs
-- **SourceNotFound** in `.wiki/flows/checkout-flow.md`: Source path 'src/checkout/saga.rs' for page 'checkout-flow' not found on disk
+- **CommitNotInGit** in `.wiki\flows\checkout-flow.md`: Commit '[COMMIT_SHA]' for page 'checkout-flow' not found in repo history
+  Context: [COMMIT_SHA]
+- **SourceNotFound** in `.wiki\flows\checkout-flow.md`: Source path 'src/checkout/saga.rs' for page 'checkout-flow' not found on disk
   Context: src/checkout/saga.rs
-- **SourceNotFound** in `.wiki/modules/order.md`: Source path 'src/order/handler.rs' for page 'order' not found on disk
+- **CommitNotInGit** in `.wiki\modules\order.md`: Commit '[COMMIT_SHA]' for page 'order' not found in repo history
+  Context: [COMMIT_SHA]
+- **SourceNotFound** in `.wiki\modules\order.md`: Source path 'src/order/handler.rs' for page 'order' not found on disk
   Context: src/order/handler.rs

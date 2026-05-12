@@ -26,8 +26,31 @@
 
 use assert_cmd::Command;
 use predicates::str::contains;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tempfile::TempDir;
+
+/// v0.34.0 cleanup B2: materialise a real git HEAD in the tempdir
+/// before invoking `coral init` so the new fail-fast-outside-git
+/// behavior doesn't trip the session E2E fixtures.
+fn git_init_with_commit(repo: &Path) {
+    for args in [
+        &["init", "-q", "-b", "main"][..],
+        &["config", "user.email", "session-test@coral.local"][..],
+        &["config", "user.name", "Coral Session Test"][..],
+        &["commit", "-q", "--allow-empty", "-m", "fixture"][..],
+    ] {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .status()
+            .expect("git invocation failed");
+        assert!(
+            status.success(),
+            "git {args:?} failed in {}",
+            repo.display()
+        );
+    }
+}
 
 /// Tiny fixture transcript with two messages and a fake Anthropic
 /// key embedded so we can assert the scrubber fired.
@@ -44,6 +67,7 @@ fn write_fixture(dir: &std::path::Path) -> PathBuf {
 #[test]
 fn session_capture_list_show_forget_full_flow() {
     let proj = TempDir::new().unwrap();
+    git_init_with_commit(proj.path());
     let src = TempDir::new().unwrap();
     let fixture = write_fixture(src.path());
 
@@ -159,6 +183,7 @@ fn session_capture_list_show_forget_full_flow() {
 #[test]
 fn session_capture_no_scrub_without_confirmation_fails() {
     let proj = TempDir::new().unwrap();
+    git_init_with_commit(proj.path());
     let src = TempDir::new().unwrap();
     let fixture = write_fixture(src.path());
     Command::cargo_bin("coral")
@@ -182,6 +207,7 @@ fn session_capture_no_scrub_without_confirmation_fails() {
 #[test]
 fn session_capture_no_scrub_with_confirmation_writes_raw_bytes() {
     let proj = TempDir::new().unwrap();
+    git_init_with_commit(proj.path());
     let src = TempDir::new().unwrap();
     let fixture = write_fixture(src.path());
     Command::cargo_bin("coral")
@@ -225,6 +251,7 @@ fn session_capture_no_scrub_with_confirmation_writes_raw_bytes() {
 #[test]
 fn session_capture_cursor_returns_not_yet_implemented() {
     let proj = TempDir::new().unwrap();
+    git_init_with_commit(proj.path());
     let src = TempDir::new().unwrap();
     let fixture = write_fixture(src.path());
     Command::cargo_bin("coral")
@@ -249,6 +276,7 @@ fn session_capture_cursor_returns_not_yet_implemented() {
 #[test]
 fn lint_rejects_unreviewed_distilled_page_as_critical() {
     let proj = TempDir::new().unwrap();
+    git_init_with_commit(proj.path());
     Command::cargo_bin("coral")
         .unwrap()
         .current_dir(proj.path())

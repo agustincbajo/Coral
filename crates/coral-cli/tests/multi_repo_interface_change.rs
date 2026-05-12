@@ -23,6 +23,28 @@ fn write(path: &Path, content: &str) {
     std::fs::write(path, content).unwrap();
 }
 
+/// v0.34.0 cleanup B2: materialise a real git HEAD before invoking
+/// `coral init`. Used by the legacy single-repo regression below.
+fn git_init_with_commit(repo: &Path) {
+    for args in [
+        &["init", "-q", "-b", "main"][..],
+        &["config", "user.email", "interface-test@coral.local"][..],
+        &["config", "user.name", "Coral Interface Test"][..],
+        &["commit", "-q", "--allow-empty", "-m", "fixture"][..],
+    ] {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .status()
+            .expect("git invocation failed");
+        assert!(
+            status.success(),
+            "git {args:?} failed in {}",
+            repo.display()
+        );
+    }
+}
+
 /// Set up a fixture project with `api` (provider) + `worker`
 /// (consumer that depends on api). The provider has 3 endpoints; the
 /// consumer's tests reference 2 of them.
@@ -374,6 +396,7 @@ HTTP 200
 #[test]
 fn legacy_single_repo_project_rejects_contract_check() {
     let dir = TempDir::new().unwrap();
+    git_init_with_commit(dir.path());
     Command::cargo_bin("coral")
         .unwrap()
         .arg("init")

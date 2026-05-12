@@ -5,9 +5,9 @@ expression: stdout
 # Wiki status
 
 - Wiki: `.wiki`
-- Last commit: `0000000000000000000000000000000000000000`
+- Last commit: `[COMMIT_SHA]`
 - Pages: 4
-- Lint: Critical: 0 | Warning: 5 | Info: 0
+- Lint: Critical: 0 | Warning: 9 | Info: 0
 - Stats: 4 pages, avg confidence 0.74, 1 orphan candidate(s)
 
 ## Recent log

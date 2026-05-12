@@ -9,7 +9,31 @@
 
 use assert_cmd::Command;
 use predicates::prelude::*;
+use std::path::Path;
 use tempfile::TempDir;
+
+/// v0.34.0 cleanup B2: materialise a real git HEAD before invoking
+/// `coral init`. Only the MCP-serve test below needs this — the rest
+/// of the file drives `coral project *` which is git-agnostic.
+fn git_init_with_commit(repo: &Path) {
+    for args in [
+        &["init", "-q", "-b", "main"][..],
+        &["config", "user.email", "multi-repo-test@coral.local"][..],
+        &["config", "user.name", "Coral Multi-Repo Test"][..],
+        &["commit", "-q", "--allow-empty", "-m", "fixture"][..],
+    ] {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .status()
+            .expect("git invocation failed");
+        assert!(
+            status.success(),
+            "git {args:?} failed in {}",
+            repo.display()
+        );
+    }
+}
 
 #[test]
 fn project_new_then_add_creates_manifest_and_lockfile() {
@@ -481,6 +505,7 @@ fn mcp_serve_responds_to_initialize_via_stdio() {
     use std::process::{Command as Stdc, Stdio};
 
     let dir = TempDir::new().unwrap();
+    git_init_with_commit(dir.path());
     Command::cargo_bin("coral")
         .unwrap()
         .args(["init"])

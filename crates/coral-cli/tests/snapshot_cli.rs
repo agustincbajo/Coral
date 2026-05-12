@@ -23,6 +23,29 @@ use assert_cmd::Command;
 use std::path::Path;
 use tempfile::TempDir;
 
+/// v0.34.0 cleanup B2: `coral init` requires a real git HEAD. Seed
+/// every snapshot tempdir with `git init` + an empty commit so the
+/// underlying `git rev-parse HEAD` resolves deterministically.
+fn git_init_with_commit(repo: &Path) {
+    for args in [
+        &["init", "-q", "-b", "main"][..],
+        &["config", "user.email", "snapshot-test@coral.local"][..],
+        &["config", "user.name", "Coral Snapshot Test"][..],
+        &["commit", "-q", "--allow-empty", "-m", "snapshot fixture"][..],
+    ] {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .status()
+            .expect("git invocation failed");
+        assert!(
+            status.success(),
+            "git {args:?} failed in {}",
+            repo.display()
+        );
+    }
+}
+
 /// Build the deterministic 4-page seed wiki used by every snapshot test.
 ///
 /// Mirrors the seed in [docs/TUTORIAL.md](../../../docs/TUTORIAL.md). Two
@@ -34,8 +57,11 @@ use tempfile::TempDir;
 ///   triggers one `SourceNotFound` per page that has any sources.
 ///
 /// `coral init` is run first so the wiki has a `SCHEMA.md`, gitignore,
-/// etc. — matching what a real user's wiki would look like.
+/// etc. — matching what a real user's wiki would look like. v0.34.0
+/// week 3 validator B2: `coral init` now hard-fails outside a git
+/// repo, so we materialise an empty `git` history first.
 fn write_seed_wiki(root: &Path) {
+    git_init_with_commit(root);
     Command::cargo_bin("coral")
         .unwrap()
         .current_dir(root)
@@ -164,6 +190,14 @@ fn standard_filters() -> Vec<(&'static str, &'static str)> {
             r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})",
             "[TIMESTAMP]",
         ),
+        // 40-char hex commit SHAs (lower-case). v0.34.0 cleanup B2:
+        // `coral init` now writes a real `git rev-parse HEAD` instead
+        // of the deterministic zero SHA, so the snapshots see a
+        // commit hash that changes every run. Filter both the real
+        // SHA and the legacy zero SHA to `[COMMIT_SHA]`. The seed
+        // page bodies hard-code `1234...5678` which would also match;
+        // they're stable so the filter normalises them too.
+        (r"\b[0-9a-f]{40}\b", "[COMMIT_SHA]"),
         // Tempdir prefix that may sneak into error messages or paths.
         // Matches macOS (/private/var/folders/.../.tmpXXX), plain
         // /var/folders/.../.tmpXXX, and Linux (/tmp/.tmpXXX) where the
@@ -171,6 +205,14 @@ fn standard_filters() -> Vec<(&'static str, &'static str)> {
         // path component. `[^\s]*` (zero-or-more) handles both cases.
         (
             r"(?:/private)?/(?:var/folders|tmp)/[^\s]*\.tmp[A-Za-z0-9]*",
+            "[TMPDIR]",
+        ),
+        // Windows tempdir, e.g. C:\Users\<user>\AppData\Local\Temp\.tmpXXXX.
+        // Used by `tempfile::TempDir` on Windows CI runners. Match on
+        // the `\AppData\Local\Temp\.tmp<chars>` suffix so we don't have
+        // to enumerate every possible user-profile prefix.
+        (
+            r"[A-Z]:\\Users\\[^\\]+\\AppData\\Local\\Temp\\\.tmp[A-Za-z0-9]+",
             "[TMPDIR]",
         ),
         // Generic catch-all for tempdir-ish absolute paths anchored at .wiki.

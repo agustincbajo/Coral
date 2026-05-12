@@ -11,7 +11,33 @@
 
 use assert_cmd::Command;
 use predicates::prelude::*;
+use std::path::Path;
 use tempfile::TempDir;
+
+/// v0.34.0 cleanup B2: `coral init` hard-fails outside a git repo
+/// instead of silently writing a zero SHA into `index.md`. The v0.15
+/// bc-regression contract is that `coral init` produces the same
+/// layout — so we materialise a real HEAD before invoking it, which
+/// matches what every actual v0.15 user already had on disk.
+fn git_init_with_commit(repo: &Path) {
+    for args in [
+        &["init", "-q", "-b", "main"][..],
+        &["config", "user.email", "bc-test@coral.local"][..],
+        &["config", "user.name", "Coral BC Test"][..],
+        &["commit", "-q", "--allow-empty", "-m", "bc fixture"][..],
+    ] {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .status()
+            .expect("git invocation failed");
+        assert!(
+            status.success(),
+            "git {args:?} failed in {}",
+            repo.display()
+        );
+    }
+}
 
 /// `coral init` against an empty cwd produces the v0.15 layout: a
 /// `.wiki/` with `SCHEMA.md`, `index.md`, `log.md`, `.gitignore`, and
@@ -19,6 +45,7 @@ use tempfile::TempDir;
 #[test]
 fn legacy_init_preserves_v015_wiki_layout() {
     let dir = TempDir::new().unwrap();
+    git_init_with_commit(dir.path());
     Command::cargo_bin("coral")
         .unwrap()
         .arg("init")
@@ -52,6 +79,7 @@ fn legacy_init_preserves_v015_wiki_layout() {
 #[test]
 fn legacy_status_runs_clean() {
     let dir = TempDir::new().unwrap();
+    git_init_with_commit(dir.path());
     Command::cargo_bin("coral")
         .unwrap()
         .arg("init")
@@ -72,6 +100,7 @@ fn legacy_status_runs_clean() {
 #[test]
 fn legacy_lint_passes_on_fresh_wiki() {
     let dir = TempDir::new().unwrap();
+    git_init_with_commit(dir.path());
     Command::cargo_bin("coral")
         .unwrap()
         .arg("init")
@@ -93,6 +122,7 @@ fn legacy_lint_passes_on_fresh_wiki() {
 #[test]
 fn explicit_wiki_root_matches_default_for_legacy_users() {
     let dir = TempDir::new().unwrap();
+    git_init_with_commit(dir.path());
     Command::cargo_bin("coral")
         .unwrap()
         .arg("init")
@@ -116,6 +146,7 @@ fn explicit_wiki_root_matches_default_for_legacy_users() {
 #[test]
 fn legacy_project_list_reports_synthesized_repo() {
     let dir = TempDir::new().unwrap();
+    git_init_with_commit(dir.path());
     Command::cargo_bin("coral")
         .unwrap()
         .arg("init")
@@ -137,6 +168,7 @@ fn legacy_project_list_reports_synthesized_repo() {
 #[test]
 fn legacy_init_force_recreates_wiki() {
     let dir = TempDir::new().unwrap();
+    git_init_with_commit(dir.path());
     Command::cargo_bin("coral")
         .unwrap()
         .arg("init")
@@ -158,6 +190,7 @@ fn legacy_init_force_recreates_wiki() {
 #[test]
 fn coral_test_no_emit_no_match_stdout_pinned_to_v0_22_1() {
     let dir = TempDir::new().unwrap();
+    git_init_with_commit(dir.path());
     let toml = r#"apiVersion = "coral.dev/v1"
 [project]
 name = "demo"
@@ -195,6 +228,7 @@ ports = [3000]
 #[test]
 fn legacy_env_devcontainer_emit_fails_without_environments_block() {
     let dir = TempDir::new().unwrap();
+    git_init_with_commit(dir.path());
     Command::cargo_bin("coral")
         .unwrap()
         .arg("init")

@@ -36,7 +36,7 @@ expression: head
     <article>
 <section id="idempotency" class="page page-concept">
   <header><h1>idempotency</h1>
-  <p class="meta">type: <code>concept</code> · status: <code>draft</code> · confidence: <code>0.50</code> · last_commit: <code>1234567890abcdef1234567890abcdef12345678</code></p></header>
+  <p class="meta">type: <code>concept</code> · status: <code>draft</code> · confidence: <code>0.50</code> · last_commit: <code>[COMMIT_SHA]</code></p></header>
   <div class="body"><h1>Idempotency</h1>
 <p>A re-submitted request must produce the same observable result as the
 first. Implemented via request-id deduplication.</p>
@@ -44,7 +44,7 @@ first. Implemented via request-id deduplication.</p>
 </section>
 <section id="outbox" class="page page-concept">
   <header><h1>outbox</h1>
-  <p class="meta">type: <code>concept</code> · status: <code>verified</code> · confidence: <code>0.90</code> · last_commit: <code>1234567890abcdef1234567890abcdef12345678</code></p></header>
+  <p class="meta">type: <code>concept</code> · status: <code>verified</code> · confidence: <code>0.90</code> · last_commit: <code>[COMMIT_SHA]</code></p></header>
   <div class="body"><h1>Outbox pattern</h1>
 <p>Guarantees at-least-once delivery by writing intent to a local outbox
 table inside the same database transaction as the business write. A
@@ -54,7 +54,7 @@ background dispatcher polls the outbox and emits to the message bus.</p>
 </section>
 <section id="checkout-flow" class="page page-flow">
   <header><h1>checkout-flow</h1>
-  <p class="meta">type: <code>flow</code> · status: <code>reviewed</code> · confidence: <code>0.70</code> · last_commit: <code>1234567890abcdef1234567890abcdef12345678</code></p></header>
+  <p class="meta">type: <code>flow</code> · status: <code>reviewed</code> · confidence: <code>0.70</code> · last_commit: <code>[COMMIT_SHA]</code></p></header>
   <div class="body"><h1>Checkout flow</h1>
 <p>End-to-end: cart → payment → <a href="#order">order</a>. Spans 3 services. The order
 service uses <a href="#outbox">outbox</a> for the OrderCreated event downstream.</p>

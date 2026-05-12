@@ -28,6 +28,29 @@
 use assert_cmd::Command;
 use std::fs;
 
+/// v0.34.0 cleanup B2: `coral init` hard-fails outside a git repo
+/// instead of silently falling back to a zero SHA. Tests that invoke
+/// `coral init` against a fresh tempdir must materialise a HEAD first.
+fn git_init_with_commit(repo: &std::path::Path) {
+    for args in [
+        &["init", "-q", "-b", "main"][..],
+        &["config", "user.email", "quick-cap-test@coral.local"][..],
+        &["config", "user.name", "Coral Quick Cap Test"][..],
+        &["commit", "-q", "--allow-empty", "-m", "fixture"][..],
+    ] {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .status()
+            .expect("git invocation failed");
+        assert!(
+            status.success(),
+            "git {args:?} failed in {}",
+            repo.display()
+        );
+    }
+}
+
 /// Mirrors `coral_cli::commands::self_check::QUICK_OUTPUT_CAP_CHARS`.
 /// Hard-coding here (rather than importing) keeps this test a pure
 /// black-box integration test against the binary — the spec is "the
@@ -84,6 +107,7 @@ fn pristine_tempdir_under_cap() {
 #[test]
 fn after_coral_init_under_cap() {
     let tmp = tempfile::TempDir::new().unwrap();
+    git_init_with_commit(tmp.path());
     Command::cargo_bin("coral")
         .unwrap()
         .current_dir(tmp.path())
@@ -97,6 +121,7 @@ fn after_coral_init_under_cap() {
 #[test]
 fn many_wiki_pages_under_cap() {
     let tmp = tempfile::TempDir::new().unwrap();
+    git_init_with_commit(tmp.path());
     Command::cargo_bin("coral")
         .unwrap()
         .current_dir(tmp.path())

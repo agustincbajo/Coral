@@ -1,6 +1,32 @@
 use assert_cmd::Command;
 use predicates::str::contains;
+use std::path::Path;
 use tempfile::TempDir;
+
+/// v0.34.0 cleanup B2: `coral init` hard-fails outside a git repo
+/// instead of silently writing a zero SHA into `index.md`. Tests that
+/// `coral init` against a fresh tempdir must materialise a HEAD first.
+/// Uses `--allow-empty` so the helper itself doesn't depend on a
+/// staged tree.
+fn git_init_with_commit(repo: &Path) {
+    for args in [
+        &["init", "-q", "-b", "main"][..],
+        &["config", "user.email", "smoke-test@coral.local"][..],
+        &["config", "user.name", "Coral Smoke Test"][..],
+        &["commit", "-q", "--allow-empty", "-m", "smoke fixture"][..],
+    ] {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .status()
+            .expect("git invocation failed");
+        assert!(
+            status.success(),
+            "git {args:?} failed in {}",
+            repo.display()
+        );
+    }
+}
 
 #[test]
 fn version_flag_prints_version() {
@@ -15,6 +41,7 @@ fn version_flag_prints_version() {
 #[test]
 fn init_creates_wiki_structure() {
     let tmp = TempDir::new().unwrap();
+    git_init_with_commit(tmp.path());
     Command::cargo_bin("coral")
         .unwrap()
         .current_dir(tmp.path())
@@ -32,6 +59,7 @@ fn init_creates_wiki_structure() {
 #[test]
 fn init_is_idempotent() {
     let tmp = TempDir::new().unwrap();
+    git_init_with_commit(tmp.path());
     for _ in 0..3 {
         Command::cargo_bin("coral")
             .unwrap()
@@ -46,6 +74,7 @@ fn init_is_idempotent() {
 #[test]
 fn lint_on_empty_wiki_succeeds() {
     let tmp = TempDir::new().unwrap();
+    git_init_with_commit(tmp.path());
     Command::cargo_bin("coral")
         .unwrap()
         .current_dir(tmp.path())
@@ -64,6 +93,7 @@ fn lint_on_empty_wiki_succeeds() {
 #[test]
 fn lint_json_emits_object_with_issues_array() {
     let tmp = TempDir::new().unwrap();
+    git_init_with_commit(tmp.path());
     Command::cargo_bin("coral")
         .unwrap()
         .current_dir(tmp.path())
@@ -90,6 +120,7 @@ fn lint_json_emits_object_with_issues_array() {
 #[test]
 fn lint_without_init_fails() {
     let tmp = TempDir::new().unwrap();
+    git_init_with_commit(tmp.path());
     Command::cargo_bin("coral")
         .unwrap()
         .current_dir(tmp.path())
@@ -102,6 +133,7 @@ fn lint_without_init_fails() {
 #[test]
 fn stats_on_empty_wiki_runs() {
     let tmp = TempDir::new().unwrap();
+    git_init_with_commit(tmp.path());
     Command::cargo_bin("coral")
         .unwrap()
         .current_dir(tmp.path())
@@ -120,6 +152,7 @@ fn stats_on_empty_wiki_runs() {
 #[test]
 fn stats_json_emits_valid_json() {
     let tmp = TempDir::new().unwrap();
+    git_init_with_commit(tmp.path());
     Command::cargo_bin("coral")
         .unwrap()
         .current_dir(tmp.path())
@@ -142,6 +175,7 @@ fn stats_json_emits_valid_json() {
 #[test]
 fn sync_extracts_template() {
     let tmp = TempDir::new().unwrap();
+    git_init_with_commit(tmp.path());
     Command::cargo_bin("coral")
         .unwrap()
         .current_dir(tmp.path())
@@ -159,6 +193,7 @@ fn sync_extracts_template() {
 #[test]
 fn sync_creates_pins_toml() {
     let tmp = TempDir::new().unwrap();
+    git_init_with_commit(tmp.path());
     Command::cargo_bin("coral")
         .unwrap()
         .current_dir(tmp.path())
@@ -180,6 +215,7 @@ fn sync_creates_pins_toml() {
 #[test]
 fn sync_pin_flag_adds_entry() {
     let tmp = TempDir::new().unwrap();
+    git_init_with_commit(tmp.path());
     Command::cargo_bin("coral")
         .unwrap()
         .current_dir(tmp.path())
@@ -200,6 +236,7 @@ fn sync_pin_flag_adds_entry() {
 #[test]
 fn sync_unpin_flag_removes_entry() {
     let tmp = TempDir::new().unwrap();
+    git_init_with_commit(tmp.path());
     // First, set the pin.
     Command::cargo_bin("coral")
         .unwrap()
@@ -226,6 +263,7 @@ fn sync_unpin_flag_removes_entry() {
 #[test]
 fn sync_remote_without_version_fails() {
     let tmp = TempDir::new().unwrap();
+    git_init_with_commit(tmp.path());
     Command::cargo_bin("coral")
         .unwrap()
         .current_dir(tmp.path())
@@ -241,6 +279,7 @@ fn sync_remote_without_version_fails() {
 #[ignore]
 fn sync_remote_clones_tag_and_lays_template() {
     let tmp = TempDir::new().unwrap();
+    git_init_with_commit(tmp.path());
     Command::cargo_bin("coral")
         .unwrap()
         .current_dir(tmp.path())
@@ -255,6 +294,7 @@ fn sync_remote_clones_tag_and_lays_template() {
 #[test]
 fn search_with_init_returns_no_results() {
     let tmp = TempDir::new().unwrap();
+    git_init_with_commit(tmp.path());
     Command::cargo_bin("coral")
         .unwrap()
         .current_dir(tmp.path())
@@ -273,6 +313,7 @@ fn search_with_init_returns_no_results() {
 #[test]
 fn bootstrap_without_wiki_fails() {
     let tmp = TempDir::new().unwrap();
+    git_init_with_commit(tmp.path());
     Command::cargo_bin("coral")
         .unwrap()
         .current_dir(tmp.path())
@@ -285,6 +326,7 @@ fn bootstrap_without_wiki_fails() {
 #[test]
 fn ingest_without_wiki_fails() {
     let tmp = TempDir::new().unwrap();
+    git_init_with_commit(tmp.path());
     Command::cargo_bin("coral")
         .unwrap()
         .current_dir(tmp.path())
@@ -297,6 +339,7 @@ fn ingest_without_wiki_fails() {
 #[test]
 fn query_without_wiki_fails() {
     let tmp = TempDir::new().unwrap();
+    git_init_with_commit(tmp.path());
     Command::cargo_bin("coral")
         .unwrap()
         .current_dir(tmp.path())
@@ -309,6 +352,7 @@ fn query_without_wiki_fails() {
 #[test]
 fn consolidate_without_wiki_fails() {
     let tmp = TempDir::new().unwrap();
+    git_init_with_commit(tmp.path());
     Command::cargo_bin("coral")
         .unwrap()
         .current_dir(tmp.path())
@@ -321,6 +365,7 @@ fn consolidate_without_wiki_fails() {
 #[test]
 fn onboard_without_wiki_fails() {
     let tmp = TempDir::new().unwrap();
+    git_init_with_commit(tmp.path());
     Command::cargo_bin("coral")
         .unwrap()
         .current_dir(tmp.path())
@@ -333,6 +378,7 @@ fn onboard_without_wiki_fails() {
 #[test]
 fn prompts_list_runs() {
     let tmp = TempDir::new().unwrap();
+    git_init_with_commit(tmp.path());
     Command::cargo_bin("coral")
         .unwrap()
         .current_dir(tmp.path())
@@ -345,6 +391,7 @@ fn prompts_list_runs() {
 #[test]
 fn query_with_unknown_provider_fails() {
     let tmp = TempDir::new().unwrap();
+    git_init_with_commit(tmp.path());
     Command::cargo_bin("coral")
         .unwrap()
         .current_dir(tmp.path())
@@ -357,6 +404,7 @@ fn query_with_unknown_provider_fails() {
 #[test]
 fn export_markdown_bundle_runs() {
     let tmp = TempDir::new().unwrap();
+    git_init_with_commit(tmp.path());
     Command::cargo_bin("coral")
         .unwrap()
         .current_dir(tmp.path())
@@ -375,6 +423,7 @@ fn export_markdown_bundle_runs() {
 #[test]
 fn export_unknown_format_fails() {
     let tmp = TempDir::new().unwrap();
+    git_init_with_commit(tmp.path());
     Command::cargo_bin("coral")
         .unwrap()
         .current_dir(tmp.path())
@@ -393,6 +442,7 @@ fn export_unknown_format_fails() {
 #[test]
 fn export_writes_to_file_when_out_set() {
     let tmp = TempDir::new().unwrap();
+    git_init_with_commit(tmp.path());
     Command::cargo_bin("coral")
         .unwrap()
         .current_dir(tmp.path())
@@ -418,6 +468,7 @@ fn export_writes_to_file_when_out_set() {
 #[test]
 fn notion_push_without_token_fails() {
     let tmp = TempDir::new().unwrap();
+    git_init_with_commit(tmp.path());
     Command::cargo_bin("coral")
         .unwrap()
         .current_dir(tmp.path())
@@ -439,6 +490,7 @@ fn notion_push_defaults_to_dry_run() {
     // v0.4: dry-run is the default. `--apply` is required to actually POST.
     // No flag → preview message + success exit, never invokes curl.
     let tmp = TempDir::new().unwrap();
+    git_init_with_commit(tmp.path());
     Command::cargo_bin("coral")
         .unwrap()
         .current_dir(tmp.path())
@@ -458,6 +510,7 @@ fn notion_push_defaults_to_dry_run() {
 #[test]
 fn lint_writes_cache_file() {
     let tmp = TempDir::new().unwrap();
+    git_init_with_commit(tmp.path());
     Command::cargo_bin("coral")
         .unwrap()
         .current_dir(tmp.path())
@@ -477,6 +530,7 @@ fn lint_writes_cache_file() {
 #[test]
 fn init_writes_wiki_gitignore() {
     let tmp = TempDir::new().unwrap();
+    git_init_with_commit(tmp.path());
     Command::cargo_bin("coral")
         .unwrap()
         .current_dir(tmp.path())
@@ -495,6 +549,7 @@ fn init_writes_wiki_gitignore() {
 #[test]
 fn search_with_unknown_engine_fails() {
     let tmp = TempDir::new().unwrap();
+    git_init_with_commit(tmp.path());
     Command::cargo_bin("coral")
         .unwrap()
         .current_dir(tmp.path())
@@ -513,6 +568,7 @@ fn search_with_unknown_engine_fails() {
 #[test]
 fn search_embeddings_without_api_key_fails() {
     let tmp = TempDir::new().unwrap();
+    git_init_with_commit(tmp.path());
     Command::cargo_bin("coral")
         .unwrap()
         .current_dir(tmp.path())
@@ -532,6 +588,7 @@ fn search_embeddings_without_api_key_fails() {
 #[test]
 fn init_gitignore_includes_embeddings() {
     let tmp = TempDir::new().unwrap();
+    git_init_with_commit(tmp.path());
     Command::cargo_bin("coral")
         .unwrap()
         .current_dir(tmp.path())
@@ -552,6 +609,7 @@ fn init_gitignore_includes_embeddings() {
 #[test]
 fn init_gitignore_includes_lock_sentinel_patterns() {
     let tmp = TempDir::new().unwrap();
+    git_init_with_commit(tmp.path());
     Command::cargo_bin("coral")
         .unwrap()
         .current_dir(tmp.path())
@@ -581,6 +639,7 @@ fn init_gitignore_includes_lock_sentinel_patterns() {
 #[test]
 fn init_gitignore_appends_lock_patterns_idempotently() {
     let tmp = TempDir::new().unwrap();
+    git_init_with_commit(tmp.path());
     let wiki = tmp.path().join(".wiki");
     std::fs::create_dir_all(&wiki).unwrap();
     let gi_path = wiki.join(".gitignore");
@@ -623,6 +682,7 @@ fn init_gitignore_appends_lock_patterns_idempotently() {
 #[test]
 fn lint_critical_issue_exits_1() {
     let tmp = TempDir::new().unwrap();
+    git_init_with_commit(tmp.path());
     Command::cargo_bin("coral")
         .unwrap()
         .current_dir(tmp.path())
@@ -653,6 +713,7 @@ fn lint_critical_issue_exits_1() {
 /// against it and assert which issues survive the filter.
 fn fixture_with_critical_and_warning() -> TempDir {
     let tmp = TempDir::new().unwrap();
+    git_init_with_commit(tmp.path());
     Command::cargo_bin("coral")
         .unwrap()
         .current_dir(tmp.path())
@@ -771,6 +832,7 @@ fn lint_severity_all_keeps_every_issue() {
 #[test]
 fn lint_severity_unknown_value_fails_with_helpful_error() {
     let tmp = TempDir::new().unwrap();
+    git_init_with_commit(tmp.path());
     Command::cargo_bin("coral")
         .unwrap()
         .current_dir(tmp.path())

@@ -267,7 +267,27 @@ mod tests {
     /// Initialize a fresh `.wiki/` in `tmp` via `coral init` so we can
     /// exercise `status` against the same shape a real user would see.
     /// Returns the tmpdir's path so callers can run more commands against it.
+    ///
+    /// v0.34.0 cleanup B2: `coral init` now requires a real git HEAD,
+    /// so we materialise one with an empty commit beforehand.
     fn init_wiki(tmp: &TempDir) {
+        for args in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.email", "status-test@coral.local"][..],
+            &["config", "user.name", "Coral Status Test"][..],
+            &["commit", "-q", "--allow-empty", "-m", "fixture"][..],
+        ] {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(tmp.path())
+                .status()
+                .expect("git invocation failed");
+            assert!(
+                status.success(),
+                "git {args:?} failed in {}",
+                tmp.path().display()
+            );
+        }
         Command::cargo_bin("coral")
             .unwrap()
             .current_dir(tmp.path())

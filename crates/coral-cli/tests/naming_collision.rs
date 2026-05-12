@@ -19,7 +19,31 @@
 
 use assert_cmd::Command;
 use serde_json::Value;
+use std::path::Path;
 use tempfile::TempDir;
+
+/// v0.34.0 cleanup B2: materialise a real HEAD in the tempdir before
+/// invoking `coral init`. The B2 fix removed the silent zero-SHA
+/// fallback that previous releases relied on.
+fn git_init_with_commit(repo: &Path) {
+    for args in [
+        &["init", "-q", "-b", "main"][..],
+        &["config", "user.email", "naming-test@coral.local"][..],
+        &["config", "user.name", "Coral Naming Test"][..],
+        &["commit", "-q", "--allow-empty", "-m", "fixture"][..],
+    ] {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .status()
+            .expect("git invocation failed");
+        assert!(
+            status.success(),
+            "git {args:?} failed in {}",
+            repo.display()
+        );
+    }
+}
 
 #[test]
 fn doctor_non_interactive_emits_self_check_json_envelope() {
@@ -107,6 +131,7 @@ fn project_doctor_still_works_independently() {
     // is the BC promise the PRD makes — v0.16 callers (CI scripts that
     // run `coral project doctor --strict`) must keep working.
     let tmp = TempDir::new().unwrap();
+    git_init_with_commit(tmp.path());
     // `coral project doctor` expects either a legacy single-repo
     // layout (no coral.toml -> emits "legacy single-repo project"
     // info) or a real coral.toml. In a pristine tempdir with no

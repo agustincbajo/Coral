@@ -60,6 +60,21 @@ fn type_for(idx: usize) -> (&'static str, &'static str) {
 ///   - Every 20th page (5%) gets `confidence: 0.20`, tripping the Critical
 ///     `LowConfidence` rule (confidence < 0.3).
 fn build_synthetic_wiki(cwd: &Path) {
+    // v0.34.0 cleanup B2: `coral init` requires a real git HEAD.
+    for args in [
+        &["init", "-q", "-b", "main"][..],
+        &["config", "user.email", "stress-test@coral.local"][..],
+        &["config", "user.name", "Coral Stress Test"][..],
+        &["commit", "-q", "--allow-empty", "-m", "fixture"][..],
+    ] {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .status()
+            .expect("git invocation failed");
+        assert!(status.success(), "git {args:?} failed in {}", cwd.display());
+    }
+
     Command::cargo_bin("coral")
         .unwrap()
         .current_dir(cwd)

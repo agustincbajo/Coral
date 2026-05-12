@@ -4,49 +4,49 @@ expression: stdout
 ---
 [
   {
-    "backlinks": [],
-    "body": "# Idempotency\n\nA re-submitted request must produce the same observable result as the\nfirst. Implemented via request-id deduplication.\n",
-    "confidence": 0.5,
     "slug": "idempotency",
-    "sources": [],
+    "type": "concept",
     "status": "draft",
-    "type": "concept"
+    "confidence": 0.5,
+    "sources": [],
+    "backlinks": [],
+    "body": "# Idempotency\n\nA re-submitted request must produce the same observable result as the\nfirst. Implemented via request-id deduplication.\n"
   },
   {
-    "backlinks": [
-      "order"
-    ],
-    "body": "# Outbox pattern\n\nGuarantees at-least-once delivery by writing intent to a local outbox\ntable inside the same database transaction as the business write. A\nbackground dispatcher polls the outbox and emits to the message bus.\n\nUsed by [[order]] to publish OrderCreated events.\n",
-    "confidence": 0.9,
     "slug": "outbox",
+    "type": "concept",
+    "status": "verified",
+    "confidence": 0.9,
     "sources": [
       "src/outbox/dispatcher.rs"
     ],
-    "status": "verified",
-    "type": "concept"
+    "backlinks": [
+      "order"
+    ],
+    "body": "# Outbox pattern\n\nGuarantees at-least-once delivery by writing intent to a local outbox\ntable inside the same database transaction as the business write. A\nbackground dispatcher polls the outbox and emits to the message bus.\n\nUsed by [[order]] to publish OrderCreated events.\n"
   },
   {
-    "backlinks": [],
-    "body": "# Checkout flow\n\nEnd-to-end: cart → payment → [[order]]. Spans 3 services. The order\nservice uses [[outbox]] for the OrderCreated event downstream.\n",
-    "confidence": 0.7,
     "slug": "checkout-flow",
+    "type": "flow",
+    "status": "reviewed",
+    "confidence": 0.7,
     "sources": [
       "src/checkout/saga.rs"
     ],
-    "status": "reviewed",
-    "type": "flow"
+    "backlinks": [],
+    "body": "# Checkout flow\n\nEnd-to-end: cart → payment → [[order]]. Spans 3 services. The order\nservice uses [[outbox]] for the OrderCreated event downstream.\n"
   },
   {
-    "backlinks": [
-      "outbox"
-    ],
-    "body": "# Order\n\nOrder creation flow. Receives POST /orders, validates, persists via the\n[[outbox]] pattern, returns 202.\n\nSee [[checkout-flow]] for end-to-end behavior.\n",
-    "confidence": 0.85,
     "slug": "order",
+    "type": "module",
+    "status": "reviewed",
+    "confidence": 0.85,
     "sources": [
       "src/order/handler.rs"
     ],
-    "status": "reviewed",
-    "type": "module"
+    "backlinks": [
+      "outbox"
+    ],
+    "body": "# Order\n\nOrder creation flow. Receives POST /orders, validates, persists via the\n[[outbox]] pattern, returns 202.\n\nSee [[checkout-flow]] for end-to-end behavior.\n"
   }
 ]
