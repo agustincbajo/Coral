@@ -29,7 +29,7 @@ pub use multi_step::{
     TieredOutput, TieredRunner, approx_tokens,
 };
 pub use prompt::PromptBuilder;
-pub use runner::{ClaudeRunner, Prompt, RunOutput, Runner, RunnerError, RunnerResult};
+pub use runner::{ClaudeRunner, Prompt, RunOutput, Runner, RunnerError, RunnerResult, TokenUsage};
 
 /// Test-only serialiser for code that writes + fork-execs a small
 /// shell script. The Linux kernel `do_open_execat` ETXTBSY race

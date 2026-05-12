@@ -4,7 +4,7 @@ use std::collections::VecDeque;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use crate::runner::{Prompt, RunOutput, Runner, RunnerError, RunnerResult};
+use crate::runner::{Prompt, RunOutput, Runner, RunnerError, RunnerResult, TokenUsage};
 
 /// Closure type for `with_timeout_handler`. Receives the
 /// `prompt.timeout` of every call so tests can assert their plumbing
@@ -67,6 +67,21 @@ impl MockRunner {
             stdout: stdout.into(),
             stderr: String::new(),
             duration: Duration::from_millis(0),
+            usage: None,
+        }));
+        self.streaming_chunks.lock().unwrap().push_back(None);
+    }
+
+    /// v0.34.0 (FR-ONB-29): push a scripted response that carries a
+    /// real `TokenUsage`. Used by `coral bootstrap --max-cost` /
+    /// `--resume` tests to drive mid-flight cost accumulation without
+    /// hitting a real provider.
+    pub fn push_ok_with_usage(&self, stdout: impl Into<String>, usage: TokenUsage) {
+        self.responses.lock().unwrap().push_back(Ok(RunOutput {
+            stdout: stdout.into(),
+            stderr: String::new(),
+            duration: Duration::from_millis(0),
+            usage: Some(usage),
         }));
         self.streaming_chunks.lock().unwrap().push_back(None);
     }
@@ -81,6 +96,7 @@ impl MockRunner {
             stdout,
             stderr: String::new(),
             duration: Duration::from_millis(0),
+            usage: None,
         }));
         self.streaming_chunks.lock().unwrap().push_back(Some(owned));
     }
@@ -161,6 +177,7 @@ impl Runner for MockRunner {
                 stdout: String::new(),
                 stderr: String::new(),
                 duration: Duration::from_millis(0),
+                usage: None,
             }),
         }
     }
@@ -198,6 +215,7 @@ impl Runner for MockRunner {
                 stdout: String::new(),
                 stderr: String::new(),
                 duration: Duration::from_millis(0),
+                usage: None,
             }),
         }
     }
@@ -206,6 +224,45 @@ impl Runner for MockRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// v0.34.0 (FR-ONB-29): `push_ok_with_usage` carries a real
+    /// `TokenUsage` through to the `RunOutput.usage` field. Used by
+    /// `coral bootstrap --max-cost` tests to drive mid-flight cost
+    /// accumulation without a real provider.
+    #[test]
+    fn mock_propagates_token_usage_when_pushed_with_usage() {
+        let m = MockRunner::new();
+        let usage = TokenUsage {
+            input_tokens: 42,
+            output_tokens: 7,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+        };
+        m.push_ok_with_usage("hello", usage);
+        let p = Prompt {
+            user: "x".into(),
+            ..Default::default()
+        };
+        let out = m.run(&p).unwrap();
+        assert_eq!(out.stdout, "hello");
+        let got = out.usage.expect("usage propagated");
+        assert_eq!(got.input_tokens, 42);
+        assert_eq!(got.output_tokens, 7);
+    }
+
+    /// v0.34.0 (FR-ONB-29): the default `push_ok` path leaves `usage`
+    /// at `None`, preserving prior mock-based test behaviour.
+    #[test]
+    fn mock_push_ok_leaves_usage_none() {
+        let m = MockRunner::new();
+        m.push_ok("hi");
+        let p = Prompt {
+            user: "x".into(),
+            ..Default::default()
+        };
+        let out = m.run(&p).unwrap();
+        assert!(out.usage.is_none());
+    }
 
     #[test]
     fn mock_returns_pushed_response_fifo() {

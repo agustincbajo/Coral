@@ -29,7 +29,7 @@
 //! that branch on `--stream` should fall back to non-streaming when
 //! tiered routing is enabled.
 
-use crate::runner::{Prompt, RunOutput, Runner, RunnerError, RunnerResult};
+use crate::runner::{Prompt, RunOutput, Runner, RunnerError, RunnerResult, TokenUsage};
 
 /// Default cumulative-token budget for a tiered run. Picked to match
 /// a Claude Sonnet 200K-context window — anything larger is almost
@@ -322,8 +322,31 @@ impl MultiStepRunner for TieredRunner {
         let review_out = self.reviewer.run(&reviewer_prompt)?;
         tokens_used = tokens_used.saturating_add(output_token_cost(&reviewer_prompt, &review_out));
 
+        // v0.34.0 (FR-ONB-29): roll up real per-tier `usage` into the
+        // final_output. If every sub-runner returned `None` (e.g.
+        // LocalRunner), the total stays `None` so the bootstrap cost
+        // path falls back to the heuristic. If ANY tier reported
+        // usage, the rest contribute zeros and the total is `Some(_)`.
+        let mut summed: Option<TokenUsage> = None;
+        let mut fold = |u: Option<TokenUsage>| {
+            if let Some(u) = u {
+                summed = Some(match summed {
+                    Some(s) => s.add(&u),
+                    None => u,
+                });
+            }
+        };
+        fold(plan_out.usage);
+        for e in &execute_calls {
+            fold(e.usage);
+        }
+        fold(review_out.usage);
+
+        let mut final_output = review_out.clone();
+        final_output.usage = summed;
+
         Ok(TieredOutput {
-            final_output: review_out.clone(),
+            final_output,
             plan_calls: vec![plan_out],
             execute_calls,
             review_calls: vec![review_out],

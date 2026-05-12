@@ -55,6 +55,85 @@ pub(crate) fn combine_outputs(stdout: &str, stderr: &str) -> String {
     }
 }
 
+/// Parse a `usage` JSON block out of a runner's stdout.
+///
+/// Tries two shapes, in order:
+///
+/// 1. **Top-level `result` JSON object** (Anthropic CLI's
+///    `--output-format=json`): the entire stdout is one JSON document
+///    with `{"result":"<text>", "usage":{...}}` or `{"usage":{...}}`.
+/// 2. **Embedded `usage` block in a chat-completions response**
+///    (OpenAI-compatible): `{"choices":[…], "usage":{...}}`.
+///
+/// Field names we accept inside `usage` (case-insensitive on the
+/// underscores vs camelCase boundary):
+///
+/// - `input_tokens` / `prompt_tokens` / `inputTokens`
+/// - `output_tokens` / `completion_tokens` / `outputTokens`
+/// - `cache_creation_input_tokens` / `cacheWriteTokens`
+/// - `cache_read_input_tokens` / `cacheReadTokens`
+///
+/// Returns `(usage, inner_text)`:
+/// - `usage` is `Some(_)` only if a structured usage block was found.
+/// - `inner_text` is the unwrapped `result` field if the stdout was a
+///   Claude JSON envelope, otherwise `None` (caller keeps raw stdout).
+///
+/// On any parse failure, returns `(None, None)` — the caller falls back
+/// to treating the stdout as plain text with no usage.
+pub(crate) fn parse_usage_from_stdout(stdout: &str) -> (Option<TokenUsage>, Option<String>) {
+    let trimmed = stdout.trim();
+    if !trimmed.starts_with('{') {
+        return (None, None);
+    }
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+        return (None, None);
+    };
+    let usage_node = value.get("usage").cloned().or_else(|| {
+        // OpenAI-compat shape: `choices[].usage` is non-standard, but some
+        // shims surface it that way. Fall through if `usage` is at the top.
+        None
+    });
+    let usage = usage_node.and_then(|u| {
+        let pick = |keys: &[&str]| -> u64 {
+            for k in keys {
+                if let Some(n) = u.get(*k).and_then(|v| v.as_u64()) {
+                    return n;
+                }
+            }
+            0
+        };
+        let input = pick(&["input_tokens", "prompt_tokens", "inputTokens"]);
+        let output = pick(&["output_tokens", "completion_tokens", "outputTokens"]);
+        let cache_write = pick(&[
+            "cache_creation_input_tokens",
+            "cacheCreationInputTokens",
+            "cache_write_tokens",
+            "cacheWriteTokens",
+        ]);
+        let cache_read = pick(&[
+            "cache_read_input_tokens",
+            "cacheReadInputTokens",
+            "cache_read_tokens",
+            "cacheReadTokens",
+        ]);
+        if input == 0 && output == 0 && cache_write == 0 && cache_read == 0 {
+            return None;
+        }
+        Some(TokenUsage {
+            input_tokens: input,
+            output_tokens: output,
+            cache_read_tokens: cache_read,
+            cache_write_tokens: cache_write,
+        })
+    });
+    // Claude `--output-format=json` wraps the answer text in `result`.
+    let inner = value
+        .get("result")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    (usage, inner)
+}
+
 /// Heuristic for spotting a provider auth failure in combined runner output.
 pub(crate) fn is_auth_failure(text: &str) -> bool {
     let lower = text.to_lowercase();
@@ -199,10 +278,60 @@ pub(crate) fn run_streaming_command(
         stdout: accumulated,
         stderr,
         duration,
+        // Streaming path is line-by-line; we don't have a parseable
+        // usage block until the final JSON line arrives. Callers that
+        // need usage should use the non-streaming `run` path which
+        // can opt into `--output-format=json`.
+        usage: None,
     })
 }
 
 pub type RunnerResult<T> = std::result::Result<T, RunnerError>;
+
+/// Real token-usage breakdown for a single runner call.
+///
+/// Added in v0.34.0 (FR-ONB-29, FR-ONB-30) to enable real mid-flight cost
+/// tracking for `coral bootstrap --max-cost` and `--resume`. Filled by
+/// runners that can extract usage from the provider response:
+/// - [`crate::ClaudeRunner`] parses the `usage` block from
+///   `claude --print --output-format json` stdout (when callers opt in).
+/// - [`crate::GeminiRunner`] parses `usageMetadata` from a JSON-mode reply.
+/// - [`crate::HttpRunner`] reads `usage` from the OpenAI-compat response.
+/// - [`crate::LocalRunner`] does not expose usage in a structured form and
+///   returns `None`.
+///
+/// `cache_*` fields are zero when caching is not in use — Anthropic's API
+/// returns `cache_creation_input_tokens` and `cache_read_input_tokens`
+/// alongside `input_tokens` / `output_tokens` when prompt caching is on
+/// (M2 will calibrate the cost model around them).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TokenUsage {
+    /// Input tokens billed at the model's base input rate.
+    pub input_tokens: u64,
+    /// Output tokens billed at the model's base output rate.
+    pub output_tokens: u64,
+    /// Cache-read input tokens (Anthropic: charged at 0.1x base rate).
+    /// Zero when prompt caching is not in use.
+    pub cache_read_tokens: u64,
+    /// Cache-write input tokens (Anthropic: charged at 1.25x base rate).
+    /// Zero when prompt caching is not in use.
+    pub cache_write_tokens: u64,
+}
+
+impl TokenUsage {
+    /// Sum two usage records together — used by `MultiStepRunner` to
+    /// roll up per-tier usage into a single tiered total.
+    pub fn add(&self, other: &Self) -> Self {
+        Self {
+            input_tokens: self.input_tokens.saturating_add(other.input_tokens),
+            output_tokens: self.output_tokens.saturating_add(other.output_tokens),
+            cache_read_tokens: self.cache_read_tokens.saturating_add(other.cache_read_tokens),
+            cache_write_tokens: self
+                .cache_write_tokens
+                .saturating_add(other.cache_write_tokens),
+        }
+    }
+}
 
 /// A complete prompt ready for execution.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -228,6 +357,19 @@ pub struct RunOutput {
     pub stdout: String,
     pub stderr: String,
     pub duration: Duration,
+    /// Real token usage if the underlying provider reported it.
+    ///
+    /// `None` when the runner has no way to extract it (e.g. `LocalRunner`
+    /// streaming raw tokens via llama.cpp), or when the caller didn't
+    /// opt into the runner's structured-output mode (`ClaudeRunner`
+    /// requires `--output-format=json`, which the bootstrap path opts
+    /// into; the day-to-day `coral query` path does not).
+    ///
+    /// Consumers like `coral bootstrap --max-cost` use `Some(_)` for
+    /// real-cost mid-flight accounting and fall back to the heuristic
+    /// cost model in `coral_core::cost` when `None` (logging a one-time
+    /// warning per run that "running cost is estimated").
+    pub usage: Option<TokenUsage>,
 }
 
 pub trait Runner: Send + Sync {
@@ -288,6 +430,14 @@ impl Runner for ClaudeRunner {
         let start = Instant::now();
         let mut cmd = Command::new(&self.binary);
         cmd.arg("--print");
+        // v0.34.0 (FR-ONB-29, FR-ONB-30): ask for structured JSON output
+        // so `parse_usage_from_stdout` can extract real `input_tokens` /
+        // `output_tokens` for mid-flight cost gating. `--output-format`
+        // is a CLI-time flag introduced in Claude Code v0.7.x; older
+        // binaries that don't understand it will fail on spawn — at
+        // which point the user already needs to upgrade.
+        cmd.arg("--output-format");
+        cmd.arg("json");
         if let Some(system) = &prompt.system {
             cmd.arg("--append-system-prompt").arg(system);
         }
@@ -358,10 +508,21 @@ impl Runner for ClaudeRunner {
             });
         }
 
+        // v0.34.0 (FR-ONB-29, FR-ONB-30): the `--output-format=json`
+        // envelope is `{"result":"<answer>","usage":{...}}`. Extract the
+        // inner `result` for downstream callers (so `coral query` still
+        // sees plain prose, not JSON) AND lift the `usage` block for
+        // cost accounting. Real `claude --print` without that flag
+        // returns bare text; we keep that path working for tests + dev
+        // binaries that lack JSON mode by falling back to raw stdout.
+        let raw_stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let (usage, inner) = parse_usage_from_stdout(&raw_stdout);
+        let stdout = inner.unwrap_or(raw_stdout);
         Ok(RunOutput {
-            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+            stdout,
             stderr: String::from_utf8_lossy(&output.stderr).to_string(),
             duration,
+            usage,
         })
     }
 
@@ -400,6 +561,105 @@ impl Runner for ClaudeRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// v0.34.0 (FR-ONB-29): parse Anthropic-shape JSON envelope and
+    /// lift `usage` into a `TokenUsage`. The `result` field unwraps
+    /// for downstream callers (so `coral query` keeps seeing plain
+    /// prose, not JSON).
+    #[test]
+    fn parse_usage_handles_anthropic_json_envelope() {
+        let stdout = r#"{
+            "result": "Hello world.",
+            "usage": {
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0
+            }
+        }"#;
+        let (usage, inner) = parse_usage_from_stdout(stdout);
+        let usage = usage.expect("usage extracted");
+        assert_eq!(usage.input_tokens, 100);
+        assert_eq!(usage.output_tokens, 50);
+        assert_eq!(usage.cache_read_tokens, 0);
+        assert_eq!(usage.cache_write_tokens, 0);
+        assert_eq!(inner.as_deref(), Some("Hello world."));
+    }
+
+    /// v0.34.0 (FR-ONB-29): Anthropic prompt-caching path — non-zero
+    /// `cache_read_input_tokens` and `cache_creation_input_tokens`
+    /// land in the right `TokenUsage` slots.
+    #[test]
+    fn parse_usage_extracts_cache_fields_when_caching_active() {
+        let stdout = r#"{
+            "result": "ok",
+            "usage": {
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "cache_creation_input_tokens": 200,
+                "cache_read_input_tokens": 4096
+            }
+        }"#;
+        let (usage, _) = parse_usage_from_stdout(stdout);
+        let usage = usage.expect("usage extracted");
+        assert_eq!(usage.cache_write_tokens, 200);
+        assert_eq!(usage.cache_read_tokens, 4096);
+    }
+
+    /// v0.34.0 (FR-ONB-29): bare text (non-JSON) returns
+    /// `(None, None)` so the caller keeps the raw stdout.
+    #[test]
+    fn parse_usage_returns_none_on_plain_text() {
+        let (usage, inner) = parse_usage_from_stdout("Just some prose, no JSON here.");
+        assert!(usage.is_none());
+        assert!(inner.is_none());
+    }
+
+    /// v0.34.0 (FR-ONB-29): malformed JSON returns `(None, None)`
+    /// rather than panicking. Defensive: a future `claude` schema
+    /// drift must NOT crash bootstrap.
+    #[test]
+    fn parse_usage_returns_none_on_malformed_json() {
+        let (usage, inner) = parse_usage_from_stdout("{not valid json}");
+        assert!(usage.is_none());
+        assert!(inner.is_none());
+    }
+
+    /// v0.34.0 (FR-ONB-29): OpenAI-compat `prompt_tokens` /
+    /// `completion_tokens` field aliases also work — same parser
+    /// covers HttpRunner shim outputs.
+    #[test]
+    fn parse_usage_accepts_openai_field_names() {
+        let stdout = r#"{"usage":{"prompt_tokens":10,"completion_tokens":20}}"#;
+        let (usage, _) = parse_usage_from_stdout(stdout);
+        let usage = usage.expect("usage extracted");
+        assert_eq!(usage.input_tokens, 10);
+        assert_eq!(usage.output_tokens, 20);
+    }
+
+    /// v0.34.0 (FR-ONB-29): `TokenUsage::add` sums field-wise and
+    /// saturates on overflow — used by `MultiStepRunner` to roll up
+    /// per-tier usage.
+    #[test]
+    fn token_usage_add_sums_fields() {
+        let a = TokenUsage {
+            input_tokens: 10,
+            output_tokens: 5,
+            cache_read_tokens: 100,
+            cache_write_tokens: 7,
+        };
+        let b = TokenUsage {
+            input_tokens: 3,
+            output_tokens: 1,
+            cache_read_tokens: 50,
+            cache_write_tokens: 0,
+        };
+        let sum = a.add(&b);
+        assert_eq!(sum.input_tokens, 13);
+        assert_eq!(sum.output_tokens, 6);
+        assert_eq!(sum.cache_read_tokens, 150);
+        assert_eq!(sum.cache_write_tokens, 7);
+    }
 
     /// v0.19.5 audit H8: scrub_secrets removes bearer / x-api-key /
     /// Authorization substrings from runner output before it lands in

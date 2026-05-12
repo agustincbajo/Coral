@@ -25,8 +25,8 @@
 
 use crate::body_tempfile::{TempFileGuard, body_tempfile_path, write_body_tempfile_secure};
 use crate::runner::{
-    Prompt, RunOutput, Runner, RunnerError, RunnerResult, combine_outputs, is_auth_failure,
-    scrub_secrets,
+    Prompt, RunOutput, Runner, RunnerError, RunnerResult, TokenUsage, combine_outputs,
+    is_auth_failure, scrub_secrets,
 };
 use serde::{Deserialize, Serialize};
 use std::process::Command;
@@ -88,6 +88,23 @@ struct ChatCompletionRequest<'a> {
 #[derive(Debug, Deserialize)]
 struct ChatCompletionResponse {
     choices: Vec<Choice>,
+    /// OpenAI-style usage block. Present on all major OpenAI-compat
+    /// servers (OpenAI, vLLM, Ollama, llama.cpp's server). Missing on
+    /// some custom shims — absence falls through to `usage: None`,
+    /// not a parse error.
+    #[serde(default)]
+    usage: Option<HttpUsage>,
+}
+
+/// OpenAI-shape usage block. We only care about the four headline
+/// numbers; vendor extensions (e.g. `prompt_tokens_details`) are
+/// ignored.
+#[derive(Debug, Deserialize)]
+struct HttpUsage {
+    #[serde(default)]
+    prompt_tokens: u64,
+    #[serde(default)]
+    completion_tokens: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -297,6 +314,16 @@ impl Runner for HttpRunner {
                     String::from_utf8_lossy(&output.stdout)
                 )))
             })?;
+        // v0.34.0 (FR-ONB-29): lift `usage` for cost gating. OpenAI-compat
+        // servers always report a `usage` block on a successful response.
+        // When absent (custom shim), fall through to `None` so the
+        // bootstrap cost path uses heuristic estimates.
+        let usage = parsed.usage.as_ref().map(|u| TokenUsage {
+            input_tokens: u.prompt_tokens,
+            output_tokens: u.completion_tokens,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+        });
         let content = parsed
             .choices
             .into_iter()
@@ -312,6 +339,7 @@ impl Runner for HttpRunner {
             stdout: content,
             stderr: String::from_utf8_lossy(&output.stderr).to_string(),
             duration,
+            usage,
         })
     }
 }

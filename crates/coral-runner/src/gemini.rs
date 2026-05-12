@@ -18,7 +18,7 @@
 
 use crate::runner::{
     Prompt, RunOutput, Runner, RunnerError, RunnerResult, combine_outputs, is_auth_failure,
-    run_streaming_command, scrub_secrets,
+    parse_usage_from_stdout, run_streaming_command, scrub_secrets,
 };
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -135,10 +135,22 @@ impl Runner for GeminiRunner {
             });
         }
 
+        // v0.34.0 (FR-ONB-29): best-effort usage extraction. The
+        // gemini-cli prose mode does NOT emit a structured `usage`
+        // block; users who want real cost gating must wrap the binary
+        // in a shim that converts the Gemini API's `usageMetadata`
+        // into the shared `usage:{input_tokens,output_tokens}` JSON
+        // envelope. When the stdout isn't JSON, `parse_usage_from_stdout`
+        // returns `(None, None)` and the caller falls back to the
+        // heuristic in `coral_core::cost`.
+        let raw_stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let (usage, inner) = parse_usage_from_stdout(&raw_stdout);
+        let stdout = inner.unwrap_or(raw_stdout);
         Ok(RunOutput {
-            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+            stdout,
             stderr: String::from_utf8_lossy(&output.stderr).to_string(),
             duration,
+            usage,
         })
     }
 

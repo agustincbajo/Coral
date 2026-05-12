@@ -144,10 +144,18 @@ impl Runner for LocalRunner {
             });
         }
 
+        // v0.34.0 (FR-ONB-29): llama.cpp's `llama-cli` writes raw tokens
+        // and no structured usage block, so we return `None` and the
+        // bootstrap cost path falls back to the heuristic in
+        // `coral_core::cost`. Users running llama.cpp through a wrapper
+        // that surfaces token counts can still get real numbers by
+        // pointing `--provider http` at llama.cpp's `/v1/chat/completions`
+        // shim instead, which DOES emit OpenAI-shape `usage`.
         Ok(RunOutput {
             stdout: String::from_utf8_lossy(&output.stdout).to_string(),
             stderr: String::from_utf8_lossy(&output.stderr).to_string(),
             duration,
+            usage: None,
         })
     }
 
