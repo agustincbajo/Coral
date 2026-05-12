@@ -40,6 +40,21 @@ function sqrtScale(value: number, min: number, max: number, lo: number, hi: numb
   return lo + t * (hi - lo);
 }
 
+// Convert "#rrggbb" + alpha to "rgba(r, g, b, a)". Sigma's default node
+// program reads the alpha channel from the colour string at draw time,
+// so this is what gives us opacity-by-confidence.
+function hexToRgba(hex: string, alpha: number): string {
+  const normalised = hex.startsWith("#") ? hex.slice(1) : hex;
+  if (normalised.length !== 6) return `rgba(148, 163, 184, ${alpha})`;
+  const r = parseInt(normalised.slice(0, 2), 16);
+  const g = parseInt(normalised.slice(2, 4), 16);
+  const b = parseInt(normalised.slice(4, 6), 16);
+  if (Number.isNaN(r) || Number.isNaN(g) || Number.isNaN(b)) {
+    return `rgba(148, 163, 184, ${alpha})`;
+  }
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
 function Loader({ payload }: { payload: GraphPayload }) {
   const loadGraph = useLoadGraph();
   const sigma = useSigma();
@@ -55,7 +70,7 @@ function Loader({ payload }: { payload: GraphPayload }) {
     // Polar fallback positions for empty-state graphs that have no layout yet.
     payload.nodes.forEach((n, i) => {
       const angle = (i / Math.max(1, payload.nodes.length)) * Math.PI * 2;
-      const colour =
+      const hex =
         colorBy === "status"
           ? STATUS_HEX[n.status as Status] ?? "#94a3b8"
           : PAGE_TYPE_HEX[n.page_type as PageType] ?? "#94a3b8";
@@ -63,15 +78,17 @@ function Loader({ payload }: { payload: GraphPayload }) {
         sizeBy === "degree"
           ? sqrtScale(n.degree, minDeg, maxDeg, 5, 25)
           : sqrtScale(n.confidence, 0, 1, 5, 25);
+      // Opacity by confidence — clamped to [0.4, 1] so even Draft pages
+      // (confidence ≈ 0.5) stay readable. Sigma honours the alpha
+      // channel in rgba() colours natively.
+      const alpha = Math.max(0.4, Math.min(1, n.confidence || 0.6));
+      const colour = hexToRgba(hex, alpha);
       g.addNode(n.id, {
         label: n.label || n.id,
         x: Math.cos(angle),
         y: Math.sin(angle),
         size,
         color: colour,
-        // NOTE(coral-ui frontend): rgba opacity baked into colour at draw time;
-        // Sigma respects per-node alpha through the colour channel.
-        confidence: Math.max(0.4, Math.min(1, n.confidence || 0.6)),
       });
     });
 
