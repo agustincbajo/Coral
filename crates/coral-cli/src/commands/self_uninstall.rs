@@ -55,17 +55,14 @@ pub fn run(args: SelfUninstallArgs) -> Result<ExitCode> {
     }
 
     if let Some(path) = plan.state_dir_to_remove.as_deref() {
-        std::fs::remove_dir_all(path)
-            .map_err(|e| anyhow!("removing {}: {e}", path.display()))?;
+        std::fs::remove_dir_all(path).map_err(|e| anyhow!("removing {}: {e}", path.display()))?;
         println!("removed {}", path.display());
     }
 
     remove_binary(&binary_path)?;
 
     println!();
-    println!(
-        "Plugin still registered in Claude Code. Remove with /plugin uninstall coral@coral."
-    );
+    println!("Plugin still registered in Claude Code. Remove with /plugin uninstall coral@coral.");
 
     Ok(ExitCode::SUCCESS)
 }

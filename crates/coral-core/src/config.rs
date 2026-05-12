@@ -242,8 +242,8 @@ pub fn load_from_repo(cwd: &Path) -> Result<CoralConfig> {
         path: path.clone(),
         source,
     })?;
-    let cfg: CoralConfig =
-        toml::from_str(&raw).map_err(|e| CoralError::Manifest(format!("{}: {e}", path.display())))?;
+    let cfg: CoralConfig = toml::from_str(&raw)
+        .map_err(|e| CoralError::Manifest(format!("{}: {e}", path.display())))?;
     if cfg.schema_version > CONFIG_SCHEMA_VERSION {
         return Err(CoralError::Manifest(format!(
             ".coral/config.toml schema_version {} > supported {}; upgrade coral",
@@ -478,7 +478,10 @@ max_tokens_per_page = 4096
         // strongly-typed loader (no formatting drift the deserializer
         // rejects).
         let cfg = load_from_repo(dir.path()).expect("reload");
-        let anth = cfg.provider.anthropic.expect("anthropic survives round-trip");
+        let anth = cfg
+            .provider
+            .anthropic
+            .expect("anthropic survives round-trip");
         assert_eq!(anth.api_key, "sk-ant-test");
     }
 

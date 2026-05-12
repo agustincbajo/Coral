@@ -191,7 +191,7 @@ enum Cmd {
     /// FR-ONB-26 install.sh caller spells it `coral self register-
     /// marketplace`). Aliases route to the same module entry points.
     #[command(name = "self")]
-    SelfCmd(SelfArgs),
+    SelfGroup(SelfArgs),
     /// **Hidden** test-only helper: acquires `with_exclusive_lock(path)`,
     /// reads the file as a u64 counter, increments by 1, writes back.
     /// Used by `tests/cross_process_lock.rs` to verify the v0.15
@@ -228,11 +228,11 @@ struct SkillArgs {
 #[derive(Args, Debug)]
 struct SelfArgs {
     #[command(subcommand)]
-    command: SelfCmd,
+    command: SelfSubCmd,
 }
 
 #[derive(Subcommand, Debug)]
-enum SelfCmd {
+enum SelfSubCmd {
     /// Mirror of top-level `coral self-check`.
     Check(commands::self_check::SelfCheckArgs),
     /// Mirror of top-level `coral self-register-marketplace`.
@@ -324,10 +324,10 @@ fn main() -> ExitCode {
         Cmd::SelfCheck(args) => commands::self_check::run(args),
         Cmd::SelfRegisterMarketplace(args) => commands::self_register_marketplace::run(args),
         Cmd::SelfUninstall(args) => commands::self_uninstall::run(args),
-        Cmd::SelfCmd(args) => match args.command {
-            SelfCmd::Check(a) => commands::self_check::run(a),
-            SelfCmd::RegisterMarketplace(a) => commands::self_register_marketplace::run(a),
-            SelfCmd::Uninstall(a) => commands::self_uninstall::run(a),
+        Cmd::SelfGroup(args) => match args.command {
+            SelfSubCmd::Check(a) => commands::self_check::run(a),
+            SelfSubCmd::RegisterMarketplace(a) => commands::self_register_marketplace::run(a),
+            SelfSubCmd::Uninstall(a) => commands::self_uninstall::run(a),
         },
         Cmd::TestLockIncr { path } => run_test_lock_incr(&path),
     };

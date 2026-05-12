@@ -79,6 +79,18 @@ pub enum RetryCondition {
     Any,
 }
 
+// clippy::large_enum_variant: the HttpStep variant is ~288 bytes
+// (headers BTreeMap + body + several Option<String>) while ExecStep
+// is ~56 bytes. Boxing HttpStep would force its `#[serde(untagged)]`
+// deserialization through an extra indirection that breaks the
+// inline-shape match the YAML format relies on (the deserializer
+// tries to fit each input into one variant; an outer `Box` adds a
+// borrow-shape mismatch for serde's auto-derived `Deserialize`).
+// The enum is only constructed at YAML-parse time and held briefly
+// on the stack, so the size penalty is one shallow alloc per step,
+// not a hot-path concern. Pinned with a scoped allow rather than
+// changing the shape.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum YamlStep {

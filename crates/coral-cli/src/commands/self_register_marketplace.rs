@@ -65,7 +65,10 @@ pub fn run(args: RegisterMarketplaceArgs) -> Result<ExitCode> {
             );
         }
         Outcome::Patched { backup_path } => {
-            println!("Coral marketplace registered in {}", settings_path.display());
+            println!(
+                "Coral marketplace registered in {}",
+                settings_path.display()
+            );
             if let Some(b) = backup_path {
                 println!(
                     "Backup at {}. Restore with: mv \"{}\" \"{}\"",
@@ -90,11 +93,8 @@ pub fn run(args: RegisterMarketplaceArgs) -> Result<ExitCode> {
 fn resolve_settings_path(scope: Scope) -> Result<PathBuf> {
     let base = match scope {
         Scope::Project => std::env::current_dir()?,
-        Scope::User => {
-            let home = home_dir()
-                .ok_or_else(|| anyhow!("--scope=user requires $HOME (or %USERPROFILE%) to be set"))?;
-            home
-        }
+        Scope::User => home_dir()
+            .ok_or_else(|| anyhow!("--scope=user requires $HOME (or %USERPROFILE%) to be set"))?,
     };
     Ok(base.join(".claude").join("settings.json"))
 }
@@ -409,15 +409,14 @@ mod tests {
         let backups: Vec<_> = std::fs::read_dir(&claude_dir)
             .unwrap()
             .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.file_name()
-                    .to_string_lossy()
-                    .contains("coral-backup")
-            })
+            .filter(|e| e.file_name().to_string_lossy().contains("coral-backup"))
             .collect();
         assert_eq!(backups.len(), 1, "exactly one backup expected");
         let backup_raw = std::fs::read_to_string(backups[0].path()).unwrap();
-        assert_eq!(backup_raw, user_content, "backup must be byte-equal to the original");
+        assert_eq!(
+            backup_raw, user_content,
+            "backup must be byte-equal to the original"
+        );
     }
 
     /// Marketplace already present: upsert is a no-op. The file is

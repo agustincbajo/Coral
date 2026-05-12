@@ -317,7 +317,11 @@ fn run_probes(cwd: &Path, quick: bool) -> SelfCheck {
     let (update_available, mcp_server, ui_server) = if quick {
         (None, None, None)
     } else {
-        (probe_update_available(), probe_mcp_server(), probe_ui_server())
+        (
+            probe_update_available(),
+            probe_mcp_server(),
+            probe_ui_server(),
+        )
     };
 
     let mut warnings: Vec<Warning> = Vec::new();
@@ -338,8 +342,7 @@ fn run_probes(cwd: &Path, quick: bool) -> SelfCheck {
     // is reserved for the hook-script early-exit path (see PRD §6.3
     // FR-ONB-9), so it's never produced by this code.
     let coral_status = if warnings.iter().any(|w| {
-        w.severity == Severity::High
-            && w.message.to_lowercase().contains("internal error")
+        w.severity == Severity::High && w.message.to_lowercase().contains("internal error")
     }) {
         CoralStatus::CheckFailed
     } else {
@@ -475,7 +478,11 @@ fn probe_claude_md(cwd: &Path) -> Option<ClaudeMdInfo> {
 }
 
 fn probe_claude_cli() -> Option<ClaudeCli> {
-    let exe_name = if cfg!(windows) { "claude.exe" } else { "claude" };
+    let exe_name = if cfg!(windows) {
+        "claude.exe"
+    } else {
+        "claude"
+    };
     let path = which_in_path(exe_name)?;
     let version = std::process::Command::new(&path)
         .arg("--version")
@@ -503,7 +510,11 @@ fn probe_providers_available(claude_cli: Option<&ClaudeCli>) -> Vec<String> {
     if std::env::var_os("ANTHROPIC_API_KEY").is_some() {
         available.push("anthropic_api_key".to_string());
     }
-    let ollama_exe = if cfg!(windows) { "ollama.exe" } else { "ollama" };
+    let ollama_exe = if cfg!(windows) {
+        "ollama.exe"
+    } else {
+        "ollama"
+    };
     if which_in_path(ollama_exe).is_some() {
         available.push("ollama".to_string());
     }
@@ -567,7 +578,9 @@ fn build_warnings_and_suggestions(
     if !in_path {
         warnings.push(Warning {
             severity: Severity::High,
-            message: "`coral` not on PATH — Claude Code's SessionStart hook will skip Coral context".into(),
+            message:
+                "`coral` not on PATH — Claude Code's SessionStart hook will skip Coral context"
+                    .into(),
             action: Some("re-run scripts/install.sh (or install.ps1 on Windows)".into()),
         });
     }
@@ -580,7 +593,10 @@ fn build_warnings_and_suggestions(
         });
     }
 
-    if claude_md.as_ref().is_none_or(|c| !c.has_coral_routing_section) {
+    if claude_md
+        .as_ref()
+        .is_none_or(|c| !c.has_coral_routing_section)
+    {
         suggestions.push(Suggestion {
             kind: SuggestionKind::RunInit,
             command: "coral init".into(),
@@ -621,7 +637,7 @@ fn cap_for_quick(report: &mut SelfCheck) {
     // SessionStart hook's output diffs cleanly run-over-run.
     report
         .warnings
-        .sort_by(|a, b| b.severity.cmp(&a.severity));
+        .sort_by_key(|w| std::cmp::Reverse(w.severity));
     if report.warnings.len() > 5 {
         report.warnings.truncate(5);
     }
@@ -638,10 +654,7 @@ fn print_text(report: &SelfCheck) {
     println!("Coral self-check ({})", report.coral_version);
     println!("  status:   {:?}", report.coral_status);
     println!("  binary:   {}", report.binary_path.display());
-    println!(
-        "  in PATH:  {}",
-        if report.in_path { "yes" } else { "no" }
-    );
+    println!("  in PATH:  {}", if report.in_path { "yes" } else { "no" });
     println!(
         "  platform: {}/{}",
         report.platform.os, report.platform.arch
@@ -832,7 +845,10 @@ mod tests {
                 std::env::set_var("PATH", orig);
             }
         }
-        assert!(result.is_none(), "no `claude` binary should be on cleared PATH");
+        assert!(
+            result.is_none(),
+            "no `claude` binary should be on cleared PATH"
+        );
     }
 
     /// `--quick` skips the slow probes (None in output) while `--full`
