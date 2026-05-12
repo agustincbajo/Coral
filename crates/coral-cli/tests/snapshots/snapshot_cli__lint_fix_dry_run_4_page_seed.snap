@@ -10,29 +10,29 @@ expression: stdout
 
 ## ⚠️ Warning
 
-- **CommitNotInGit** in `.wiki\concepts\idempotency.md`: Commit '[COMMIT_SHA]' for page 'idempotency' not found in repo history
+- **CommitNotInGit** in `.wiki/concepts/idempotency.md`: Commit '[COMMIT_SHA]' for page 'idempotency' not found in repo history
   Context: [COMMIT_SHA]
-- **LowConfidence** in `.wiki\concepts\idempotency.md`: Confidence 0.5 below threshold 0.6
-- **OrphanPage** in `.wiki\concepts\idempotency.md`: Page 'idempotency' has no inbound backlinks
-- **CommitNotInGit** in `.wiki\concepts\outbox.md`: Commit '[COMMIT_SHA]' for page 'outbox' not found in repo history
+- **LowConfidence** in `.wiki/concepts/idempotency.md`: Confidence 0.5 below threshold 0.6
+- **OrphanPage** in `.wiki/concepts/idempotency.md`: Page 'idempotency' has no inbound backlinks
+- **CommitNotInGit** in `.wiki/concepts/outbox.md`: Commit '[COMMIT_SHA]' for page 'outbox' not found in repo history
   Context: [COMMIT_SHA]
-- **SourceNotFound** in `.wiki\concepts\outbox.md`: Source path 'src/outbox/dispatcher.rs' for page 'outbox' not found on disk
+- **SourceNotFound** in `.wiki/concepts/outbox.md`: Source path 'src/outbox/dispatcher.rs' for page 'outbox' not found on disk
   Context: src/outbox/dispatcher.rs
-- **CommitNotInGit** in `.wiki\flows\checkout-flow.md`: Commit '[COMMIT_SHA]' for page 'checkout-flow' not found in repo history
+- **CommitNotInGit** in `.wiki/flows/checkout-flow.md`: Commit '[COMMIT_SHA]' for page 'checkout-flow' not found in repo history
   Context: [COMMIT_SHA]
-- **SourceNotFound** in `.wiki\flows\checkout-flow.md`: Source path 'src/checkout/saga.rs' for page 'checkout-flow' not found on disk
+- **SourceNotFound** in `.wiki/flows/checkout-flow.md`: Source path 'src/checkout/saga.rs' for page 'checkout-flow' not found on disk
   Context: src/checkout/saga.rs
-- **CommitNotInGit** in `.wiki\modules\order.md`: Commit '[COMMIT_SHA]' for page 'order' not found in repo history
+- **CommitNotInGit** in `.wiki/modules/order.md`: Commit '[COMMIT_SHA]' for page 'order' not found in repo history
   Context: [COMMIT_SHA]
-- **SourceNotFound** in `.wiki\modules\order.md`: Source path 'src/order/handler.rs' for page 'order' not found on disk
+- **SourceNotFound** in `.wiki/modules/order.md`: Source path 'src/order/handler.rs' for page 'order' not found on disk
   Context: src/order/handler.rs
 
 
 
 # No-LLM lint fixes (dry-run)
 
-- `checkout-flow` (.wiki\flows\checkout-flow.md): confidence-from-coverage
-- `order` (.wiki\modules\order.md): confidence-from-coverage
-- `outbox` (.wiki\concepts\outbox.md): confidence-from-coverage
+- `checkout-flow` (.wiki/flows/checkout-flow.md): confidence-from-coverage
+- `order` (.wiki/modules/order.md): confidence-from-coverage
+- `outbox` (.wiki/concepts/outbox.md): confidence-from-coverage
 
 3 page(s) would change. Pass `--apply` to write.

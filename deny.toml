@@ -43,6 +43,13 @@ allow = [
     "MPL-2.0",
     "CC0-1.0",
     "0BSD",
+    # `webpki-roots` switched from MPL-2.0 → CDLA-Permissive-2.0 in newer
+    # releases (it ships Mozilla's CA trust store, distributed under
+    # Linux Foundation's Community Data License Agreement). The license
+    # is OSI-permissive: no copyleft, redistribution allowed, no
+    # patent grant ambiguity. We pull `webpki-roots` transitively via
+    # `ureq` (FR-ONB-27, 1-token provider ping) and via `rustls`.
+    "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.93
 

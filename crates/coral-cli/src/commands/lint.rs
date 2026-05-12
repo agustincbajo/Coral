@@ -1114,12 +1114,14 @@ pub(crate) fn render_fix_report(report: &NoLlmFixReport) -> String {
     for (slug, path, rules) in &report.changed_pages {
         // Render path relative to cwd when possible — falls back to
         // the absolute display so the report is still readable in
-        // any environment (tests, CI, ad-hoc runs).
+        // any environment (tests, CI, ad-hoc runs). Forward-slash to
+        // keep snapshots stable across Windows + Unix CI.
         let path_display = std::env::current_dir()
             .ok()
             .and_then(|cwd| path.strip_prefix(&cwd).ok().map(Path::to_path_buf))
             .map(|p| p.display().to_string())
-            .unwrap_or_else(|| path.display().to_string());
+            .unwrap_or_else(|| path.display().to_string())
+            .replace('\\', "/");
         out.push_str(&format!(
             "- `{slug}` ({}): {}\n",
             path_display,
@@ -1426,7 +1428,8 @@ pub(crate) fn render_source_suggestion_report(report: &SourceSuggestionReport) -
             .ok()
             .and_then(|cwd| entry.path.strip_prefix(&cwd).ok().map(Path::to_path_buf))
             .map(|p| p.display().to_string())
-            .unwrap_or_else(|| entry.path.display().to_string());
+            .unwrap_or_else(|| entry.path.display().to_string())
+            .replace('\\', "/");
         out.push_str(&format!(
             "- `{}` ({}): suggested {}\n",
             entry.slug,

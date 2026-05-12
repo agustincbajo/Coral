@@ -76,10 +76,34 @@ pub enum LintCode {
 pub struct LintIssue {
     pub code: LintCode,
     pub severity: LintSeverity,
+    /// Forward-slashed when serialized so JSON/markdown snapshots are stable
+    /// across Windows + Unix CI. Path components on disk keep using the OS
+    /// native separator; only the public-facing representation is normalized.
+    #[serde(serialize_with = "serialize_path_forward_slash")]
     pub page: Option<PathBuf>,
     pub message: String,
     /// Optional anchor for the issue, e.g., the wikilink target that's broken.
     pub context: Option<String>,
+}
+
+/// Render a path with forward-slash separators regardless of the host OS.
+/// Used by both the JSON serializer above and the markdown formatter, so a
+/// snapshot recorded on Windows agrees with the one Linux CI regenerates.
+pub(crate) fn forward_slashed(path: &std::path::Path) -> String {
+    path.display().to_string().replace('\\', "/")
+}
+
+fn serialize_path_forward_slash<S>(
+    value: &Option<PathBuf>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    match value {
+        Some(p) => serializer.serialize_some(&forward_slashed(p)),
+        None => serializer.serialize_none(),
+    }
 }
 
 /// Top-level lint output: the sorted list of [`LintIssue`]s produced by a run.
@@ -162,7 +186,7 @@ impl LintReport {
             out.push_str(header);
             for issue in issues_for_sev {
                 let page_str = match &issue.page {
-                    Some(p) => p.display().to_string(),
+                    Some(p) => forward_slashed(p),
                     None => "<global>".to_string(),
                 };
                 out.push_str(&format!(
