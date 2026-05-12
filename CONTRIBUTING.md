@@ -21,11 +21,16 @@ Thanks for the interest. PRs welcome — there are three guardrails plus a few c
 ```bash
 git clone https://github.com/agustincbajo/Coral
 cd Coral
+./scripts/dev-setup.sh           # Linux/macOS — installs cargo-sweep, sccache, cargo-nextest
+# or:
+./scripts/dev-setup.ps1          # Windows (PowerShell)
 cargo build --workspace
 cargo test --workspace
 ```
 
 Rust toolchain pinned to **1.85** in `rust-toolchain.toml`. If your `rustup` is older, `rustup update stable`.
+
+`scripts/dev-setup.*` is idempotent and the only setup step beyond the toolchain. It installs the disk-management tooling (`cargo-sweep`, `sccache`, `cargo-nextest`) and wires `sccache` as your global `rustc` wrapper. The full mechanics — why incremental compilation is off in this repo, when to run `cargo sweep`, what disk budget to target — live in **[`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md)**. Read it once before the first long iteration session; with the mechanics in place `target/` routinely fits in 5–8 GB instead of growing past 30 GB.
 
 For environments + testing development you'll also want:
 - `docker compose` v2.22+ (or `podman compose`, or `docker-compose` v1)
