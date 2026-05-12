@@ -33,6 +33,16 @@ walkdir = { workspace = true }
 regex = { workspace = true }
 rayon = { workspace = true }
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
+# v0.34.0 onboarding (FR-ONB-6, FR-ONB-7): derives `JsonSchema` for the
+# `SelfCheck` struct so `coral self-check --print-schema` emits a
+# pin-able JSON Schema. Shared workspace pin already includes the
+# chrono feature we need for the DateTime<Utc> fields.
+schemars = { workspace = true }
+# v0.34.0 onboarding (FR-ONB-27, FR-ONB-33): `Confirm` (uninstall
+# safety prompt) and `Select`/`Password` (provider mini-wizard in
+# week 3). Optional via the `tty` feature in case downstream
+# packagers want a TTY-free build later — not gated for now.
+dialoguer = { workspace = true }
 zip = { workspace = true }
 # v0.23.1: SIGINT/SIGTERM clean-shutdown plumbing for `coral monitor up`.
 signal-hook = { workspace = true }

@@ -21,6 +21,7 @@ pub mod notion_push;
 pub mod pins;
 pub mod project;
 pub mod search;
+pub mod self_check;
 #[cfg(feature = "webui")]
 pub mod serve;
 pub mod session;
