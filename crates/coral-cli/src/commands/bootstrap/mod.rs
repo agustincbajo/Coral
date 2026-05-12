@@ -82,16 +82,41 @@ pub fn run(args: BootstrapArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
     if args.from_symbols {
         return run_from_symbols(args, wiki_root);
     }
+    // Week 2 validator nit#1: previously this resolved the provider
+    // here AND again inside `run_with_runner`. The flag is the same
+    // both times so the result is identical, but the duplicated env
+    // lookup is noise. Resolve once, hand both the runner and the
+    // pre-resolved name to the inner entry point.
     let provider = super::runner_helper::resolve_provider(args.provider.as_deref())
         .map_err(|e| anyhow::anyhow!(e))?;
     let runner = super::runner_helper::make_runner(provider);
-    run_with_runner(args, wiki_root, runner.as_ref())
+    run_with_runner_inner(args, wiki_root, runner.as_ref(), provider)
 }
 
+/// Public API for test fixtures that inject their own runner. Resolves
+/// the provider name internally (callers don't have access to the
+/// internal `ProviderName` enum). Tests reach this entry point through
+/// `args.provider` + env vars exactly like a real CLI invocation does.
 pub fn run_with_runner(
     args: BootstrapArgs,
     wiki_root: Option<&Path>,
     runner: &dyn Runner,
+) -> Result<ExitCode> {
+    let provider = super::runner_helper::resolve_provider(args.provider.as_deref())
+        .map_err(|e| anyhow::anyhow!(e))?;
+    run_with_runner_inner(args, wiki_root, runner, provider)
+}
+
+/// Internal entry point that accepts the already-resolved provider so
+/// `run()` can avoid the double-lookup. The signature is `pub(crate)` so
+/// the surrounding tests can poke at it if they need to bypass the
+/// canonical resolution path; the public surface stays on the two
+/// wrappers above.
+pub(crate) fn run_with_runner_inner(
+    args: BootstrapArgs,
+    wiki_root: Option<&Path>,
+    runner: &dyn Runner,
+    provider_name: super::runner_helper::ProviderName,
 ) -> Result<ExitCode> {
     let root: PathBuf = wiki_root
         .map(Path::to_path_buf)
@@ -105,9 +130,6 @@ pub fn run_with_runner(
 
     let cwd = std::env::current_dir().context("getting cwd")?;
 
-    // Resolve provider name once — used by cost model + state.provider.
-    let provider_name = super::runner_helper::resolve_provider(args.provider.as_deref())
-        .map_err(|e| anyhow::anyhow!(e))?;
     let cost_provider = match provider_name {
         super::runner_helper::ProviderName::Claude => Provider::Claude,
         super::runner_helper::ProviderName::Gemini => Provider::Gemini,
@@ -329,21 +351,28 @@ fn apply_pages(
         });
 
         // ---- Record cost + mark Completed --------------------------------
+        //
+        // Week 2 validator nit#2: the previous comment combined both
+        // sub-branches into a single sentence and read inverted versus
+        // the actual logic. Split + aligned with the conditional so
+        // future readers don't second-guess which branch is which.
         let (input, output, cost_usd) = if let Some(u) = real_usage {
+            // The runner produced usage. Use the real token counts.
             let est = estimate_cost_from_tokens(u.input_tokens, u.output_tokens, cost_provider);
             (u.input_tokens, u.output_tokens, est.usd_estimate)
+        } else if entry.body.is_some() {
+            // Inline body present in the plan → we never called the
+            // runner for this page (see the `if entry.body.is_none()`
+            // guard above). Zero cost. This is the path every v0.33
+            // test fixture exercises.
+            (0, 0, 0.0)
         } else {
-            // No body call (pre-existing body in plan, e.g. bootstrap
-            // shape used by every v0.33 test fixture) → zero cost for
-            // this page. If we did call the runner but it returned
-            // None usage, fall back to the heuristic for the same
-            // entry.
-            if entry.body.is_some() {
-                (0, 0, 0.0)
-            } else {
-                let est = plan_cost_estimate(std::slice::from_ref(&entry), cost_provider);
-                (est.input_tokens, est.output_tokens, est.usd_estimate)
-            }
+            // Runner WAS called but returned no `TokenUsage` (e.g. a
+            // mock runner, or a real runner that didn't surface usage
+            // for this prompt). Fall back to the heuristic estimate
+            // for the same entry so cost_spent stays meaningful.
+            let est = plan_cost_estimate(std::slice::from_ref(&entry), cost_provider);
+            (est.input_tokens, est.output_tokens, est.usd_estimate)
         };
         state.pages[i].input_tokens = input;
         state.pages[i].output_tokens = output;

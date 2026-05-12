@@ -27,6 +27,29 @@ use tempfile::TempDir;
 /// (bootstrap, ingest) must hold this lock.
 static CWD_LOCK: Mutex<()> = Mutex::new(());
 
+/// Initialise `repo` as a git repo with one commit so `git rev-parse HEAD`
+/// succeeds. v0.34.0 cleanup: `coral init` no longer silently falls back
+/// to a zero SHA in a non-git tempdir; tests must materialise a real HEAD.
+fn git_init_with_commit(repo: &Path) {
+    for args in [
+        &["init", "-q", "-b", "main"][..],
+        &["config", "user.email", "lifecycle-test@coral.local"][..],
+        &["config", "user.name", "Coral Lifecycle Test"][..],
+        &["commit", "-q", "--allow-empty", "-m", "lifecycle fixture"][..],
+    ] {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .status()
+            .expect("git invocation failed");
+        assert!(
+            status.success(),
+            "git {args:?} failed in {}",
+            repo.display()
+        );
+    }
+}
+
 #[test]
 fn full_lifecycle_with_mock_runner() {
     let _guard = CWD_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -36,6 +59,7 @@ fn full_lifecycle_with_mock_runner() {
 
     let cur = std::env::current_dir().unwrap();
     std::env::set_current_dir(&cwd).unwrap();
+    git_init_with_commit(&cwd);
 
     // Step 1: init.
     init::run(
@@ -198,6 +222,7 @@ fn lifecycle_init_idempotent_does_not_clobber_seeded_pages() {
     let wiki = cwd.join(".wiki");
     let cur = std::env::current_dir().unwrap();
     std::env::set_current_dir(&cwd).unwrap();
+    git_init_with_commit(&cwd);
 
     init::run(
         InitArgs {
@@ -262,6 +287,7 @@ fn lifecycle_lint_json_format_emits_valid_json() {
     let wiki = cwd.join(".wiki");
     let cur = std::env::current_dir().unwrap();
     std::env::set_current_dir(&cwd).unwrap();
+    git_init_with_commit(&cwd);
 
     init::run(
         InitArgs {

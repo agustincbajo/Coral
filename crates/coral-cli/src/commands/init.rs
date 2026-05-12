@@ -54,11 +54,24 @@ pub fn run(args: InitArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
         tracing::info!(path = %schema_path.display(), "wrote SCHEMA.md");
     }
 
-    // index.md — bootstrap with current HEAD or zeros.
+    // index.md — bootstrap with current HEAD.
+    //
+    // Week 3 validator B2: previous releases silently fell back to a
+    // zero SHA when `git rev-parse HEAD` failed (no `.git/` directory,
+    // or an empty repo before the first commit). That fallback shipped
+    // a fake `last_updated_commit` into the index and every page that
+    // bootstrapped off it, which then desynced from the real history
+    // the moment the user added a real commit. The behavior was
+    // surprising and never documented. We now fail loudly with an
+    // actionable next step — `coral init` makes no sense outside a
+    // git repo, so the only "right" recovery is `git init` first.
     let index_path = root.join("index.md");
     if !index_path.exists() || args.force {
-        let head = gitdiff::head_sha(&cwd)
-            .unwrap_or_else(|_| "0000000000000000000000000000000000000000".into());
+        let head = gitdiff::head_sha(&cwd).map_err(|e| {
+            anyhow::anyhow!(
+                "coral init requires a git repository.\n  Run `git init` first, then `coral init` again.\n  (underlying error: {e})"
+            )
+        })?;
         let mut idx = WikiIndex::new(head);
         idx.generated_at = Utc::now();
         coral_core::atomic::atomic_write_string(&index_path, &idx.to_string()?)
@@ -568,5 +581,28 @@ mod tests {
         assert!(claude_md_has_routing_section("   ## Coral Routing\n"));
         assert!(!claude_md_has_routing_section("# Coral routing\n"));
         assert!(!claude_md_has_routing_section("Just text.\n"));
+    }
+
+    // ------------------------------------------------------------------
+    // Week 3 validator B2: non-git directory must fail loudly, not
+    // fall back to a zero SHA.
+    // ------------------------------------------------------------------
+
+    /// `coral init` outside a git repo returns an actionable error
+    /// rather than silently materialising an index with `last_commit =
+    /// 0x40`. Verifying via the public `run` would require holding the
+    /// process cwd lock for this binary, so we test the underlying
+    /// `gitdiff::head_sha` contract instead and trust the wiring in
+    /// `run` (which now propagates the error verbatim).
+    #[test]
+    fn b2_head_sha_errors_in_non_git_tempdir() {
+        let dir = TempDir::new().unwrap();
+        let err = coral_core::gitdiff::head_sha(dir.path())
+            .expect_err("head_sha must error in a non-git tempdir");
+        let msg = err.to_string().to_lowercase();
+        assert!(
+            msg.contains("git"),
+            "error must mention git so the run() wrapper can render its `git init` hint: {msg}"
+        );
     }
 }

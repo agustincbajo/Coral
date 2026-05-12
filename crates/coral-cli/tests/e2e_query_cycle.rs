@@ -14,6 +14,28 @@ use tempfile::TempDir;
 /// to keep the cwd stable across tests in this binary.
 static CWD_LOCK: Mutex<()> = Mutex::new(());
 
+/// v0.34.0 cleanup: `coral init` now hard-fails outside a git repo.
+/// Materialise a real HEAD in the tempdir before invoking `init::run`.
+fn git_init_with_commit(repo: &std::path::Path) {
+    for args in [
+        &["init", "-q", "-b", "main"][..],
+        &["config", "user.email", "query-test@coral.local"][..],
+        &["config", "user.name", "Coral Query Test"][..],
+        &["commit", "-q", "--allow-empty", "-m", "query fixture"][..],
+    ] {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .status()
+            .expect("git invocation failed");
+        assert!(
+            status.success(),
+            "git {args:?} failed in {}",
+            repo.display()
+        );
+    }
+}
+
 #[test]
 fn query_cycle_with_mock_runner() {
     let _guard = CWD_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -21,6 +43,7 @@ fn query_cycle_with_mock_runner() {
     let wiki = tmp.path().join(".wiki");
     let cur = std::env::current_dir().unwrap();
     std::env::set_current_dir(tmp.path()).unwrap();
+    git_init_with_commit(tmp.path());
 
     init::run(
         InitArgs {
@@ -91,6 +114,7 @@ fn query_propagates_runner_error() {
     let wiki = tmp.path().join(".wiki");
     let cur = std::env::current_dir().unwrap();
     std::env::set_current_dir(tmp.path()).unwrap();
+    git_init_with_commit(tmp.path());
 
     init::run(
         InitArgs {
