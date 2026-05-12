@@ -3,7 +3,7 @@ members = ["crates/*"]
 resolver = "2"
 
 [workspace.package]
-version = "0.32.3"
+version = "0.33.0"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT"
@@ -87,15 +87,15 @@ bincode = "1"
 # subcommand. Single-purpose, pure-Rust, ~30 KB; no new transitives
 # beyond `unicase` (already in the tree via `idna`).
 mime_guess = "2"
-coral-core = { path = "crates/coral-core", version = "0.32.3" }
-coral-env = { path = "crates/coral-env", version = "0.32.3" }
-coral-lint = { path = "crates/coral-lint", version = "0.32.3" }
-coral-runner = { path = "crates/coral-runner", version = "0.32.3" }
-coral-session = { path = "crates/coral-session", version = "0.32.3" }
-coral-stats = { path = "crates/coral-stats", version = "0.32.3" }
-coral-test = { path = "crates/coral-test", version = "0.32.3" }
-coral-mcp = { path = "crates/coral-mcp", version = "0.32.3" }
-coral-ui = { path = "crates/coral-ui", version = "0.32.3" }
+coral-core = { path = "crates/coral-core", version = "0.33.0" }
+coral-env = { path = "crates/coral-env", version = "0.33.0" }
+coral-lint = { path = "crates/coral-lint", version = "0.33.0" }
+coral-runner = { path = "crates/coral-runner", version = "0.33.0" }
+coral-session = { path = "crates/coral-session", version = "0.33.0" }
+coral-stats = { path = "crates/coral-stats", version = "0.33.0" }
+coral-test = { path = "crates/coral-test", version = "0.33.0" }
+coral-mcp = { path = "crates/coral-mcp", version = "0.33.0" }
+coral-ui = { path = "crates/coral-ui", version = "0.33.0" }
 
 [profile.release]
 lto = "thin"

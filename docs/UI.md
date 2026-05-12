@@ -56,15 +56,20 @@ apply.
 
 ---
 
-## Views (M1)
+## Views
 
-| View       | Route                  | What it shows                                                                                          |
-| ---------- | ---------------------- | ------------------------------------------------------------------------------------------------------ |
-| Pages      | `/pages`               | Tabular list with filters by `page_type`, `status`, `confidence` range, `valid_at`, `repo`, and search |
-| Page       | `/pages/:repo/:slug`   | Frontmatter panel + Markdown body (sanitized) + backlinks + sources                                    |
-| Graph      | `/graph`               | Sigma.js force-directed graph of wikilinks. Slider for **bi-temporal** view. Color by status.          |
-| Query      | `/query`               | LLM-backed playground over `/api/v1/query`. Streams via SSE. Cites slugs.                              |
-| Manifest   | `/manifest`            | Tabs for `coral.toml`, `coral.lock`, and stats                                                         |
+| View       | Route                  | Milestone | What it shows                                                                                          |
+| ---------- | ---------------------- | --------- | ------------------------------------------------------------------------------------------------------ |
+| Pages      | `/pages`               | M1        | Tabular list with filters by `page_type`, `status`, `confidence` range, `valid_at`, `repo`, and search |
+| Page       | `/pages/:repo/:slug`   | M1        | Frontmatter panel + Markdown body (sanitized) + backlinks + sources                                    |
+| Graph      | `/graph`               | M1        | Sigma.js force-directed graph of wikilinks. Slider for **bi-temporal** view. Color by status.          |
+| Query      | `/query`               | M1        | LLM-backed playground over `/api/v1/query`. Streams via SSE. Cites slugs.                              |
+| Manifest   | `/manifest`            | M1        | Tabs for `coral.toml`, `coral.lock`, and stats                                                         |
+| Interfaces | `/interfaces`          | M2        | Lists every `page_type = interface` page with status, confidence, validity window, and sources         |
+| Drift      | `/drift`               | M2        | Reads `.coral/contracts/*.json` and renders contract-check findings with severity color-coding         |
+| Affected   | `/affected`            | M2        | Input a git ref → backend runs `git log <ref>..HEAD` and returns repos touched downstream              |
+| Tools      | `/tools`               | M2        | Run `verify` / `test` / `up` / `down` from the browser (requires `--allow-write-tools` + bearer token) |
+| Guarantee  | `/guarantee`           | M3        | `coral test guarantee --can-i-deploy` traffic-light: GREEN / YELLOW / RED with per-check breakdown     |
 
 ### Pages — filter and inspect
 
@@ -143,6 +148,25 @@ All responses are JSON. Success: `{"data": T, "meta"?: {...}}`. Error:
 
   Consumed in the SPA via `fetch + ReadableStream` (because
   `EventSource` doesn't support POST + custom headers).
+
+### M2 / M3 endpoints (v0.33.0+)
+
+- `GET /api/v1/interfaces` — Interface-typed pages with status, confidence, validity window.
+- `GET /api/v1/contract_status` — array of `.coral/contracts/*.json` reports.
+- `GET /api/v1/affected?since=<git-ref>` — repos touched between `<ref>` and `HEAD`.
+- `GET /api/v1/guarantee?env=<env>&strict=<bool>` — `{verdict: GREEN|YELLOW|RED, checks: [...]}` from `coral test guarantee --can-i-deploy --format json`.
+- `POST /api/v1/tools/{verify,run_test,up,down}` — gated by `--allow-write-tools` + bearer token. Body shapes:
+  - `verify`: `{env?: string}`
+  - `run_test`: `{services?: string[], kinds?: string[], tags?: string[], env?: string}`
+  - `up`: `{env?: string}`
+  - `down`: `{env?: string, volumes?: boolean}`
+  - Response: `{status, exit_code, stdout_tail, stderr_tail, duration_ms}`
+- `GET /api/v1/events` — SSE stream of wiki-change notifications. Emits:
+  - `event: hello\ndata: {}\n\n` immediately on connect (handshake)
+  - `event: wiki_changed\ndata: {}\n\n` when any file under `.wiki/` changes (2s polling)
+  - `: keepalive` every ~30s
+  - The SPA wires this to TanStack Query invalidation so all views refresh
+    when the wiki is rebuilt out-of-band (e.g. `coral ingest --apply`).
 
 ---
 

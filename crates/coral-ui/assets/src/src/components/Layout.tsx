@@ -1,6 +1,16 @@
 import { NavLink, Outlet } from "react-router-dom";
 import { useTranslation } from "react-i18next";
-import { FileText, Network, MessageSquare, Settings } from "lucide-react";
+import {
+  FileText,
+  Network,
+  MessageSquare,
+  Settings,
+  Plug,
+  AlertTriangle,
+  GitBranch,
+  Wrench,
+  ShieldCheck,
+} from "lucide-react";
 import { getConfig } from "@/lib/config";
 import { cn } from "@/lib/utils";
 import { LocaleSwitcher } from "@/components/LocaleSwitcher";
@@ -12,6 +22,11 @@ const NAV_ITEMS = [
   { to: "/graph", key: "nav.graph", icon: Network },
   { to: "/query", key: "nav.query", icon: MessageSquare },
   { to: "/manifest", key: "nav.manifest", icon: Settings },
+  { to: "/interfaces", key: "nav.interfaces", icon: Plug },
+  { to: "/drift", key: "nav.drift", icon: AlertTriangle },
+  { to: "/affected", key: "nav.affected", icon: GitBranch },
+  { to: "/tools", key: "nav.tools", icon: Wrench },
+  { to: "/guarantee", key: "nav.guarantee", icon: ShieldCheck },
 ] as const;
 
 export function Layout() {
@@ -30,7 +45,7 @@ export function Layout() {
               {t("app.tagline")}
             </span>
           </div>
-          <nav className="flex items-center gap-1">
+          <nav className="flex items-center gap-1 flex-wrap">
             {NAV_ITEMS.map(({ to, key, icon: Icon }) => (
               <NavLink
                 key={to}

@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import path from "node:path";
@@ -49,5 +50,11 @@ export default defineConfig({
       "/api": "http://localhost:3838",
       "/health": "http://localhost:3838",
     },
+  },
+  // Vitest picks up `**/*.test.ts` by default; we explicitly exclude
+  // the Playwright `e2e/` suite which uses a separate runner.
+  test: {
+    include: ["src/**/*.{test,spec}.{ts,tsx}"],
+    exclude: ["e2e/**", "node_modules/**", "../dist/**"],
   },
 });

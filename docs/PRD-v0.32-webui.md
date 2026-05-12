@@ -594,6 +594,53 @@ Estos spikes deben validarse antes de continuar. Si alguno falla, el plan se rea
 
 ---
 
+---
+
+## 17. Post-mortem de ejecución (2026-05-12)
+
+El PRD estimó **M1 en 8–10 semanas (worst case 11–12 con spikes fallando), M2 5–6, M3 4–5** — total **17–21 semanas** a un solo dev. La ejecución real, asistida por 3-agent orchestration (requester / developer / validator) sostenida en una **sola sesión**, entregó:
+
+| Tag | Contenido | vs PRD |
+|---|---|---|
+| **v0.32.0** | M1 completo: 4 vistas + REST + i18n en/es + bi-temporal slider + auth bearer + tests | "M1 cerrado a fin de S10" del timeline; entregado en S0 |
+| **v0.32.1** | Hardening post-browser-smoke: ErrorBoundary WebGL2, lazy Claude runner, https Origin, vitest 9/9, multi-repo lift | Polish no estimado en PRD |
+| **v0.32.2** | Dark mode toggle + Export PNG + Mermaid lazy CDN + Toaster + multi-repo dinámico + ci.yml unblock | M3 features (`dark mode`, `export grafo`) pulled forward |
+| **v0.32.3** | CI 100% green + provenance migrada a `actions/attest-build-provenance@v2` | No estimado |
+| **v0.33.0** | M2 completo (Interfaces / Drift / Affected / Tools / Playwright) + M3 (Guarantee + SSE push) | "M2 + M3 cerrados a fin de S21"; entregado en S0 |
+
+### Qué cambió el factor
+
+- **3-agent orchestration**: el costo dominante del PRD era el round-trip humano (PR review, refactor, test failure debugging). Reemplazar con `Agent.developer → Agent.validator → orchestrator-fix` cerró ese loop en minutos.
+- **Spike S1 (SSE sobre `tiny_http`)** del PRD §15 nunca fue necesario como gate — el patrón salió bien al primer intento via `request.into_writer()`. Esto ahorró 1 semana proyectada.
+- **WebGL2 bug** que el PRD listaba como "tests E2E con Playwright" detectaría en M2 fue detectado en M1 con `Claude Preview` headless. Reducción de blast radius: usuarios reales no vieron el blanco screen.
+- **Ningún spike S2–S5 falló**. El timeline worst-case (11–12 semanas) era pesimista.
+- **Tech debt resuelto en línea**: el PRD asumía que items como "multi-repo `repo` dinámico" eran M2 work; se entregaron como subset de M1 patches sin scope creep.
+
+### Items diferidos que el PRD §13 marcó como anti-features y se mantuvieron
+
+- ✅ Sin SaaS / multi-tenant
+- ✅ Sin editor WYSIWYG
+- ✅ Sin ingesta multimodal
+- ✅ Sin telemetría
+- ✅ Single-binary preservado (~12 MB stripped Linux x86_64)
+
+### Métricas reales vs §10 targets
+
+| KPI | PRD target M3 | Real v0.33.0 |
+|---|---|---|
+| Tamaño binario Linux | ≤ 10 MB | 13 MB (~30% over; tradeoff por incluir UI de M2/M3) |
+| Tests integración REST | ≥ 90% | 52 tests passing en `coral-ui::routes`, ~85% (no medido formalmente con `llvm-cov`) |
+| `% MCP resources isomórficos a REST` | 100% read+write | ✅ — los 8 recursos + 7 read tools + 3 write tools tienen contraparte REST |
+| Lighthouse Performance | ≥ 92 | No medido (browser headless real-data); bundle 170 KB gzipped initial está dentro del budget |
+
+### Lo que NO se entregó
+
+- **Tests Playwright corriendo en CI matrix Linux+Windows** (M2): setup local-only listo + workflow `.disabled` esperando configuración de fixture-bootstrap.
+- **Coverage formal con `llvm-cov` ≥ 70%** (M1 DoD §9): el job CI corre pero el threshold no se enforced — vale 1 línea de config si el owner quiere bloquear PRs.
+- **Validación binario macOS / Linux real**: sin máquina nativa accesible durante la sesión. CI matrix los buildea + smoke ejecuta `--version`, no end-to-end real-data.
+- **Screenshots para las 5 vistas nuevas M2/M3**: la sesión solo capturó M1.
+- **GTM** (tweet/blog/marketplace): decisión de tono del owner.
+
 *Fin del PRD v1.2 — incorpora segunda ronda de fixes:*
 *(a) merge driver R3 alineado a `merge=ours` consistente con §15 semana 8;*
 *(b) O2 target subido a 8.5 MB con CI gate en 8.0 MB para buffer real;*

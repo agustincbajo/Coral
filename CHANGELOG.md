@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.33.0] - 2026-05-12
+
+**M2 + M3 of the WebUI roadmap, plus Sigstore-signed provenance and CI 100% green.** Closes every deferred item from `docs/PRD-v0.32-webui.md` except formal `llvm-cov` ≥ 70% threshold enforcement and Playwright in CI matrix (both setup-only deferrals, not feature gaps). Backward-compat sacred: `coral wiki serve` legacy, MCP server, 42 CLI subcommands, REST `/api/v1/*` v0.32.x wire format all unchanged. `coral --version` reports `coral 0.33.0`.
+
+### Added — M2 views
+
+- **`/interfaces`** — lists every `page_type = interface` page with badges for status, confidence bars, sources, validity window. Backed by `GET /api/v1/interfaces` (filters `read_pages()` by `PageType::Interface`).
+- **`/drift`** — reads `.coral/contracts/*.json` (the reports `coral test --kind contract` writes) and renders each as a card with severity-colored finding lists. Backend: `GET /api/v1/contract_status`. Severity normalisation: unknown severities default to `info`.
+- **`/affected`** — input a git ref → backend runs `git log <ref>..HEAD --name-only` and returns unique top-level dirs (intersected with `coral.toml` repos when present). Backend: `GET /api/v1/affected?since=<ref>` with strict ref sanitisation (no leading `-`, allowlist `[A-Za-z0-9._/~^@{}-]`).
+- **`/tools`** — runs `coral verify` / `coral test` / `coral env up` / `coral env down` from the browser. Gated by **both** `--allow-write-tools` and bearer token. Confirmation dialog for `down` with `volumes: true`. UI shows `stdout_tail` / `stderr_tail` (last 4 KiB each), `exit_code`, `duration_ms`. Backend: `POST /api/v1/tools/{verify,run_test,up,down}` via `current_exe()` shell-out (avoids cyclic deps with `coral-cli`).
+
+### Added — M3 features
+
+- **`/guarantee`** — input env + strict checkbox + click → backend invokes `coral test guarantee --can-i-deploy --format json` and parses the verdict (`GREEN | YELLOW | RED`) plus per-check breakdown (`lint`, `contracts`, etc. with passed/warnings/failures counts). Traffic-light UI with proportional bars.
+- **SSE push notifications** — `GET /api/v1/events` opens a long-poll SSE stream that emits `event: wiki_changed\ndata: {}\n\n` when any file under `.wiki/` changes (2s polling on `max(mtime)` recursive). The SPA's `useWikiEvents()` hook wires this to TanStack Query invalidation, so all views auto-refresh when the wiki is rebuilt out-of-band (e.g. another shell running `coral ingest --apply`). Toast notification throttled at 5s; reconnect with exponential backoff 1s → 30s.
+
+### Added — testing infrastructure
+
+- **Playwright E2E suite** under `crates/coral-ui/assets/src/e2e/` (14 tests across 5 files: nav, pages, graph, query, manifest). Assumes a `coral ui serve --no-open --port 38400` running locally. CI workflow `playwright-ci.yml.disabled` written but not enabled — needs a fixture-bootstrap step to spin up a wiki + spawn the server in CI.
+- **27 new Rust integration tests** in `coral-ui` covering all 6 new endpoints (interfaces, contracts, affected, tools × 4, guarantee, events). Total `cargo test -p coral-ui` count: **52 tests passing**.
+
+### Changed
+
+- **Workspace bumped from 0.32.3 to 0.33.0.** Minor bump because the API surface grew (6 new endpoints + 5 new SPA routes) — strictly additive to v0.32.x, no breakage.
+
+### Internal
+
+- **`coral-ui::routes::events` SSE handler** reuses the `request.into_writer()` raw-stream pattern from `/api/v1/query` (consumes the `Request`, writes HTTP head manually, flushes per event). 1-hour max stream duration enforced server-side.
+- **`coral-ui::routes::tools` shell-outs to `current_exe()`** instead of importing `coral-cli` handlers directly — avoids dependency cycles (`coral-cli` already depends on `coral-ui`). Cost: one extra process spawn per write-tool invocation, negligible vs the work each command actually does (`docker compose up`, etc.).
+- **`coral-ui::routes::affected`** parses `coral.toml` permissively via `toml::Value` (not via `coral_core::project::manifest::parse_toml`) so missing optional fields don't break the affected computation.
+
+### Backward compatibility
+
+- `coral wiki serve` (legacy from v0.25.0) unchanged. BC tests 6/6 green.
+- REST `/api/v1/*` wire format from v0.32.0/v0.32.1/v0.32.2/v0.32.3 unchanged — every new endpoint is strictly additive.
+- MCP server + 42 CLI subcommands + 8 resources + 10 tools untouched.
+- `coral --version` reports `coral 0.33.0`.
+
+### PRD post-mortem
+
+`docs/PRD-v0.32-webui.md` now closes with a §17 retrospective: original timeline estimated 17–21 weeks (M1+M2+M3) for a single dev; 3-agent orchestration in a single session delivered the same scope. Variance dominated by avoiding human round-trips on validation; spike S1 (SSE feasibility) never needed because `request.into_writer()` worked first-try.
+
 ## [0.32.3] - 2026-05-12
 
 **CI green again across all gates.** v0.32.2 unblocked the ci.yml workflow itself (`${{ env.X }}` in a job-level `name:` field had been silently 422-failing every push for 100+ runs / 4 days). With the gate running, eight surfaced lint / test / audit issues were fixed across follow-up commits. This patch release tags the now-green state so distributors don't have to cherry-pick from `main`. No backward-compat breakage; wire format / CLI surface identical to v0.32.0+. `coral --version` reports `coral 0.32.3`.

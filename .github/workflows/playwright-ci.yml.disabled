@@ -1,0 +1,89 @@
+name: WebUI E2E (Playwright) — DISABLED
+
+# NOTE(coral-ui frontend): this workflow is intentionally disabled (the
+# `.disabled` suffix keeps GitHub Actions from registering it). It
+# exists as a starting point for a future PR that wires Playwright into
+# CI once we have a deterministic way to seed the `coral` binary with
+# pages + manifest on a runner.
+#
+# To enable: rename to `playwright-ci.yml` and add the bootstrap steps
+# that populate a temp workspace, then start `coral ui serve --no-open`
+# in the background.
+
+on:
+  # workflow_dispatch:  # uncomment when enabling
+  pull_request:
+    paths:
+      - "crates/coral-ui/assets/src/e2e/**"
+      - "crates/coral-ui/assets/src/playwright.config.ts"
+      - ".github/workflows/playwright-ci.yml"
+    branches:
+      - main
+
+concurrency:
+  group: playwright-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    name: Playwright (Chromium)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: crates/coral-ui/assets/src
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: crates/coral-ui/assets/src/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: e2e-coral
+
+      - name: npm ci
+        run: npm ci
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Build coral binary (debug)
+        run: cargo build --bin coral
+
+      - name: Seed temp workspace
+        # TODO: replace with a real fixture once we have one. The
+        # current `coral init` requires interactive input.
+        run: |
+          mkdir -p "$RUNNER_TEMP/coral-e2e"
+          # ...workspace bootstrap goes here...
+
+      - name: Start coral ui serve in background
+        working-directory: ${{ runner.temp }}/coral-e2e
+        run: |
+          "$GITHUB_WORKSPACE/target/debug/coral" ui serve \
+            --no-open --host 127.0.0.1 --port 38400 &
+          # Wait for /health to respond before handing off to Playwright.
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:38400/health > /dev/null; then
+              echo "coral up"
+              break
+            fi
+            sleep 1
+          done
+
+      - name: Run Playwright suite
+        run: npm run test:e2e
+        env:
+          CORAL_E2E_BASE_URL: http://127.0.0.1:38400
+
+      - name: Upload Playwright HTML report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: crates/coral-ui/assets/src/playwright-report/
+          retention-days: 7

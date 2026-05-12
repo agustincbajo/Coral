@@ -13,6 +13,7 @@
 //! itself; every other route returns a `(status, body)` pair that we
 //! wrap in `Response::from_data`.
 
+use std::io::Read;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -111,7 +112,7 @@ pub fn serve(config: ServeConfig) -> Result<()> {
     Ok(())
 }
 
-fn handle(state: &Arc<AppState>, request: Request) {
+fn handle(state: &Arc<AppState>, mut request: Request) {
     let url = request.url().to_string();
     let path = url.split('?').next().unwrap_or(&url).to_string();
     let is_api = path.starts_with("/api/") || path == "/health";
@@ -156,7 +157,7 @@ fn handle(state: &Arc<AppState>, request: Request) {
         .map(|(_, q)| q.to_string())
         .unwrap_or_default();
 
-    // Streaming route consumes the request.
+    // Streaming routes consume the request.
     if matches!(method, Method::Post) && path == "/api/v1/query" {
         match routes::query::handle_streaming(state, request) {
             Ok(()) => {}
@@ -169,6 +170,25 @@ fn handle(state: &Arc<AppState>, request: Request) {
         }
         return;
     }
+    if matches!(method, Method::Get) && path == "/api/v1/events" {
+        match routes::events::handle_streaming(state, request) {
+            Ok(()) => {}
+            Err(e) => {
+                tracing::warn!(error = %e, "events streaming failed; head not yet sent");
+            }
+        }
+        return;
+    }
+
+    // POST routes that read a JSON body — drain it once here, then
+    // dispatch to the handler with the buffered bytes. The tools
+    // gate (`state.allow_write_tools`) is enforced inside each
+    // handler so the 403 envelope shape matches the rest of the API.
+    let body: Result<Vec<u8>, ApiError> = if matches!(method, Method::Post) {
+        read_body(&mut request)
+    } else {
+        Ok(Vec::new())
+    };
 
     let result: Result<(u16, Vec<u8>), ApiError> = match (&method, path.as_str()) {
         (Method::Get, "/health") => routes::health::handle(state).map(|b| (200, b)),
@@ -188,6 +208,36 @@ fn handle(state: &Arc<AppState>, request: Request) {
         (Method::Get, "/api/v1/manifest") => routes::manifest::manifest(state).map(|b| (200, b)),
         (Method::Get, "/api/v1/lock") => routes::manifest::lock(state).map(|b| (200, b)),
         (Method::Get, "/api/v1/stats") => routes::manifest::stats(state).map(|b| (200, b)),
+        (Method::Get, "/api/v1/interfaces") => routes::interfaces::handle(state).map(|b| (200, b)),
+        (Method::Get, "/api/v1/contract_status") => {
+            routes::contracts::handle(state).map(|b| (200, b))
+        }
+        (Method::Get, "/api/v1/affected") => {
+            routes::affected::handle(state, &query_string).map(|b| (200, b))
+        }
+        (Method::Get, "/api/v1/guarantee") => {
+            routes::guarantee::handle(state, &query_string).map(|b| (200, b))
+        }
+        (Method::Post, "/api/v1/tools/verify") => body
+            .as_ref()
+            .map_err(|e| ApiError::InvalidFilter(format!("body read failed: {e}")))
+            .and_then(|b| routes::tools::handle_verify(state, b))
+            .map(|b| (200, b)),
+        (Method::Post, "/api/v1/tools/run_test") => body
+            .as_ref()
+            .map_err(|e| ApiError::InvalidFilter(format!("body read failed: {e}")))
+            .and_then(|b| routes::tools::handle_run_test(state, b))
+            .map(|b| (200, b)),
+        (Method::Post, "/api/v1/tools/up") => body
+            .as_ref()
+            .map_err(|e| ApiError::InvalidFilter(format!("body read failed: {e}")))
+            .and_then(|b| routes::tools::handle_up(state, b))
+            .map(|b| (200, b)),
+        (Method::Post, "/api/v1/tools/down") => body
+            .as_ref()
+            .map_err(|e| ApiError::InvalidFilter(format!("body read failed: {e}")))
+            .and_then(|b| routes::tools::handle_down(state, b))
+            .map(|b| (200, b)),
         _ => Err(ApiError::NotFound(format!("{} {}", method.as_str(), path))),
     };
 
@@ -205,6 +255,27 @@ fn handle(state: &Arc<AppState>, request: Request) {
             let _ = request.respond(e.to_response());
         }
     }
+}
+
+/// Max body bytes accepted on non-streaming POST endpoints. The
+/// streaming `/api/v1/query` route has its own (larger) cap; the
+/// tool endpoints take small JSON payloads so 64 KiB is plenty.
+const MAX_POST_BODY: usize = 64 * 1024;
+
+fn read_body(request: &mut Request) -> Result<Vec<u8>, ApiError> {
+    let body_len = request.body_length().unwrap_or(0);
+    if body_len > MAX_POST_BODY {
+        return Err(ApiError::InvalidFilter(format!(
+            "request body too large ({body_len} > {MAX_POST_BODY})"
+        )));
+    }
+    let mut buf = Vec::with_capacity(body_len.min(MAX_POST_BODY));
+    request
+        .as_reader()
+        .take(MAX_POST_BODY as u64)
+        .read_to_end(&mut buf)
+        .map_err(|e| anyhow::anyhow!(e))?;
+    Ok(buf)
 }
 
 fn respond_static(request: Request, r: static_assets::StaticResponse) {

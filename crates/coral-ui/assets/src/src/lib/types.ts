@@ -142,3 +142,93 @@ export interface ErrorEnvelope {
     hint?: string;
   };
 }
+
+// -- M2/M3 surfaces ---------------------------------------------------
+
+export interface InterfaceSummary {
+  slug: string;
+  repo: string;
+  status: Status;
+  confidence: number;
+  sources: string[];
+  valid_from: string | null;
+  valid_to: string | null;
+  backlinks_count: number;
+}
+
+export type DriftSeverity = "critical" | "high" | "medium" | "low" | "info";
+
+export interface DriftFinding {
+  severity?: DriftSeverity | string;
+  message?: string;
+  // NOTE(coral-ui frontend): contract reports are open-shape from the
+  // backend — we surface known fields and tolerate extras.
+  [key: string]: unknown;
+}
+
+export interface DriftReport {
+  slug?: string;
+  repo?: string;
+  status?: string;
+  findings?: DriftFinding[];
+  generated_at?: string;
+  [key: string]: unknown;
+}
+
+export interface AffectedMeta {
+  total: number;
+  since: string;
+}
+
+export interface AffectedEnvelope {
+  data: string[];
+  meta: AffectedMeta;
+}
+
+export type GuaranteeVerdict = "GREEN" | "YELLOW" | "RED";
+
+export interface GuaranteeCheck {
+  name: string;
+  passed: number;
+  warnings: number;
+  failures: number;
+  detail?: string;
+}
+
+export interface GuaranteeResult {
+  verdict: GuaranteeVerdict;
+  checks: GuaranteeCheck[];
+}
+
+export interface GuaranteeEnvelope {
+  data: GuaranteeResult;
+  meta: { exit_code: number };
+}
+
+export interface ToolRunResult {
+  status: "ok" | "error" | string;
+  exit_code: number;
+  stdout_tail: string;
+  stderr_tail: string;
+  duration_ms: number;
+}
+
+export interface VerifyToolInput {
+  env?: string;
+}
+
+export interface RunTestToolInput {
+  services?: string[];
+  kinds?: string[];
+  tags?: string[];
+  env?: string;
+}
+
+export interface UpToolInput {
+  env?: string;
+}
+
+export interface DownToolInput {
+  env?: string;
+  volumes?: boolean;
+}

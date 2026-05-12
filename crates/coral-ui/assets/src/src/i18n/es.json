@@ -7,7 +7,12 @@
     "pages": "Páginas",
     "graph": "Grafo",
     "query": "Consulta",
-    "manifest": "Manifiesto"
+    "manifest": "Manifiesto",
+    "interfaces": "Interfaces",
+    "drift": "Drift",
+    "affected": "Afectados",
+    "tools": "Herramientas",
+    "guarantee": "Garantía"
   },
   "common": {
     "loading": "Cargando…",
@@ -28,7 +33,11 @@
     "back": "Volver",
     "none": "Ninguno",
     "yes": "Sí",
-    "no": "No"
+    "no": "No",
+    "confirm": "Confirmar",
+    "running": "Ejecutando…",
+    "optional": "opcional",
+    "ok": "ok"
   },
   "errors": {
     "network": "Error de red. ¿El backend está corriendo?",
@@ -196,6 +205,124 @@
       "status_breakdown": "Distribución por estado",
       "page_type_breakdown": "Distribución por tipo"
     }
+  },
+  "interfaces": {
+    "title": "Interfaces",
+    "subtitle": "Contratos y puertos expuestos entre repositorios.",
+    "empty": "No hay páginas de tipo interface.",
+    "columns": {
+      "slug": "Slug",
+      "repo": "Repo",
+      "status": "Estado",
+      "confidence": "Confianza",
+      "sources": "Fuentes",
+      "valid_from": "Vigente desde",
+      "valid_to": "Vigente hasta",
+      "backlinks": "Enlaces"
+    }
+  },
+  "drift": {
+    "title": "Drift",
+    "subtitle": "Reportes de estado de contrato por interface.",
+    "no_reports": "Sin reportes de contrato disponibles.",
+    "no_findings": "Sin hallazgos.",
+    "severity": {
+      "critical": "Crítico",
+      "high": "Alto",
+      "medium": "Medio",
+      "low": "Bajo",
+      "info": "Info"
+    }
+  },
+  "affected": {
+    "title": "Afectados",
+    "subtitle": "Calculá el set de repos impactados por un cambio.",
+    "since_label": "Desde (git ref)",
+    "since_placeholder": "HEAD~1",
+    "compute": "Calcular",
+    "empty": "No hay repos afectados para ese ref.",
+    "result_title": "Repos afectados ({{count}})",
+    "needs_ref": "Ingresá un git ref para calcular los repos afectados."
+  },
+  "tools": {
+    "title": "Herramientas",
+    "subtitle": "Ejecutá verbos de Coral contra el workspace activo.",
+    "write_disabled_banner": "Las herramientas de escritura están deshabilitadas. Reiniciá Coral con `coral ui serve --allow-write-tools` para habilitarlas.",
+    "needs_token": "Se requiere un token de API para ejecutar herramientas.",
+    "verify": {
+      "title": "Verify",
+      "description": "Ejecuta verificaciones contra el sistema en vivo.",
+      "run": "Ejecutar verify"
+    },
+    "run_test": {
+      "title": "Run Test",
+      "description": "Ejecuta la suite de tests de Coral.",
+      "run": "Ejecutar test"
+    },
+    "up": {
+      "title": "Up",
+      "description": "Levanta el stack de desarrollo.",
+      "run": "Ejecutar up"
+    },
+    "down": {
+      "title": "Down",
+      "description": "Detiene el stack de desarrollo.",
+      "run": "Ejecutar down"
+    },
+    "fields": {
+      "env": "Entorno",
+      "env_placeholder": "dev",
+      "services": "Servicios (separados por coma)",
+      "services_placeholder": "core, indexer",
+      "kinds": "Tipos (separados por coma)",
+      "kinds_placeholder": "unit, integration",
+      "tags": "Tags (separados por coma)",
+      "tags_placeholder": "smoke, slow",
+      "volumes": "Eliminar volúmenes"
+    },
+    "result": {
+      "exit_code": "Código de salida",
+      "duration": "Duración",
+      "stdout": "stdout (cola)",
+      "stderr": "stderr (cola)",
+      "ok": "ok",
+      "error": "error",
+      "empty": "Sin salida."
+    },
+    "confirm": {
+      "title": "Confirmar acción destructiva",
+      "description_up": "Levanta el stack con el entorno indicado. ¿Continuar?",
+      "description_down": "Detiene el stack y elimina volúmenes. Esto destruye datos locales. ¿Continuar?",
+      "description_default": "Esta acción puede modificar tu workspace. ¿Continuar?"
+    },
+    "duration_ms": "{{ms}} ms"
+  },
+  "guarantee": {
+    "title": "Garantía",
+    "subtitle": "Veredicto holístico verde / amarillo / rojo contra el workspace activo.",
+    "env": "Entorno",
+    "env_placeholder": "dev",
+    "strict": "Modo estricto",
+    "check": "Verificar",
+    "exit_code": "Código de salida",
+    "verdict": {
+      "green": "Todas las verificaciones pasaron",
+      "yellow": "Advertencias detectadas",
+      "red": "Fallos críticos detectados",
+      "unknown": "Desconocido"
+    },
+    "checks": {
+      "title": "Verificaciones",
+      "name": "Verificación",
+      "passed": "Pasadas",
+      "warnings": "Advertencias",
+      "failures": "Fallos",
+      "detail": "Detalle",
+      "empty": "Ejecutá una verificación para ver resultados."
+    }
+  },
+  "events": {
+    "wiki_updated_toast": "Wiki actualizada — refrescando…"
   },
   "auth": {
     "token_dialog": {

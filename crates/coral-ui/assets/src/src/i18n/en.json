@@ -7,7 +7,12 @@
     "pages": "Pages",
     "graph": "Graph",
     "query": "Query",
-    "manifest": "Manifest"
+    "manifest": "Manifest",
+    "interfaces": "Interfaces",
+    "drift": "Drift",
+    "affected": "Affected",
+    "tools": "Tools",
+    "guarantee": "Guarantee"
   },
   "common": {
     "loading": "Loading…",
@@ -28,7 +33,11 @@
     "back": "Back",
     "none": "None",
     "yes": "Yes",
-    "no": "No"
+    "no": "No",
+    "confirm": "Confirm",
+    "running": "Running…",
+    "optional": "optional",
+    "ok": "ok"
   },
   "errors": {
     "network": "Network error. Is the backend running?",
@@ -196,6 +205,124 @@
       "status_breakdown": "Status breakdown",
       "page_type_breakdown": "Page type breakdown"
     }
+  },
+  "interfaces": {
+    "title": "Interfaces",
+    "subtitle": "Contracts and ports exposed across repositories.",
+    "empty": "No interface-typed pages found.",
+    "columns": {
+      "slug": "Slug",
+      "repo": "Repo",
+      "status": "Status",
+      "confidence": "Confidence",
+      "sources": "Sources",
+      "valid_from": "Valid from",
+      "valid_to": "Valid to",
+      "backlinks": "Backlinks"
+    }
+  },
+  "drift": {
+    "title": "Drift",
+    "subtitle": "Contract-status reports per interface.",
+    "no_reports": "No contract reports available.",
+    "no_findings": "No findings.",
+    "severity": {
+      "critical": "Critical",
+      "high": "High",
+      "medium": "Medium",
+      "low": "Low",
+      "info": "Info"
+    }
+  },
+  "affected": {
+    "title": "Affected",
+    "subtitle": "Compute the set of repos impacted by a change.",
+    "since_label": "Since (git ref)",
+    "since_placeholder": "HEAD~1",
+    "compute": "Compute",
+    "empty": "No affected repos for that ref.",
+    "result_title": "Affected repos ({{count}})",
+    "needs_ref": "Enter a git ref to compute affected repos."
+  },
+  "tools": {
+    "title": "Tools",
+    "subtitle": "Run Coral verbs against the active workspace.",
+    "write_disabled_banner": "Write-side tools are disabled. Restart Coral with `coral ui serve --allow-write-tools` to enable them.",
+    "needs_token": "An API token is required for tool execution.",
+    "verify": {
+      "title": "Verify",
+      "description": "Run validation checks against the live system.",
+      "run": "Run verify"
+    },
+    "run_test": {
+      "title": "Run Test",
+      "description": "Execute the Coral test suite.",
+      "run": "Run test"
+    },
+    "up": {
+      "title": "Up",
+      "description": "Spin up the development stack.",
+      "run": "Run up"
+    },
+    "down": {
+      "title": "Down",
+      "description": "Tear down the development stack.",
+      "run": "Run down"
+    },
+    "fields": {
+      "env": "Environment",
+      "env_placeholder": "dev",
+      "services": "Services (comma-separated)",
+      "services_placeholder": "core, indexer",
+      "kinds": "Kinds (comma-separated)",
+      "kinds_placeholder": "unit, integration",
+      "tags": "Tags (comma-separated)",
+      "tags_placeholder": "smoke, slow",
+      "volumes": "Remove volumes"
+    },
+    "result": {
+      "exit_code": "Exit code",
+      "duration": "Duration",
+      "stdout": "stdout (tail)",
+      "stderr": "stderr (tail)",
+      "ok": "ok",
+      "error": "error",
+      "empty": "No output."
+    },
+    "confirm": {
+      "title": "Confirm destructive action",
+      "description_up": "Bring the stack up using the provided env. Continue?",
+      "description_down": "Tear down the stack and remove volumes. This will destroy local data. Continue?",
+      "description_default": "This action may modify your workspace. Continue?"
+    },
+    "duration_ms": "{{ms}} ms"
+  },
+  "guarantee": {
+    "title": "Guarantee",
+    "subtitle": "Holistic green / yellow / red verdict against the active workspace.",
+    "env": "Environment",
+    "env_placeholder": "dev",
+    "strict": "Strict mode",
+    "check": "Check",
+    "exit_code": "Exit code",
+    "verdict": {
+      "green": "All checks passed",
+      "yellow": "Warnings detected",
+      "red": "Critical failures detected",
+      "unknown": "Unknown"
+    },
+    "checks": {
+      "title": "Checks",
+      "name": "Check",
+      "passed": "Passed",
+      "warnings": "Warnings",
+      "failures": "Failures",
+      "detail": "Detail",
+      "empty": "Run a check to see results."
+    }
+  },
+  "events": {
+    "wiki_updated_toast": "Wiki updated — refreshing…"
   },
   "auth": {
     "token_dialog": {
