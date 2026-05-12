@@ -1,88 +1,69 @@
 ---
 name: coral-bootstrap
-description: Scaffold and LLM-compile a Coral wiki for a git repo. Use when the user asks to "set up Coral", "initialize a wiki", "scaffold a wiki", "bootstrap the Coral wiki", "create a .wiki/ directory", "compile a wiki for this repo", or wants a first-time install of Coral in a fresh repo. The skill walks the happy path `coral init` → `coral bootstrap --apply` → `coral query`, and ALWAYS confirms with the user before running `bootstrap --apply` because that step calls an LLM and costs money.
+description: Bootstrap the Coral wiki for the current repository, with cost confirmation. Use when the user asks to "set up Coral", "initialize a wiki", "scaffold a wiki", "bootstrap the Coral wiki", "create a .wiki/ directory", "compile a wiki for this repo", or wants a first-time install of Coral in a fresh repo. The skill ALWAYS runs `coral bootstrap --estimate` first and shows the cost upper-bound before asking for confirmation.
+disable-model-invocation: false
 allowed-tools: Bash(coral:*), Bash(ls:*), Bash(test:*)
 ---
 
 # Coral bootstrap
 
-Set up a Coral wiki in the current git repo. This is the one-time install flow. Subsequent updates use `coral ingest --apply`, not `bootstrap`.
+Run a cost-confirmed wiki bootstrap for the current repo.
 
-## Preflight — before doing anything
+## Steps
 
-1. **Verify `coral` is on PATH** — run `coral --version`. If it fails, stop and tell the user to install Coral first: `cargo install --locked --git https://github.com/agustincbajo/Coral --tag v0.30.0 coral-cli` or download a release tarball from https://github.com/agustincbajo/Coral/releases. Do NOT attempt to install it for them.
+1. Run `coral self-check --format=json --quick`. Parse the JSON.
+2. If `wiki_present == true`, ask user: *"Wiki already exists. Re-bootstrap? (y/n)"*. If `n`, exit.
+3. If `providers_configured == []`, hand off to the `coral-doctor` skill (it has the provider mini-wizard). Do NOT continue here — `coral-doctor` will route back to this skill once a provider is configured.
+4. Run `coral bootstrap --estimate`. Capture stdout. The output looks like:
+   ```
+   Repo size: 10,247 LOC across 142 files
+   Estimated pages: 47
+   Estimated tokens: ~120k input + ~80k output
+   Provider: claude-sonnet-4-5
+   Estimated cost: $0.42 (up to $0.53 — margin ±25%)
+   ```
+5. Show the user:
+   - Estimated cost **with upper-bound**: *"$0.42 (up to $0.53)"*. Do NOT show a range like "$0.30–$0.50" — show the upper bound explicitly so the user knows the worst case.
+   - Pages count + token totals.
+   - Provider label.
+   - If `estimate.upper_bound > $5`: include the FR-ONB-12 large-repo hint:
+     ```
+     ⚠️  This is a large repo (estimate > $5). Consider starting with:
 
-2. **Check for an existing wiki** — run `ls -la .wiki/ 2>/dev/null` (or `test -d .wiki`). If `.wiki/` already exists:
-   - Tell the user the wiki is already scaffolded.
-   - Ask whether they want to (a) re-run `coral ingest --apply` to refresh, (b) start over (they must `rm -rf .wiki/` themselves first — do NOT delete it for them), or (c) skip bootstrap and just run a query.
-   - Do not run `coral init` or `coral bootstrap --apply` again over an existing wiki.
+         coral bootstrap --apply --max-pages=50 --priority=high
 
-3. **Confirm this is a git repo** — `coral init` requires it. Run `test -d .git` (or `git rev-parse --is-inside-work-tree`). If not, tell the user to `git init` first.
+     This bootstraps the 50 most-referenced modules first. You can run again
+     later with --resume to continue or re-run without --max-pages to do all.
+     ```
+   - Mention the prompt-caching disclaimer that `--estimate` already prints: *"Actual cost may be 30-50% lower if prompt caching is enabled (M2 will calibrate)."*
+6. Ask the user one question with four options:
+   > *"Run? Options:
+   >   - **yes** — run with no cap
+   >   - **yes --max-cost=X** — abort mid-flight if running cost exceeds $X
+   >   - **yes --max-pages=N** — limit scope to the first N pages (useful for huge repos)
+   >   - **cancel** — abort"*
+7. On confirm, run the chosen variant:
+   - `coral bootstrap --apply` (no cap)
+   - `coral bootstrap --apply --max-cost=<USD>` (cap, aborts mid-flight with checkpoint)
+   - `coral bootstrap --apply --max-pages=<N>` (scope limit)
+   - Both flags can be combined.
+8. If the run is interrupted (exit code 2 = `--max-cost` hit, or any other failure mid-flight): tell the user *"Bootstrap halted. Run `coral bootstrap --resume` to continue from the last checkpoint."* The checkpoint lives at `.wiki/.bootstrap-state.json`.
+9. On success:
+   - Suggest spawning the WebUI: invoke `coral-ui` skill (background spawn).
+   - Mention *"Your wiki is in `.wiki/`. Try queries like 'show me the architecture' or open http://localhost:3838/pages."*
+   - Suggest CI integration snippet (pre-commit hook, GitHub Actions). The user can opt in later.
 
-## Happy path
+## Failure modes
 
-### Step 1 — `coral init` (free, no LLM)
-
-This scaffolds `.wiki/`, writes `SCHEMA.md`, drops the default `.coral/config.toml`, and creates an empty `.wiki/_index.md`. No LLM calls, no network. Safe to run.
-
-```bash
-coral init
-```
-
-Show the user the output. Confirm the files landed.
-
-### Step 2 — confirm with the user BEFORE running `coral bootstrap --apply`
-
-**This step costs LLM credits.** `coral bootstrap --apply` compiles every Markdown page in `.wiki/` from scratch by calling the user's configured LLM provider (Claude CLI by default; reads `.coral/config.toml`). Cost scales with repo size — small repos are typically a few cents, large monorepos can be several dollars.
-
-Before running it, ask the user:
-
-> *"`coral init` scaffolded the wiki. The next step, `coral bootstrap --apply`, will use your configured LLM (Claude by default — make sure `claude` is on PATH, or set a different provider in `.coral/config.toml`) to compile the initial wiki. This costs real money and runs once per repo. Roughly: a small repo is a few cents, a large monorepo can be several dollars. Do you want me to run it now, or do a `--dry-run` first to see what would happen?"*
-
-Wait for an explicit yes / dry-run / no. Default to dry-run if the user is uncertain.
-
-### Step 3 — run bootstrap (only after confirmation)
-
-```bash
-coral bootstrap --apply
-```
-
-If the user asked for dry-run first:
-
-```bash
-coral bootstrap --dry-run
-```
-
-Show the output. If it fails, the most common causes are:
-- `claude` (or the configured LLM provider) not on PATH → tell the user how to fix and stop.
-- No API key for the embeddings provider → check `.coral/config.toml` and the relevant env var.
-- A pre-existing `.wiki/` with stale content → suggest `coral consolidate` rather than re-bootstrapping.
-
-### Step 4 — first query
-
-Suggest one concrete starter question based on what the repo looks like (skim the README or `git ls-files | head` if helpful). Examples:
-
-```bash
-coral query "what does this repo do?"
-coral query "how does authentication work?"
-coral query "where is the entry point?"
-```
-
-If the user has Claude Code's `coral` MCP server registered (this plugin handles that automatically), tell them they can now ask the LLM conceptual questions about the repo and the LLM will read `coral://wiki/_index` and call the `query` tool to ground its answers. They don't have to run `coral query` manually anymore.
-
-## After bootstrap
-
-For day-to-day updates as code changes:
-
-```bash
-coral ingest --apply       # incremental — only re-compiles pages whose source files changed
-coral status               # dashboard: page count, last ingest, lint status, drift
-```
-
-Never re-run `coral bootstrap --apply` for incremental updates — it nukes and rebuilds the entire wiki and is wasteful.
+- **`coral` not in PATH** → suggest `/coral:coral-doctor`. Do NOT attempt to install Coral.
+- **No provider configured** (`providers_configured == []`) → hand off to `coral-doctor` (which has the provider mini-wizard with 4 paths: Anthropic API key, Gemini, Ollama, install `claude` CLI).
+- **`--apply` fails mid-flight** → tell the user about `coral bootstrap --resume`. The state file is at `.wiki/.bootstrap-state.json`.
+- **Estimate upper-bound exceeds `--max-cost`** → the pre-flight gate prints a clear message; suggest `--max-pages=N` to limit scope, or removing `--max-cost`.
+- **Existing wiki present** → never overwrite. Ask the user whether to refresh via `coral ingest --apply` (incremental), start over (they `rm -rf .wiki/` first), or skip.
 
 ## Reference
 
-- Full docs: https://github.com/agustincbajo/Coral
-- Subcommand reference: `coral --help` and `coral <cmd> --help`
-- Wiki schema: `.wiki/SCHEMA.md` (written by `coral init`)
+- Subcommand reference: `coral bootstrap --help`.
+- Cost transparency: every cost number is an **upper bound** (estimate × 1.25, margin ±25% in M1). Real cost may be 30-50% lower with prompt caching (M2 calibration).
+- Checkpoint schema: `.wiki/.bootstrap-state.json` is versioned (`schema_version`). A version mismatch is surfaced as an actionable error.
+- Lockfile: `.wiki/.bootstrap.lock`. Held for the whole apply / resume phase; two concurrent runs cannot interleave.

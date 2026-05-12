@@ -261,7 +261,7 @@ fn plan_fingerprint(plan: &[PlanEntry]) -> String {
             )
         })
         .collect();
-        entries.sort_by(|a, b| a.0.cmp(b.0));
+    entries.sort_by(|a, b| a.0.cmp(b.0));
     let mut hasher = Sha256::new();
     for (slug, action, ty) in entries {
         hasher.update(slug.as_bytes());
@@ -511,10 +511,7 @@ mod tests {
         let _first = BootstrapLock::acquire(&wiki).expect("first acquire");
         let err = BootstrapLock::acquire(&wiki).expect_err("second must fail");
         let msg = format!("{err:#}");
-        assert!(
-            msg.contains("lock"),
-            "expected lock-held error, got: {msg}"
-        );
+        assert!(msg.contains("lock"), "expected lock-held error, got: {msg}");
     }
 
     /// Drop releases the lock; a subsequent acquire works.

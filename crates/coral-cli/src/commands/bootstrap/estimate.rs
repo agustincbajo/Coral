@@ -77,9 +77,7 @@ pub fn print_estimate(
         println!();
         println!("    coral bootstrap --apply --max-pages=50 --priority=high");
         println!();
-        println!(
-            "This bootstraps the 50 most-referenced modules first. You can run again"
-        );
+        println!("This bootstraps the 50 most-referenced modules first. You can run again");
         println!("later with --resume to continue or re-run without --max-pages to do all.");
     }
 

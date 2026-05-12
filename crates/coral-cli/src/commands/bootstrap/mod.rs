@@ -106,9 +106,8 @@ pub fn run_with_runner(
     let cwd = std::env::current_dir().context("getting cwd")?;
 
     // Resolve provider name once — used by cost model + state.provider.
-    let provider_name =
-        super::runner_helper::resolve_provider(args.provider.as_deref())
-            .map_err(|e| anyhow::anyhow!(e))?;
+    let provider_name = super::runner_helper::resolve_provider(args.provider.as_deref())
+        .map_err(|e| anyhow::anyhow!(e))?;
     let cost_provider = match provider_name {
         super::runner_helper::ProviderName::Claude => Provider::Claude,
         super::runner_helper::ProviderName::Gemini => Provider::Gemini,
@@ -121,14 +120,13 @@ pub fn run_with_runner(
 
     // ---- --resume path: skip plan generation entirely --------------------
     if args.resume {
-        let state =
-            BootstrapState::load(&root)?.ok_or_else(|| {
-                anyhow::anyhow!(
-                    "--resume requires an existing checkpoint at {}; \
+        let state = BootstrapState::load(&root)?.ok_or_else(|| {
+            anyhow::anyhow!(
+                "--resume requires an existing checkpoint at {}; \
                      none found. Run `coral bootstrap --apply` first.",
-                    BootstrapState::path(&root).display()
-                )
-            })?;
+                BootstrapState::path(&root).display()
+            )
+        })?;
         let _lock = BootstrapLock::acquire(&root)?;
         let resume_max_cost = args.max_cost.or(state.max_cost_usd);
         return apply_pages(&root, &cwd, runner, cost_provider, state, resume_max_cost);
@@ -256,8 +254,7 @@ fn apply_pages(
                 entry.slug, entry.action
             ));
             state.pages[i].status = PageStatus::Failed;
-            state.pages[i].error =
-                Some(format!("unsupported action {:?}", entry.action));
+            state.pages[i].error = Some(format!("unsupported action {:?}", entry.action));
             state.save_atomic(root)?;
             continue;
         }
@@ -321,8 +318,7 @@ fn apply_pages(
             }
         };
         page.write()?;
-        let rel_path =
-            page_relative_path(root, page.frontmatter.page_type, &page.frontmatter.slug);
+        let rel_path = page_relative_path(root, page.frontmatter.page_type, &page.frontmatter.slug);
         index.upsert(IndexEntry {
             slug: page.frontmatter.slug.clone(),
             page_type: page.frontmatter.page_type,
@@ -345,12 +341,8 @@ fn apply_pages(
             if entry.body.is_some() {
                 (0, 0, 0.0)
             } else {
-                let est = plan_cost_estimate(&[entry.clone()], cost_provider);
-                (
-                    est.input_tokens,
-                    est.output_tokens,
-                    est.usd_estimate,
-                )
+                let est = plan_cost_estimate(std::slice::from_ref(&entry), cost_provider);
+                (est.input_tokens, est.output_tokens, est.usd_estimate)
             }
         };
         state.pages[i].input_tokens = input;
@@ -1456,10 +1448,7 @@ mod tests {
         std::env::set_current_dir(&cur).unwrap();
         let err = res.expect_err("must error without state file");
         let msg = format!("{err:#}");
-        assert!(
-            msg.contains("--resume requires"),
-            "unexpected error: {msg}"
-        );
+        assert!(msg.contains("--resume requires"), "unexpected error: {msg}");
     }
 
     /// FR-ONB-30: `--apply` writes the checkpoint with a fingerprint
