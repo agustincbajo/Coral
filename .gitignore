@@ -10,6 +10,12 @@ Cargo.lock.bak
 .coral-cache.json
 **/.coral-cache.json
 .claude/
+# v0.34 onboarding §11 decision #6: dogfood the Coral marketplace on
+# this repo itself so contributors who clone + open Claude Code see
+# the plugin offered. Everything else under .claude/ (local IDE
+# state, scheduled-tasks locks, settings.local.json overrides) stays
+# ignored — only this one shared file ships.
+!.claude/settings.json
 # Coral file-locking sidecars (v0.15+) — empty inodes for flock(2)
 **/index.md.lock
 **/log.md.lock
