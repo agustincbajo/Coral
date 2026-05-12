@@ -78,6 +78,31 @@ release(vX.Y.Z): <one-liner>
 
 Body explains the *why* — what problem the PR addresses and any non-obvious decisions.
 
+## M1 (v0.34.0) onboarding-stack cleanup
+
+The M1 sprint added a self-diagnostic + upgrade surface on top of the
+existing `coral` binary. Three small habits keep that surface from
+rotting between releases:
+
+- **`coral self-check --full`** — run it locally before pushing
+  changes that touch `crates/coral-cli/src/commands/{self_check,
+  self_upgrade, self_uninstall, doctor, init}.rs` or the plugin
+  scripts under `.claude-plugin/`. The output names every probe that
+  failed and gives an actionable `action:` command. Don't bypass a
+  failing probe — fix the underlying state.
+- **`coral self-check --print-schema | diff -u
+  .ci/self-check-schema.json -`** — when a PR adds or renames a
+  field on `SelfCheck`, regenerate the committed schema in the same
+  PR. The CI `schema-contract` gate diffs the runtime output against
+  the committed file and fails on drift. Schema bumps require a
+  matching `SELF_CHECK_SCHEMA_VERSION` bump in `self_check.rs`.
+- **SessionStart hook smoke** — when touching
+  `scripts/on-session-start.{sh,ps1}` or its dependencies, run
+  `time bash scripts/on-session-start.sh` against a representative
+  repo. The wall-clock budget is <100 ms p95 on Linux/macOS,
+  <400 ms p95 on Windows. The `hyperfine`-based CI test enforces this
+  for the binary; the script wrapper is what gets touched most often.
+
 ## Larger contributions
 
 For new `EnvBackend` (e.g. `KindBackend`), `TestRunner` (e.g. `PropertyBasedRunner`), or MCP transport (e.g. HTTP/SSE), open a [GitHub Discussion](https://github.com/agustincbajo/Coral/discussions) first. The PRD doc tracks design decisions across the v0.16+ evolution and is the source of truth for trade-offs.

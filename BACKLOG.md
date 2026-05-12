@@ -5,7 +5,11 @@ production. None block users today; all are polish, infrastructure, or
 GTM follow-ups. Listed by category, not priority — the maintainer
 picks the order.
 
-Last updated: 2026-05-12, post `v0.33.0` release.
+Last updated: 2026-05-12, **mid v0.34.0 sprint** (M1 onboarding stack
+landed weeks 1–6; release week 7–8 pending). None of the 10 backlog
+entries below was within scope of M1; they remain open against
+v0.35.0+ unless re-prioritised. M1 added its own set of follow-ups
+that live in the PRD §15 timeline rather than here.
 
 ---
 
@@ -255,3 +259,28 @@ Coral v0.33.0 is in production with:
 - ✅ Backward-compat sacred across v0.32.x and v0.33.0
 
 The seven open items above are sequel work, not unfinished business.
+
+### v0.34.0 sprint status (mid-flight)
+
+PRD `docs/PRD-v0.34-onboarding.md` v1.4 — onboarding-stack milestone M1.
+Weeks 1–6 landed (commits up to the post-`docs(readme,install)` cleanup
+commit):
+
+- ✅ `coral self-check` (App. F frozen schema), `coral self-upgrade`
+  (cross-platform), `coral self-uninstall`, `coral self-register-marketplace`
+- ✅ `coral doctor --wizard` (4-path provider mini-wizard)
+- ✅ `coral bootstrap --estimate` / `--max-cost` / `--resume` (checkpointed)
+- ✅ `coral init` writes `CLAUDE.md` template + `.gitignore` security entries (FR-ONB-25, FR-ONB-34)
+- ✅ `install.sh --with-claude-config` + Windows SmartScreen/PATH hints + WSL2 detect (FR-ONB-31)
+- ✅ `SessionStart` hook (cross-platform) + 4 new CI tests (hyperfine, output-size, naming-collision, Ollama gated)
+- ✅ README "Getting Started in 60 seconds" + `docs/INSTALL.md` rewrite (FR-ONB-21, DoD M1 #14)
+- ✅ Week 3 validator B2 closed (init outside git fails actionably) + week 2 nits 1 & 2 (resolve_provider 1×, comment alignment)
+
+Outstanding for weeks 7–8 (release):
+
+- Version bump `v0.33.0` → `v0.34.0` (workspace `Cargo.toml`, `plugin.json`, `marketplace.json`)
+- Tag `v0.34.0` → `release.yml` runs the cross-platform smoke matrix
+- Record + commit `docs/assets/getting-started.gif` (replaces the placeholder)
+- Hotfix buffer for cross-platform issues surfaced by post-release smoke
+
+These are NOT backlog entries — they are scheduled release-week work.

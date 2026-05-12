@@ -142,6 +142,27 @@ short enough that you'll see it on the PR.
 
 ---
 
+## v0.34.0 onboarding-stack commands
+
+M1 adds four new subcommands beyond the existing wiki/multi-repo/test
+surface. Worth knowing for local iteration on PRs that touch the
+plugin, the SessionStart hook, or the install scripts:
+
+| Command                              | What it does                                                                                  | When you use it locally                                                                              |
+|--------------------------------------|-----------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------|
+| `coral self-check [--quick] [--full] [--format=json] [--print-schema]` | Diagnostic envelope (PRD App. F) covering binary, providers, wiki, manifest, CLAUDE.md, MCP, UI, update-available.   | Before pushing changes that touch the onboarding surface. `--print-schema` for the CI contract gate. |
+| `coral doctor --wizard`              | Interactive 4-path provider mini-wizard (Anthropic / Gemini / Ollama / claude CLI). Writes `.coral/config.toml`. | When testing the provider config write path without going through the plugin.                        |
+| `coral self-upgrade [--check-only] [--version vX.Y.Z]` | Replace the running binary with the latest same-major release. Atomic rename on Unix, MoveFileEx on Windows.       | Verifying a new release artifact in-place. `--check-only` is the no-op variant.                      |
+| `coral self-uninstall [--keep-data]` | Remove the binary + `~/.coral/` (config + logs). `.wiki/` stays put.                          | Verifying clean-uninstall before tagging a release.                                                  |
+| `coral self-register-marketplace`    | Patch the project-scope `.claude/settings.json` so Claude Code already knows about the Coral marketplace.            | What `install.sh --with-claude-config` calls under the hood.                                         |
+
+Each command lives in `crates/coral-cli/src/commands/<name>.rs`. The
+`SelfCheck` JSON envelope is a frozen contract (PRD Appendix F) — its
+schema is committed at `.ci/self-check-schema.json` and the
+`schema-contract` CI step fails on drift. Bump
+`SELF_CHECK_SCHEMA_VERSION` in lockstep with any breaking field
+change.
+
 ## Troubleshooting
 
 **"Build is much slower than I remember"** — `sccache` cold cache.

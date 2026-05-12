@@ -1,0 +1,101 @@
+Getting-Started GIF placeholder
+================================
+
+The animated GIF referenced from `README.md` § Getting Started in 60
+seconds is intentionally NOT in this commit. The Coral v0.34.0 sprint
+covers everything *up to* the asset; recording + committing the binary
+artifact is a v0.34.0 release-week task (PRD §15, semanas 7–8 / DoD §16
+item 14).
+
+Why a placeholder rather than the GIF itself
+--------------------------------------------
+
+- The release workflow (`release.yml`) on tag push v0.34.0 is what
+  actually shoots the GIF — see the unreleased follow-up commit in the
+  release week. Until then, the README references this file so the
+  reader knows the asset is coming and how to reproduce it.
+- A precomputed GIF would lock in a binary blob that drifts with every
+  cosmetic change to the install scripts, CLAUDE.md template, doctor
+  wizard, or bootstrap output. Recording it in the release window keeps
+  it in sync with the exact bits the user will download.
+
+How to record
+-------------
+
+Tool of choice (pick ONE):
+
+1. **vhs** (Charm) — script-driven, deterministic, headless. Recommended.
+   - Script lives at `docs/assets/getting-started.tape` (TODO when GIF
+     ships in release week).
+   - Render with `vhs docs/assets/getting-started.tape -o docs/assets/getting-started.gif`.
+   - The `vhs` script encodes terminal dimensions, font, and frame rate;
+     two devs running it against the same v0.34.0 binary should produce
+     identical output frame-for-frame.
+
+2. **asciinema + svg-term** — record once, render to SVG (better for
+   long-term archival; GitHub's Markdown renderer treats it as a static
+   image, so it loses motion).
+   - `asciinema rec docs/assets/getting-started.cast`
+   - `svg-term --in docs/assets/getting-started.cast --out docs/assets/getting-started.svg`
+
+3. **Plain terminal screen recorder** (Kap on macOS, ShareX on Windows,
+   peek on Linux) — fallback if the above tools aren't available. Keep
+   the output under 1.5 MB; GitHub embeds aren't friendly to large GIFs.
+
+Scenes to capture
+-----------------
+
+Two acts, ~20 seconds each. Real binary, real prompt, real wiki.
+
+ACT I — the `--with-claude-config` fast path (12s)
+1. Empty terminal in a 2-repo project root.
+2. Paste:
+     curl -fsSL .../install.sh | bash -s -- --with-claude-config
+3. Show the installer output: detecting platform, downloading,
+   verifying SHA, dropping `coral` on PATH, writing `.claude/settings.json`
+   with the marketplace entry. Trim the verbose download to ~3 frames.
+4. End frame: prompt back, plus the green "Coral marketplace registered
+   in .claude/settings.json" line.
+
+ACT II — first prompt routed by CLAUDE.md (12s)
+1. Cut to Claude Code window (record from a real Claude Code session,
+   not a mock — the routing has to be the real model output).
+2. User types: "hi" (or "set up coral", or "where do I start").
+3. Show Claude's response: "Looks like you don't have a .wiki/ yet —
+   want me to bootstrap one? Cost estimate: $0.42." (real output from
+   `coral self-check --quick` flowing through `CLAUDE.md`.)
+4. User confirms.
+5. Skip to last 3 seconds: `coral query "how does authentication work?"`
+   returns a Markdown answer with `[[slug]]` links. Cite-back UI visible.
+
+Captions
+--------
+
+Use a subtitle track or in-terminal `echo` callouts:
+
+- ACT I, second 2:  "1. Install + register the marketplace in one line"
+- ACT I, second 10: "(zero pastes inside Claude Code)"
+- ACT II, second 2: "2. Type ANY first prompt — CLAUDE.md routes it"
+- ACT II, second 10: "3. coral query is now answered from your wiki"
+
+Naming convention
+-----------------
+
+`docs/assets/getting-started.gif` — referenced by `README.md` and
+`docs/INSTALL.md`. Sibling `getting-started.tape` carries the `vhs`
+script when the GIF lands.
+
+Acceptance checklist for the release commit that adds the GIF
+-------------------------------------------------------------
+
+- [ ] `docs/assets/getting-started.gif` exists, < 1.5 MB.
+- [ ] README link in §Getting Started swaps from this placeholder to
+      `![Getting started](docs/assets/getting-started.gif)`.
+- [ ] This placeholder file is REMOVED in the same commit.
+- [ ] If `vhs` was used, the `.tape` script is committed alongside so a
+      future maintainer can re-render against a later release.
+- [ ] CHANGELOG entry: "docs: shipped Getting Started GIF (FR-ONB-21,
+      DoD M1 #14)."
+
+Tracked in: PRD v1.4 §15 semana 6 (this file lands week 6); semanas 7–8
+(GIF lands in release week, replacing this file).
