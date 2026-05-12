@@ -22,6 +22,8 @@ pub mod pins;
 pub mod project;
 pub mod search;
 pub mod self_check;
+pub mod self_register_marketplace;
+pub mod self_uninstall;
 #[cfg(feature = "webui")]
 pub mod serve;
 pub mod session;

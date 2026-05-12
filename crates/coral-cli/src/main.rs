@@ -166,6 +166,32 @@ enum Cmd {
     /// wiki page's structure and generates a new page with the same
     /// headings but placeholder content.
     Scaffold(commands::scaffold::ScaffoldArgs),
+    /// **v0.34.0** (FR-ONB-6): diagnostic probe for Claude Code's
+    /// SessionStart hook + the `coral-doctor` skill. Emits JSON (for
+    /// hooks) or human-readable text. `--quick` skips slow probes
+    /// (target: <100ms p95 Linux/macOS for the hook). The pinned
+    /// JSON Schema is the contract; `--print-schema` emits it.
+    #[command(name = "self-check")]
+    SelfCheck(commands::self_check::SelfCheckArgs),
+    /// **v0.34.0** (FR-ONB-26): patch `.claude/settings.json` so the
+    /// Coral marketplace is auto-registered in Claude Code without
+    /// requiring the 3-line paste flow. Called by `install.sh
+    /// --with-claude-config`. Backs up + atomic-writes.
+    #[command(name = "self-register-marketplace")]
+    SelfRegisterMarketplace(commands::self_register_marketplace::RegisterMarketplaceArgs),
+    /// **v0.34.0** (FR-ONB-33): clean removal of the binary + state
+    /// dir. Refuses non-interactive runs without `--yes`. NEVER
+    /// touches `.wiki/` of any repo. Reminds the user to also run
+    /// `/plugin uninstall coral@coral` in Claude Code.
+    #[command(name = "self-uninstall")]
+    SelfUninstall(commands::self_uninstall::SelfUninstallArgs),
+    /// **v0.34.0**: `coral self <subcommand>` parent group, kept
+    /// in sync with the top-level hyphenated forms above so install
+    /// scripts and skills can use either spelling (PRD §6.1 +
+    /// FR-ONB-26 install.sh caller spells it `coral self register-
+    /// marketplace`). Aliases route to the same module entry points.
+    #[command(name = "self")]
+    SelfCmd(SelfArgs),
     /// **Hidden** test-only helper: acquires `with_exclusive_lock(path)`,
     /// reads the file as a u64 counter, increments by 1, writes back.
     /// Used by `tests/cross_process_lock.rs` to verify the v0.15
@@ -190,6 +216,30 @@ enum Cmd {
 struct SkillArgs {
     #[command(subcommand)]
     command: SkillCmd,
+}
+
+/// `coral self <subcommand>` parent. Mirrors the top-level
+/// `coral self-check` / `coral self-register-marketplace` /
+/// `coral self-uninstall` forms so users (and the install scripts)
+/// can spell either `coral self check` or `coral self-check`. The
+/// PRD §6.1 install.sh caller uses the space-separated form for
+/// `register-marketplace`; the hyphenated top-level is here for
+/// hook contexts where shell quoting is finicky.
+#[derive(Args, Debug)]
+struct SelfArgs {
+    #[command(subcommand)]
+    command: SelfCmd,
+}
+
+#[derive(Subcommand, Debug)]
+enum SelfCmd {
+    /// Mirror of top-level `coral self-check`.
+    Check(commands::self_check::SelfCheckArgs),
+    /// Mirror of top-level `coral self-register-marketplace`.
+    #[command(name = "register-marketplace")]
+    RegisterMarketplace(commands::self_register_marketplace::RegisterMarketplaceArgs),
+    /// Mirror of top-level `coral self-uninstall`.
+    Uninstall(commands::self_uninstall::SelfUninstallArgs),
 }
 
 #[derive(Subcommand, Debug)]
@@ -271,6 +321,14 @@ fn main() -> ExitCode {
         Cmd::Interface(args) => commands::interface::run(args, cli.wiki_root.as_deref()),
         Cmd::MigrateConsumers(args) => commands::migrate::run(args, cli.wiki_root.as_deref()),
         Cmd::Scaffold(args) => commands::scaffold::run(args, cli.wiki_root.as_deref()),
+        Cmd::SelfCheck(args) => commands::self_check::run(args),
+        Cmd::SelfRegisterMarketplace(args) => commands::self_register_marketplace::run(args),
+        Cmd::SelfUninstall(args) => commands::self_uninstall::run(args),
+        Cmd::SelfCmd(args) => match args.command {
+            SelfCmd::Check(a) => commands::self_check::run(a),
+            SelfCmd::RegisterMarketplace(a) => commands::self_register_marketplace::run(a),
+            SelfCmd::Uninstall(a) => commands::self_uninstall::run(a),
+        },
         Cmd::TestLockIncr { path } => run_test_lock_incr(&path),
     };
 
