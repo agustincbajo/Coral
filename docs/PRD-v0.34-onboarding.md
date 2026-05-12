@@ -1,10 +1,28 @@
 # PRD — Coral v0.34: Zero-Friction Onboarding via Claude Code
 
-**Versión del documento:** 1.3 (post third-pass adversarial review)
+**Versión del documento:** 1.4 (post fourth-pass implementation-readiness audit)
 **Fecha:** 2026-05-12
 **Autor:** Agustín Bajo
-**Estado:** Borrador validado, 3 iteraciones
+**Estado:** Borrador validado y ejecutable, 4 iteraciones
 **Versiones objetivo:** Coral v0.34.0 (M1, 6–8 semanas) → v0.34.x patches → v0.35.0 (M2 marketplace polish + daemon + wizard + i18n)
+
+**Cambios v1.3 → v1.4** (fourth-pass implementation-readiness audit; un ing. Rust senior intentó pre-implementar los 6 FRs más riesgosos contra el codebase real y encontró 5 bloqueos must-resolve antes de arrancar M1):
+
+*Bloqueos must-resolve antes del lunes (todos cerrados en esta v1.4):*
+1. **Dependencias faltantes en §8 corregidas**. El review falsamente afirmaba (v1.2) que `windows-sys` era transitivo via `signal-hook` — verificado falso. Nuevas direct deps en §8: `sha2 = "0.10"`, `windows-sys = "0.59"` (con feature `Win32_Storage_FileSystem`), `ureq = "2"` (HTTP client síncrono para el 1-token provider ping), `serde_json` ahora requiere feature `preserve_order` para idempotencia de patch JSON. Sin estos, FR-ONB-32 y FR-ONB-27 no compilan.
+2. **Schema `.coral/config.toml` pinned (NUEVO Apéndice E)**. Hoy el binario lee `CORAL_PROVIDER`/`ANTHROPIC_API_KEY` env vars únicamente; **nada lee un TOML config file** (grep verificado). 6 FRs (-14, -27, -29, -33, -34) lo asumen. Apéndice E define schema concreto con `[provider.*]`, `[bootstrap]`, `[ui]` sections + versioning.
+3. **`SelfCheck` JSON schema pinned como contrato versionado (NUEVO Apéndice F)**. 6 FRs (-6, -7, -9, -10, -25, -32) consumen su forma exacta. Apéndice F congela el schema con `schemars` derive + subcommand `coral self-check --print-schema` para validación externa.
+4. **Windows hook execution model: `.sh` + `.ps1` sibling + platform-aware entry en `plugin.json`**. FR-ONB-9 ahora especifica ambos scripts (linux/macOS bash, Windows PowerShell) con resolución por OS en el hook block. El JSON cap a 8000 chars implementado en ambos.
+5. **`RunnerOutput.usage` extendido en trait `Runner`**. FR-ONB-29 (`--max-cost` mid-flight) y FR-ONB-30 (`--resume` con cost acumulado) requieren cost real per-page. Hoy `RunnerOutput` no tiene token usage. M1 extiende el trait + implementa en `ClaudeRunner`/`GeminiRunner`; `LocalRunner`/`HttpRunner` retornan `None` (fallback a heurística).
+
+*Decisiones secundarias resueltas:*
+6. **JSONC en `.claude/settings.json`**: M1 **strict JSON only**. `--with-claude-config` aborta con mensaje claro si detecta comentarios; sugiere remover comentarios manualmente. M2 puede evaluar `json5` o `jsonc-parser`. Trade-off documentado.
+7. **Symlinks en `.claude/settings.json`**: `canonicalize` antes del lock+write para preservar la config dotfiles-managed del user. Documentado en FR-ONB-26.
+8. **Resume + version mismatch**: schema mismatch (`schema_version` distinto) → hard abort con mensaje. Same schema + `coral_version` distinto → soft warn + continúa. Schema FR-ONB-30 ampliado.
+
+*Cross-FR consistency fixes:*
+9. **Namespace collision `coral project doctor` vs `coral-doctor` skill**: clarificado. CLI sigue siendo `coral self-check` / `coral self-upgrade` / `coral self-uninstall` (hyphenated, no romper backward compat con `coral project doctor` existente en `crates/coral-cli/src/commands/project/doctor.rs`). Skill nombre `coral-doctor` con prefijo `/coral:` en slash command. Test E2E (FR-ONB-23) verifica que `/coral:coral-doctor` invoca el nuevo flow y NO el viejo `project doctor`.
+10. **§15 plan reordenado** para reflejar dependencias reales. `self-upgrade` movido de semana 1 → semana 4 (depende de `sha2` + `windows-sys` landing). SessionStart hook movido a semana 5 (depende de SelfCheck schema estable). Pre-semana 1 añade 1-2 días de "design pinning" (deps + schemas + Windows hook strategy).
 
 **Cambios v1.2 → v1.3** (third-pass adversarial review; cada cambio verificado contra docs oficiales):
 
@@ -363,16 +381,28 @@ Codificación: `FR-ONB-<n>`. Cada FR mapea a un mecanismo + a una persona.
   ```
   El install también escribe `.coral/claude-paste.txt` con las 3 líneas para copy-paste desde un editor.
 - **FR-ONB-5** — `plugin.json` y `marketplace.json` se sincronizan automáticamente en cada release vía `release.yml`.
-- **FR-ONB-26 (NUEVO)** — `install.sh --with-claude-config` flag opt-in:
-  1. Localiza `.claude/settings.json` del proyecto actual (`$PWD`). Si no existe, lo crea con `{}`.
-  2. Backup atómico: copia a `.claude/settings.json.coral-backup-<ISO8601>`.
-  3. Parsea JSON con `serde_json` (no string manipulation).
-  4. Si la key `extraKnownMarketplaces` no existe, la crea como array.
-  5. Si `agustincbajo/Coral` ya está, no-op.
-  6. Si no está, lo añade al array.
-  7. Escribe JSON de vuelta con `serde_json::to_writer_pretty`.
-  8. Logs el path del backup al stdout: `*Backup at .claude/settings.json.coral-backup-2026-05-12T19:34:11Z. Restore with: mv <that> .claude/settings.json*`.
-  9. Si el JSON parse falla (archivo corrupto), aborta con mensaje claro y no-touch.
+- **FR-ONB-26 (NUEVO)** — `install.sh --with-claude-config` flag opt-in. **Delegación al binario**: `install.sh` después de poner `coral` en PATH ejecuta `coral self register-marketplace --scope=project` (subcommand nuevo en `coral-cli`). Eliminamos la dependencia de `jq` que no es cross-platform garantizado.
+
+  Implementación del subcommand:
+  1. Localiza `.claude/settings.json` del proyecto actual (`std::env::current_dir`). Si no existe, lo crea con `{}`.
+  2. **Resuelve symlinks**: `std::fs::canonicalize` antes del lock+write para preservar config dotfiles-managed del user (no reemplaza inode-via-rename si el path es symlink — sigue al target).
+  3. Backup atómico: copia a `.claude/settings.json.coral-backup-<ISO8601-UTC>` en el mismo directorio.
+  4. **Parsea con `serde_json` strict** (feature `preserve_order` para no reordenar keys del user).
+  5. **Si detecta comentarios `//` o `/* */` (JSONC)**: aborta con mensaje claro *"Refusing to touch JSONC. Strict JSON only in M1. Either remove comments and re-run, or skip --with-claude-config and use the 3-line paste flow."* M2 puede evaluar `json5` o `jsonc-parser`.
+  6. Si la key `extraKnownMarketplaces` no existe, la crea como array (verificado vs docs oficiales: array de marketplace objects `{source, repo}`, no object con alias-keys).
+  7. Si `{source:"github", repo:"agustincbajo/Coral"}` ya está en el array, no-op.
+  8. Si no está, lo añade al array.
+  9. **Lock + atomic write**: `fs4::FileExt::try_lock_exclusive` sobre el archivo, escritura via tempfile + rename (`coral-core::atomic::atomic_write_string`).
+  10. Logs el path del backup al stdout: `*Backup at .claude/settings.json.coral-backup-2026-05-12T19:34:11Z. Restore with: mv <that> .claude/settings.json*`.
+  11. Si el JSON parse falla (archivo corrupto), aborta con mensaje claro y no-touch.
+  
+  Caller en `install.sh`:
+  ```bash
+  if [ "${WITH_CLAUDE_CONFIG:-0}" = "1" ]; then
+    "${INSTALL_DIR}/coral" self register-marketplace --scope=project \
+      || { echo "warn: marketplace registration failed; falling back to paste-3-lines flow" >&2; }
+  fi
+  ```
   
   El flag es opt-in por security: el user expresa consentimiento explícito para que el script toque su config.
 
@@ -422,20 +452,70 @@ Codificación: `FR-ONB-<n>`. Cada FR mapea a un mecanismo + a una persona.
 | `coral-doctor` skill | no existe | **NUEVA** — self-check + provider mini-wizard | Cierra F1, F3, sin-claude-CLI |
 | `/coral:coral-doctor` slash command | no existe | **NUEVO** — versión determinística | Power-user shortcut |
 
-- **FR-ONB-9** — Hook `SessionStart` ejecuta `${CLAUDE_PLUGIN_ROOT}/scripts/on-session-start.sh`. **Budget cross-platform: <150ms p95 Linux/macOS, <400ms p95 Windows** (Windows process spawn overhead es 50-200ms baseline). CI verifica con `hyperfine`. Comportamiento:
-  - Early-exit si `coral` no en PATH (típico <10ms).
-  - `--quick` flag salta probes lentos (MCP, UI, git fetch, update-available).
-  - `timeout 5` como hard cap absoluto.
-  - **JSON output capped at 8000 chars** (verificado: docs oficiales especifican 10k cap en hook stdout inyectado a contexto; si excede se trunca con preview + file path → el routing del CLAUDE.md rompería silenciosamente). Si `coral self-check --quick` produce JSON > 8000 chars (e.g. muchos warnings), el wrapper bash emite **fallback minimal**:
-    ```bash
-    OUTPUT=$(timeout 5 coral self-check --format=json --quick 2>/dev/null)
-    if [ ${#OUTPUT} -gt 8000 ]; then
-      printf '{"coral_status":"ok","note":"full self-check output truncated; run /coral:coral-doctor"}'
-    else
-      printf '%s' "$OUTPUT"
-    fi
-    ```
+- **FR-ONB-9** — Hook `SessionStart`. **Dual script (Linux/macOS bash + Windows PowerShell)** con resolución platform-aware en `plugin.json`:
+
+  ```json
+  {
+    "hooks": {
+      "SessionStart": [
+        {
+          "matcher": "",
+          "hooks": [
+            {
+              "type": "command",
+              "command": "${CLAUDE_PLUGIN_ROOT}/scripts/on-session-start"
+            }
+          ]
+        }
+      ]
+    }
+  }
+  ```
+  
+  El hook entry usa **el path sin extensión**; en cada plataforma se ejecuta el script con la extensión correcta (Claude Code resuelve `.sh`/`.ps1`/`.cmd` según OS — verificar en docs de hooks; si no lo resuelve auto, fallback a dos hook entries con `matcher` separando platforms via env detection en bash trivial).
+
+  **Budget cross-platform: <150ms p95 Linux/macOS, <400ms p95 Windows** (Windows process spawn overhead es 50-200ms baseline). CI verifica con `hyperfine`.
+  
+  **`on-session-start.sh` (Linux/macOS):**
+  ```bash
+  #!/usr/bin/env bash
+  set -u
+  command -v coral >/dev/null 2>&1 || {
+    printf '{"coral_status":"binary_missing","suggestion":"run scripts/install.sh"}'; exit 0; }
+  cd "${CLAUDE_PROJECT_DIR:-$PWD}" 2>/dev/null || exit 0
+  OUTPUT=$(timeout 5 coral self-check --format=json --quick 2>/dev/null) || {
+    printf '{"coral_status":"check_failed"}'; exit 0; }
+  if [ "${#OUTPUT}" -gt 8000 ]; then
+    printf '{"coral_status":"ok","note":"full output truncated; run /coral:coral-doctor"}'
+  else
+    printf '%s' "$OUTPUT"
+  fi
+  exit 0
+  ```
+  
+  **`on-session-start.ps1` (Windows):**
+  ```powershell
+  $ErrorActionPreference = 'SilentlyContinue'
+  if (-not (Get-Command coral -ErrorAction SilentlyContinue)) {
+    Write-Output '{"coral_status":"binary_missing","suggestion":"run scripts/install.ps1"}'; exit 0 }
+  $cwd = if ($env:CLAUDE_PROJECT_DIR) { $env:CLAUDE_PROJECT_DIR } else { Get-Location }
+  Set-Location -Path $cwd -ErrorAction SilentlyContinue
+  $job = Start-Job { coral self-check --format=json --quick }
+  $done = Wait-Job $job -Timeout 5
+  if (-not $done) { Stop-Job $job; Remove-Job $job -Force; Write-Output '{"coral_status":"check_failed"}'; exit 0 }
+  $output = Receive-Job $job; Remove-Job $job
+  if ($output.Length -gt 8000) {
+    Write-Output '{"coral_status":"ok","note":"full output truncated; run /coral:coral-doctor"}'
+  } else { Write-Output $output }
+  exit 0
+  ```
+  
+  - Early-exit si `coral` no en PATH (típico <10ms en ambas plataformas).
+  - `--quick` flag salta probes lentos (MCP, UI, git fetch, update-available — ver Apéndice F).
+  - `timeout 5` (Linux) / `Wait-Job -Timeout 5` (Windows) como hard cap absoluto.
+  - **JSON output capped at 8000 chars** (verificado: docs oficiales especifican 10k cap en hook stdout inyectado a contexto; si excede se trunca con preview + file path → el routing del CLAUDE.md rompería silenciosamente).
   - CI test verifica que `--quick` sobre repos representativos NUNCA excede 8000 chars en la implementación normal.
+  - **Executable bit (`.sh`)**: shipped con `+x` en git (`git update-index --chmod=+x .claude-plugin/scripts/on-session-start.sh`). `.ps1` no requiere permission flag.
 
 - **FR-ONB-25 (NUEVO)** — `coral init` **genera `CLAUDE.md`** en el repo con instrucciones de routing (ver §3.3). **Append-safe con size guard**:
   - Si `CLAUDE.md` no existe → escribir template completo (~30 líneas).
@@ -492,11 +572,67 @@ Codificación: `FR-ONB-<n>`. Cada FR mapea a un mecanismo + a una persona.
      Try: --max-pages=N or remove --max-cost.
      ```
   2. Si `estimate.upper_bound ≤ max_cost` pero el actual cost mid-flight (suma running) excede `max_cost`: skip remaining pages, mark `.wiki/.bootstrap-state.json` con `partial: true`, exit con código 2 + mensaje "Stopped at $X.XX. Run `coral bootstrap --resume` to continue."
-- **FR-ONB-30 (NUEVO)** — `coral bootstrap --resume`:
-  - Checkpoint en `.wiki/.bootstrap-state.json` cada página completada (schema-versioned).
-  - `--resume` lee el state, skipea páginas con `status: completed`, retoma desde la primera `pending`.
-  - Compatible con `--max-cost` (se acumula al cost ya pagado).
-  - Si schema del checkpoint cambió entre versiones → aborta con mensaje claro: "*Checkpoint schema v1, binary expects v2. Run `coral bootstrap --apply --force` to start over.*"
+- **FR-ONB-30 (NUEVO)** — `coral bootstrap --resume`. Schema concreto del checkpoint:
+  
+  ```rust
+  const STATE_SCHEMA_VERSION: u32 = 1;
+  
+  #[derive(Serialize, Deserialize)]
+  pub struct BootstrapState {
+      pub schema_version: u32,
+      pub coral_version: String,         // env!("CARGO_PKG_VERSION") al inicio
+      pub started_at: chrono::DateTime<Utc>,
+      pub provider: String,              // "claude" | "gemini" | "http" | "local"
+      pub plan_fingerprint: String,      // sha256 del plan canonical YAML
+      pub plan: Vec<PlanEntry>,          // plan COMPLETO persistido (clave para resume estable)
+      pub max_cost_usd: Option<f64>,
+      pub cost_spent_usd: f64,           // running total real (Runner.usage)
+      pub pages: Vec<PageState>,
+  }
+  
+  #[derive(Serialize, Deserialize)]
+  pub struct PageState {
+      pub slug: String,
+      pub status: PageStatus,            // Pending | InProgress | Completed | Failed
+      pub input_tokens: u64,
+      pub output_tokens: u64,
+      pub cost_usd: f64,
+      pub completed_at: Option<chrono::DateTime<Utc>>,
+      pub error: Option<String>,
+  }
+  ```
+  
+  **Atomicidad del checkpoint**: write a `.wiki/.bootstrap-state.json.tmp` + rename atómico tras cada página completada (no entre `InProgress` y `Completed` — si crashea en `InProgress`, el resume re-procesa esa página, paga 2x ese page-cost en peor caso pero el state nunca queda corrupto).
+  
+  **Lockfile contra runs concurrentes**: `fs4::FileExt::try_lock_exclusive` sobre `.wiki/.bootstrap.lock`. Si está locked → abort con *"another `coral bootstrap` run holds the lock; wait or `rm .wiki/.bootstrap.lock` after confirming no process is running."*
+  
+  **Plan ordering estable**: el plan **se persiste en `state.plan` en el primer write** (después de la primera LLM call que genera el plan). `--resume` re-usa `state.plan` y NO re-llama al LLM para regenerarlo — esto garantiza ordering estable entre runs aun cuando el LLM sea no-determinístico.
+  
+  **Schema migration policy** (resuelve secondary item):
+  - `schema_version` distinto al `STATE_SCHEMA_VERSION` del binario → **hard abort** con mensaje: *"Checkpoint schema v1, binary expects v2. Run `coral bootstrap --apply --force` to start over."*
+  - `coral_version` distinto pero `schema_version` igual → **soft warn + continúa**: *"warn: checkpoint from coral X.Y.Z; current A.B.C; continuing."*
+  - Compatible con `--max-cost`: gate se aplica sobre `(max_cost - cost_spent_usd)` ya pagado.
+  
+  **Cost mid-flight (FR-ONB-29 wiring)**: requiere `Runner.run()` retornar `Option<TokenUsage>` en `RunnerOutput`. Hoy no lo hace. Extender el trait en `crates/coral-runner/src/runner.rs`:
+  ```rust
+  pub struct RunnerOutput {
+      pub stdout: String,
+      pub stderr: String,
+      pub exit_code: i32,
+      pub usage: Option<TokenUsage>,   // NUEVO M1
+  }
+  
+  pub struct TokenUsage {
+      pub input_tokens: u64,
+      pub output_tokens: u64,
+      pub cache_read_tokens: u64,      // futuro M2 prompt caching
+      pub cache_write_tokens: u64,
+  }
+  ```
+  - `ClaudeRunner` parsea `usage` del response JSON (Anthropic API lo retorna).
+  - `GeminiRunner` parsea equivalente del Gemini API response.
+  - `HttpRunner` / `LocalRunner` retornan `None` → fallback a heurística per-page (`estimate_cost_per_entry`).
+  - `--max-cost` con `None` runners loggea warn: *"running cost is estimated (not real); --max-cost may be inaccurate."*
 
 ### 6.5 Multi-repo wizard (M2 — moved out of M1, con justificación)
 
@@ -806,11 +942,22 @@ Implementación:
 
 ## 8. Stack y dependencias
 
-### Backend (Rust)
-- `dialoguer` crate (M1) — prompts interactivos del provider mini-wizard. Pequeño, single-purpose.
-- `serde_json` (ya en deps) — para parche atómico de `.claude/settings.json`.
-- `daemonize` crate (M2 — diferido).
-- Windows: `winapi`/`windows-sys` ya en tree via `signal-hook` transitive.
+### Backend (Rust) — direct workspace deps NUEVAS para M1
+| Crate | Versión | Uso | FRs |
+|---|---|---|---|
+| `dialoguer` | `"0.11"` | Provider mini-wizard interactivo (`Select`, `Password`) | FR-ONB-27 |
+| `sha2` | `"0.10"` | Verificación SHA-256 del binary descargado en self-upgrade | FR-ONB-32 |
+| `windows-sys` | `"0.59"`, features = `["Win32_Storage_FileSystem", "Win32_Foundation"]` | `MoveFileExW` para rename-then-replace de `coral.exe` en uso | FR-ONB-32 |
+| `ureq` | `"2"` | HTTP client síncrono para el 1-token ping al provider (verificación de API key) | FR-ONB-27 |
+| `schemars` | `"0.8"` | Derive de JSON Schema del struct `SelfCheck` (Apéndice F) | FR-ONB-6 |
+
+### Backend (Rust) — workspace deps EXISTENTES con cambios
+| Crate | Cambio | Razón |
+|---|---|---|
+| `serde_json` | añadir feature `preserve_order` | Patch JSON idempotente del `.claude/settings.json` sin reordenar las keys del user (FR-ONB-26) |
+
+### Backend (Rust) — deps DIFERIDAS a M2
+- `daemonize` crate (M2) — `coral ui daemon` proper cross-platform.
 
 ### Frontend (SPA)
 - Sin cambios en M1. WebUI empty-state coaching (FR-ONB-24) en M2.
@@ -820,6 +967,7 @@ Implementación:
 
 ### Scripts
 - `install.sh` / `install.ps1` modificados — añaden `--with-claude-config`, Windows hints, WSL detect.
+- `.claude-plugin/scripts/on-session-start.sh` + `.claude-plugin/scripts/on-session-start.ps1` (ambos NUEVOS — ver FR-ONB-9).
 
 ---
 
@@ -944,52 +1092,92 @@ Ver §2.2 arriba.
 
 ## 15. Apéndice B: Plan de implementación detallado M1
 
+**Reordenado en v1.4** según el audit de implementation-readiness — `self-upgrade` movido a semana 4 (depende de `sha2` + `windows-sys` landing), SessionStart hook a semana 5 (depende de SelfCheck schema estable), pre-semana 1 añade design pinning.
+
 ```
-Semana 1 — self-check + self-upgrade + self-uninstall + sync versions
-  - Crear crates/coral-cli/src/commands/self_check.rs
-  - Crear crates/coral-cli/src/commands/self_upgrade.rs
-  - Crear crates/coral-cli/src/commands/self_uninstall.rs
-  - Subcommand definitions en clap (main.rs)
-  - JSON schema con providers_available, providers_configured, update_available, claude_md_present
-  - 10 unit tests
-  - release.yml: añadir step sync-plugin-manifests con jq + [skip ci] guard
-  - Sync plugin.json + marketplace.json a v0.34.0 (manual una vez)
+Pre-semana 1 (1–2 días) — Design pinning
+  - Workspace Cargo.toml: añadir direct deps NUEVAS (sha2, windows-sys, ureq,
+    dialoguer, schemars) y feature preserve_order en serde_json. Build verde.
+  - Apéndice E: pin .coral/config.toml schema. Crear módulo coral_config en
+    coral-core. Migración 0-state (no v0.33 users tienen config.toml todavía).
+  - Apéndice F: pin SelfCheck JSON schema con schemars derive. CI step
+    `coral self-check --print-schema > schema.json` verifica que el schema
+    no rota silenciosamente.
+  - Decidir Windows hook execution: confirmar que Claude Code resuelve
+    `${CLAUDE_PLUGIN_ROOT}/scripts/on-session-start` con extensión auto vs
+    requiere paths explícitos. Si no auto, plugin.json especifica ambos.
+  - Extender RunnerOutput.usage en trait Runner (compile-only, sin runner
+    implementations todavía). Solo el shape, para no bloquear week 1.
 
-Semana 2 — Cost estimation + max-cost + resume + bootstrap skill update
-  - Crear crates/coral-cli/src/commands/bootstrap/estimate.rs
-  - Heurísticas: token_estimate_per_entry(entry) -> u64
-  - upper_bound calculation (estimate * 1.25 en M1)
-  - --max-cost flag con abort mid-flight
-  - --resume flag con checkpoints schema-versioned en .wiki/.bootstrap-state.json
-  - Calibration runs (10): small Rust, mid TS, large Python, monorepo, OpenAPI, Ollama variant, etc.
-  - Skill .claude-plugin/skills/coral-bootstrap/SKILL.md updated
-  - Mensaje formato con upper-bound + sugerencias para repos grandes
+Semana 1 — self-check (sin self-upgrade) + sync versions + dogfooding
+  - Crear crates/coral-cli/src/commands/self_check.rs (con schemars derive).
+    Implementar todos los probes excepto MCP/UI/update_available (deja --quick
+    cheap; los --full probes vienen después).
+  - Crear crates/coral-cli/src/commands/self_register_marketplace.rs
+    (subcommand para FR-ONB-26).
+  - Crear crates/coral-cli/src/commands/self_uninstall.rs.
+  - Subcommand definitions en clap (main.rs).
+  - 10 unit tests.
+  - release.yml: step sync-plugin-manifests con jq + [skip ci] guard.
+  - Sync plugin.json + marketplace.json a v0.33.0 (commit manual prep).
+  - .claude/settings.json en el propio repo Coral con extraKnownMarketplaces
+    (dogfooding).
 
-Semana 3 — Doctor + provider wizard + CLAUDE.md + ui background
-  - .claude-plugin/skills/coral-doctor/SKILL.md (new)
-  - .claude-plugin/commands/coral-doctor.md (slash command)
-  - Provider mini-wizard via dialoguer (4 paths: Anthropic key, Gemini key, Ollama, claude CLI install)
-  - coral init: write CLAUDE.md template (append-safe with test fixtures)
-  - coral-ui skill: background spawn (nohup / Start-Process)
-  - SessionStart hook: scripts/on-session-start.sh con budget <100ms verificado en CI
+Semana 2 — Runner.usage + cost estimation + max-cost + resume + bootstrap skill
+  - Implementar parseo de usage en ClaudeRunner + GeminiRunner.
+    HttpRunner/LocalRunner retornan None.
+  - Refactor crates/coral-cli/src/commands/bootstrap.rs para una runner call
+    per page (no N páginas en una call). Crítico para checkpoint per-page.
+  - Crear crates/coral-cli/src/commands/bootstrap/estimate.rs.
+  - upper_bound calculation (estimate * 1.25 en M1).
+  - --max-cost flag con abort mid-flight (cost real de Runner.usage o
+    fallback heurística con warn).
+  - --resume flag con checkpoints schema-versioned + plan persistido en
+    state + lockfile fs4 + atomic write tras cada page.
+  - Calibration runs (10): small Rust, mid TS, large Python, monorepo,
+    OpenAPI, Ollama variant.
+  - Skill .claude-plugin/skills/coral-bootstrap/SKILL.md update.
 
-Semana 4 — Windows specifics + install.sh --with-claude-config + cross-platform tests
-  - install.sh: --with-claude-config flag, JSON patch atómico con serde_json, backup
-  - install.ps1: WindowsDefender hint, PATH-needs-new-shell hint
-  - install.sh: WSL2 detection (lee /proc/version)
-  - extraKnownMarketplaces en Coral's own .claude/settings.json (dogfooding)
-  - E2E test via claude --print mock + matrix
+Semana 3 — Doctor + provider wizard + CLAUDE.md + ui background + gitignore
+  - .claude-plugin/skills/coral-doctor/SKILL.md (new).
+  - .claude-plugin/commands/coral-doctor.md (slash command, disable-model-invocation: true).
+  - Provider mini-wizard via dialoguer (4 paths). 1-token ping via ureq.
+  - coral init: write CLAUDE.md template append-safe con size guard (FR-ONB-25).
+  - coral init: agregar .coral/ y .wiki/.bootstrap-state.json a .gitignore
+    del repo (FR-ONB-34).
+  - coral-ui skill: background spawn (nohup / Start-Process).
+  - .coral/config.toml read/write API en coral-core (lectura ya implementada
+    en pre-semana 1 si schema pinned; semana 3 añade write path para wizard).
 
-Semana 5–6 — Ollama path validation + buffer + docs
-  - Test fixture: 50-LOC repo bootstrap con Ollama
-  - --provider=ollama E2E (skip si Ollama no instalado en CI runner)
-  - Docs: README "Getting Started in 60 seconds" + GIF/video
-  - Cross-platform smoke runs
+Semana 4 — self-upgrade Windows + install.sh --with-claude-config + Windows hints
+  - crates/coral-cli/src/commands/self_upgrade.rs con sha2 + windows-sys
+    (rename-then-replace via MoveFileEx en Windows; atomic rename en Unix).
+  - install.sh: --with-claude-config flag (llama a `coral self register-marketplace`).
+  - install.ps1: WindowsDefender hint, PATH-needs-new-shell hint.
+  - install.sh: WSL2 detection (lee /proc/version).
+  - update_available probe en coral self-check --full (queries GitHub releases).
+  - E2E test cross-platform en CI matrix.
 
-Semana 7–8 — Release + buffer
-  - Release notes draft
-  - Tag v0.34.0 → release.yml runs
-  - Hotfix buffer
+Semana 5 — SessionStart hook + Ollama E2E + cross-platform smoke
+  - scripts/on-session-start.sh (Linux/macOS, +x en git).
+  - scripts/on-session-start.ps1 (Windows).
+  - plugin.json hook block.
+  - hyperfine CI test: hook <150ms p95 Linux/macOS, <400ms p95 Windows.
+  - JSON output size CI test: --quick nunca excede 8000 chars en repos
+    representativos.
+  - Test fixture: 50-LOC repo bootstrap con Ollama (--provider=local).
+  - Naming collision test: /coral:coral-doctor NO invoca el viejo
+    coral project doctor.
+
+Semana 6 — Docs + GIF + buffer
+  - README "Getting Started in 60 seconds" section.
+  - GIF/video del flow 2-actos (con --with-claude-config).
+  - Cross-platform smoke runs finales.
+
+Semanas 7–8 — Release + buffer
+  - Release notes draft.
+  - Tag v0.34.0 → release.yml runs.
+  - Hotfix buffer (especialmente para issues Windows que aparezcan en uso real).
 ```
 
 ---
@@ -1071,7 +1259,179 @@ Run a cost-confirmed wiki bootstrap for the current repo.
 
 ---
 
-## 18. Apéndice D: Changelog v1.0 → v1.1 (first-pass review, 2026-05-12)
+## 18. Apéndice E: `.coral/config.toml` schema (NUEVO en v1.4 — frozen contract)
+
+Hoy v0.33.0 no lee ningún TOML config file (env vars únicamente). M1 introduce `.coral/config.toml` per-repo. Schema concreto:
+
+```toml
+# .coral/config.toml — v1 schema
+# Per-repo Coral configuration. Created by `coral init` and the provider wizard.
+# NOTA: este archivo puede contener secrets (API keys). NUNCA commitear.
+# `coral init` agrega `.coral/` a `.gitignore` automáticamente (FR-ONB-34).
+
+# Versioning. Hard-fail si schema_version del archivo > el que el binary entiende.
+schema_version = 1
+
+[provider.anthropic]
+# Opt-in via `coral-doctor` mini-wizard opción 1 (FR-ONB-27).
+api_key = "sk-ant-..."           # secret; chmod 600 en Unix
+model = "claude-sonnet-4-5"       # default; user puede override
+max_tokens_per_page = 4096
+
+[provider.gemini]
+# Opt-in via wizard opción 2.
+api_key = "..."
+model = "gemini-2.0-flash"
+
+[provider.ollama]
+# Opt-in via wizard opción 3.
+endpoint = "http://localhost:11434"
+model = "llama3.1:8b"             # debe estar pulled
+
+[provider.claude_cli]
+# Opt-in via wizard opción 4 (claude CLI handles auth).
+# Sin campos — coral detecta `claude` en PATH y usa el binario.
+
+[bootstrap]
+# Umbrales para confirmación + warning (FR-ONB-14).
+auto_confirm_under_usd = 0.10
+warn_threshold_usd = 1.00
+big_repo_threshold_usd = 5.00      # trigger del hint --max-pages
+
+[bootstrap.defaults]
+# Default flags si el user no pasa explícitamente.
+max_cost_usd = null                # null = sin límite
+max_pages = null
+
+[ui]
+# WebUI defaults (FR-ONB-11, FR-ONB-17).
+port = 3838
+auto_serve_after_bootstrap = true
+```
+
+**Read API** (Rust): nuevo módulo `coral_core::config`:
+
+```rust
+#[derive(Deserialize, Default)]
+pub struct CoralConfig {
+    pub schema_version: u32,
+    pub provider: ProviderConfigs,
+    pub bootstrap: BootstrapConfig,
+    pub ui: UiConfig,
+}
+
+impl CoralConfig {
+    pub fn load_from_repo(cwd: &Path) -> Result<Self> {
+        let p = cwd.join(".coral").join("config.toml");
+        if !p.exists() { return Ok(Self::default()); }
+        let raw = std::fs::read_to_string(&p)?;
+        let cfg: Self = toml::from_str(&raw)?;
+        ensure!(cfg.schema_version <= CONFIG_SCHEMA_VERSION,
+            "config.toml schema_version {} > supported {}; upgrade coral",
+            cfg.schema_version, CONFIG_SCHEMA_VERSION);
+        Ok(cfg)
+    }
+}
+```
+
+**Write API** (atomic, lock-on-write):
+
+```rust
+pub fn upsert_section(cwd: &Path, section: &str, content: &str) -> Result<()> {
+    let p = cwd.join(".coral").join("config.toml");
+    std::fs::create_dir_all(p.parent().unwrap())?;
+    coral_core::atomic::with_exclusive_lock(&p, || {
+        // Parse existing, merge section, write back.
+        ...
+    })?;
+    #[cfg(unix)] set_perm_600(&p)?;
+    Ok(())
+}
+```
+
+**Migración v0.33 → v0.34**: usuarios v0.33 no tienen `.coral/config.toml`. La primera vez que el binario v0.34 lo necesita (e.g. provider wizard escribe), se crea con `schema_version = 1`. Sin migración data.
+
+---
+
+## 19. Apéndice F: `SelfCheck` JSON schema (NUEVO en v1.4 — frozen contract)
+
+**6 FRs consumen este schema** (-6, -7, -9, -10, -25, -32). Pinned como `schemars`-derived JSON Schema; un CI step ejecuta `coral self-check --print-schema > .ci/self-check-schema.json` y falla si difiere del committed (evita rotation silenciosa entre semanas).
+
+```rust
+use schemars::JsonSchema;
+use serde::Serialize;
+
+#[derive(Serialize, JsonSchema, Default)]
+pub struct SelfCheck {
+    pub schema_version: u32,                   // v1.4 = 1; hard contract
+    pub coral_status: CoralStatus,             // "ok" | "binary_missing" | "check_failed"
+    pub coral_version: String,
+    pub binary_path: std::path::PathBuf,
+    pub in_path: bool,
+    pub platform: PlatformInfo,
+    pub git_repo: Option<GitRepoInfo>,
+    pub wiki: Option<WikiInfo>,
+    pub coral_toml: Option<ManifestInfo>,
+    pub claude_md: Option<ClaudeMdInfo>,
+    pub claude_cli: Option<ClaudeCli>,
+    pub providers_available: Vec<String>,      // ["claude_cli", "anthropic_api_key", "ollama"]
+    pub providers_configured: Vec<String>,
+    pub update_available: Option<String>,      // populated only with --full (queries GitHub)
+    pub mcp_server: Option<McpHealth>,         // populated only with --full
+    pub ui_server: Option<UiHealth>,           // populated only with --full
+    pub warnings: Vec<Warning>,                // capped top 5
+    pub suggestions: Vec<Suggestion>,          // capped top 5
+}
+
+#[derive(Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CoralStatus { Ok, BinaryMissing, CheckFailed }
+
+#[derive(Serialize, JsonSchema)]
+pub struct WikiInfo {
+    pub present: bool,
+    pub page_count: u32,
+    pub last_bootstrap_at: Option<chrono::DateTime<Utc>>,
+}
+
+#[derive(Serialize, JsonSchema)]
+pub struct ClaudeMdInfo {
+    pub present: bool,
+    pub line_count: u32,                       // para FR-ONB-25 size guard
+    pub has_coral_routing_section: bool,
+}
+
+#[derive(Serialize, JsonSchema)]
+pub struct Warning {
+    pub severity: Severity,                    // "high" | "medium" | "low"
+    pub message: String,
+    pub action: Option<String>,                // exact command to fix
+}
+
+#[derive(Serialize, JsonSchema)]
+pub struct Suggestion {
+    pub kind: SuggestionKind,                  // "run_doctor" | "run_bootstrap" | "install_provider" | ...
+    pub command: String,
+    pub explanation: String,
+}
+```
+
+**Flags del subcomando:**
+- `coral self-check` — full output (todos los probes incluyendo MCP/UI/update).
+- `coral self-check --quick` — skip MCP/UI/update probes. Target: <100ms Linux/macOS, <300ms Windows. Output capped a 8000 chars (hard truncate de `warnings`/`suggestions` si excede, manteniendo top-N por severity).
+- `coral self-check --format=json|text` — default `text` (human-readable); `json` para hooks/skills.
+- `coral self-check --print-schema` — emite el JSON Schema completo a stdout (para CI verification).
+- `coral self-check --full` — fuerza todos los probes incluso si `--quick` se solicitó.
+
+**Output size budget en `--quick`:**
+- Estructura base (sin warnings/suggestions): ~600 chars.
+- `warnings[]` capped a 5, cada uno ~200 chars → +1000 chars.
+- `suggestions[]` capped a 5, cada uno ~200 chars → +1000 chars.
+- Total budget: ~2600 chars en caso normal; 8000 char cap protege casos patológicos (repo con 50 warnings).
+
+---
+
+## 20. Apéndice D: Changelog v1.0 → v1.1 (first-pass review, 2026-05-12)
 
 1. **Re-arquitectado FR-ONB-9** para usar `SessionStart` hook (que SÍ existe en Claude Code — verificado contra docs oficiales) en lugar de auto-invocación NLP amplia. Resuelve elegante y deterministicamente F4. [v1.2 nota: el hook es silencioso; v1.2 lo combina con CLAUDE.md.]
 2. **§3.1 actualizado** con tabla de Claude Code primitives reusables, incluyendo hooks.
@@ -1087,10 +1447,11 @@ Run a cost-confirmed wiki bootstrap for the current repo.
 
 ---
 
-*Fin del PRD v1.3 — incorpora bloqueos técnicos del third-pass adversarial review.*
+*Fin del PRD v1.4 — incorpora bloqueos de implementation-readiness del fourth-pass audit. Listo para arrancar M1 lunes.*
 
-*v1.0 → v1.1 (first-pass, architectural): Apéndice D.*
+*v1.0 → v1.1 (first-pass, architectural): Apéndice D (§20).*
 *v1.1 → v1.2 (second-pass, UX/friction): cabecera bloque "v1.1 → v1.2".*
 *v1.2 → v1.3 (third-pass, adversarial técnico): cabecera bloque "v1.2 → v1.3".*
+*v1.3 → v1.4 (fourth-pass, implementation-readiness): cabecera bloque "v1.3 → v1.4".*
 
-3 iteraciones de revisión independiente. 16 riesgos auditados (R1-R16). 34 FRs codificados. Bloqueos técnicos verificados contra docs oficiales y resueltos. PRD listo para implementación M1.
+4 iteraciones de revisión independiente. 16 riesgos auditados (R1-R16). 34 FRs codificados. 2 schemas pinned como contratos (Apéndices E, F). 5 bloqueos must-resolve cerrados. Plan de implementación reordenado por dependencias reales. **Listo para arrancar M1 (con 1-2 días de design pinning pre-semana 1 ya pre-completado en este documento).**
