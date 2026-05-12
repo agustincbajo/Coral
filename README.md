@@ -107,16 +107,35 @@ coral ui serve
 # opens http://localhost:3838 in your browser
 ```
 
-Four views:
+### The four views
 
-- **Pages** — filterable list (by `page_type`, `status`, `confidence` range, `valid_at`, repo, full-text search) + Markdown detail panel.
-- **Graph** — Sigma.js force-directed view of wikilinks with a **bi-temporal slider** that scrubs through `valid_from`/`valid_to` history. Color by status, size by degree, opacity by confidence.
-- **Query** — LLM-backed playground that streams `coral query` over Server-Sent Events. Cites source slugs.
-- **Manifest** — `coral.toml` + `coral.lock` + stats breakdown.
+**Pages** — filterable list with bi-temporal awareness, status & confidence overlays, Markdown detail panel.
 
-End-users do **not** need Node or npm — the pre-built SPA is committed to `crates/coral-ui/assets/dist/` and embedded into the binary via `include_dir!`. Loopback-only (`127.0.0.1`) and read-only by default; a bearer token (`--token` / `CORAL_UI_TOKEN`) gates the LLM query endpoint and any non-loopback bind.
+![Pages view: filter sidebar + table of 20 wiki pages with type/status/confidence/backlinks columns](docs/assets/ui-pages-en.png)
 
-The legacy `coral wiki serve` (HTML/Mermaid, single page) remains unchanged for backward compatibility.
+**Graph** — Sigma.js force-directed view of wikilinks with the unique **bi-temporal slider** that scrubs through `valid_from`/`valid_to` history. Color by status (Draft / Reviewed / Verified / Stale / Archived / Reference), size by degree, opacity by confidence.
+
+![Graph view: ForceAtlas2 layout of 20 nodes coloured by status with bi-temporal slider](docs/assets/ui-graph-en.png)
+
+**Query** — LLM-backed playground that streams `coral query` over Server-Sent Events. Selectable mode (Local / Global / Hybrid), explicit token-cost warning, sources cited back to the Pages view.
+
+![Query playground: textarea + Local/Global/Hybrid mode selector + LLM cost warning](docs/assets/ui-query-en.png)
+
+**Manifest** — `coral.toml` + `coral.lock` + a live stats breakdown.
+
+![Manifest view: 20 pages, 91% avg confidence, 46 backlinks, status & page-type distributions](docs/assets/ui-manifest-en.png)
+
+### What's unique to Coral here
+
+- **Bi-temporal scrubbing of the knowledge graph** — every other RAG/graph tool drops `valid_from` / `valid_to` / `superseded_by` on the floor. Coral's Graph view lets you scrub the slider to *"as of"* any date and watch nodes appear/disappear as the wiki's history changes.
+- **Status & confidence are first-class visuals** — node colour encodes the curation lifecycle (Draft → Reviewed → Verified → Stale → Archived), opacity encodes the `[0.0, 1.0]` confidence. You see at a glance which corners of your wiki are still rough.
+- **Cited LLM answers** — the Query view streams tokens via SSE *and* pipes back slug references so the user can verify the wiki page directly. No black-box completions.
+
+### Why end-users don't need Node
+
+The pre-built SPA is committed to `crates/coral-ui/assets/dist/` and embedded into the Rust binary at compile time via `include_dir!`. End-users **never** need Node or npm — `cargo install coral-cli` ships the UI with the binary. Loopback-only (`127.0.0.1`) and read-only by default; a bearer token (`--token` / `CORAL_UI_TOKEN`) gates the LLM query endpoint and any non-loopback bind.
+
+The legacy `coral wiki serve` (HTML/Mermaid, single page from v0.25.0) remains unchanged for backward compatibility.
 
 Full docs: [`docs/UI.md`](docs/UI.md).
 
