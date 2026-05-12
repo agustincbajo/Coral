@@ -404,12 +404,21 @@ pub trait Runner: Send + Sync {
 pub struct ClaudeRunner {
     /// Override the binary name/path. Default: "claude" (resolved via PATH).
     binary: PathBuf,
+    /// v0.34.x: per-spawn env overrides. Applied via `Command::env(k, v)`
+    /// so the override scoped to the subprocess only — the parent
+    /// process env is never mutated. Populated by
+    /// [`Self::with_env_var`]; typical caller is the CLI's
+    /// `make_runner` injecting `ANTHROPIC_API_KEY` from
+    /// `[provider.anthropic].api_key` so a wizard-configured key beats
+    /// a stale shell-level env var.
+    env_overrides: Vec<(String, String)>,
 }
 
 impl Default for ClaudeRunner {
     fn default() -> Self {
         Self {
             binary: PathBuf::from("claude"),
+            env_overrides: Vec::new(),
         }
     }
 }
@@ -423,6 +432,30 @@ impl ClaudeRunner {
     pub fn with_binary(binary: impl Into<PathBuf>) -> Self {
         Self {
             binary: binary.into(),
+            env_overrides: Vec::new(),
+        }
+    }
+
+    /// Add a per-spawn env var. Each entry is applied via
+    /// `Command::env(k, v)` on every `run` / `run_streaming` call, so
+    /// the override is scoped to the child process only. Calling
+    /// repeatedly stacks entries; if the same key is added twice, the
+    /// last value wins (matches `Command::env` semantics).
+    ///
+    /// v0.34.x bridge: the CLI uses this to land
+    /// `[provider.anthropic].api_key` into the `claude` subprocess as
+    /// `ANTHROPIC_API_KEY` so a wizard-configured key beats a stale
+    /// shell-level env var the user forgot to update.
+    pub fn with_env_var(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.env_overrides.push((key.into(), value.into()));
+        self
+    }
+
+    /// Apply queued env overrides to a `Command`. Pure helper so
+    /// `run` + `run_streaming` share the bridge code.
+    fn apply_env_overrides(&self, cmd: &mut Command) {
+        for (k, v) in &self.env_overrides {
+            cmd.env(k, v);
         }
     }
 }
@@ -431,6 +464,7 @@ impl Runner for ClaudeRunner {
     fn run(&self, prompt: &Prompt) -> RunnerResult<RunOutput> {
         let start = Instant::now();
         let mut cmd = Command::new(&self.binary);
+        self.apply_env_overrides(&mut cmd);
         cmd.arg("--print");
         // v0.34.0 (FR-ONB-29, FR-ONB-30): ask for structured JSON output
         // so `parse_usage_from_stdout` can extract real `input_tokens` /
@@ -539,6 +573,7 @@ impl Runner for ClaudeRunner {
         on_chunk: &mut dyn FnMut(&str),
     ) -> RunnerResult<RunOutput> {
         let mut cmd = Command::new(&self.binary);
+        self.apply_env_overrides(&mut cmd);
         cmd.arg("--print");
         if let Some(system) = &prompt.system {
             cmd.arg("--append-system-prompt").arg(system);
@@ -762,6 +797,92 @@ mod tests {
             out.stdout.contains("-- --system rogue-prompt"),
             "expected the `--` separator immediately before the user \
              prompt, got stdout: {:?}",
+            out.stdout
+        );
+    }
+
+    /// v0.34.x bridge: `with_env_var` stacks env overrides that land
+    /// in the spawned subprocess. We exercise this end-to-end on Unix
+    /// using a tempdir shell script that echoes the env var back.
+    /// Verifies both the builder API and the actual subprocess env
+    /// inheritance.
+    #[cfg(unix)]
+    #[test]
+    fn claude_runner_with_env_var_propagates_to_subprocess() {
+        use std::io::Write as _;
+        let _lock = crate::test_script_lock();
+        let dir = tempfile::TempDir::new().unwrap();
+        let script = dir.path().join("env-echo.sh");
+        // Echo the env var on stdout in JSON envelope so the runner's
+        // `parse_usage_from_stdout` path treats it as the result text.
+        // Using `{"result":"..."}` so we exercise the unwrap path.
+        {
+            let mut f = std::fs::File::create(&script).unwrap();
+            f.write_all(
+                b"#!/bin/sh\nprintf '{\"result\":\"%s\"}' \"${ANTHROPIC_API_KEY:-MISSING}\"\n",
+            )
+            .unwrap();
+            f.sync_all().unwrap();
+        }
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&script).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&script, perms).unwrap();
+        }
+        let r = ClaudeRunner::with_binary(&script).with_env_var("ANTHROPIC_API_KEY", "sk-test-xyz");
+        let out = r
+            .run(&Prompt {
+                user: "ignored".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(
+            out.stdout.contains("sk-test-xyz"),
+            "expected ANTHROPIC_API_KEY override to land in subprocess; got: {:?}",
+            out.stdout
+        );
+        assert!(
+            !out.stdout.contains("MISSING"),
+            "subprocess saw no value for ANTHROPIC_API_KEY despite with_env_var: {:?}",
+            out.stdout
+        );
+    }
+
+    /// `with_env_var` repeated with the same key keeps the LAST value
+    /// (matches `Command::env` semantics — later assignments win).
+    /// Pins the contract so callers can use it as an override path.
+    #[cfg(unix)]
+    #[test]
+    fn claude_runner_with_env_var_last_value_wins() {
+        use std::io::Write as _;
+        let _lock = crate::test_script_lock();
+        let dir = tempfile::TempDir::new().unwrap();
+        let script = dir.path().join("env-echo2.sh");
+        {
+            let mut f = std::fs::File::create(&script).unwrap();
+            f.write_all(b"#!/bin/sh\nprintf '%s' \"${ANTHROPIC_API_KEY:-MISSING}\"\n")
+                .unwrap();
+            f.sync_all().unwrap();
+        }
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&script).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&script, perms).unwrap();
+        }
+        let r = ClaudeRunner::with_binary(&script)
+            .with_env_var("ANTHROPIC_API_KEY", "first")
+            .with_env_var("ANTHROPIC_API_KEY", "second");
+        let out = r
+            .run(&Prompt {
+                user: "ignored".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(
+            out.stdout.contains("second") && !out.stdout.contains("first"),
+            "second with_env_var call must override the first; got: {:?}",
             out.stdout
         );
     }

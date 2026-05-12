@@ -27,12 +27,17 @@ use std::time::{Duration, Instant};
 #[derive(Debug, Clone)]
 pub struct GeminiRunner {
     binary: PathBuf,
+    /// v0.34.x: per-spawn env overrides. See `ClaudeRunner::env_overrides`
+    /// for the rationale — same bridge pattern, different env var
+    /// (`GEMINI_API_KEY` instead of `ANTHROPIC_API_KEY`).
+    env_overrides: Vec<(String, String)>,
 }
 
 impl Default for GeminiRunner {
     fn default() -> Self {
         Self {
             binary: PathBuf::from("gemini"),
+            env_overrides: Vec::new(),
         }
     }
 }
@@ -47,6 +52,22 @@ impl GeminiRunner {
     pub fn with_binary(binary: impl Into<PathBuf>) -> Self {
         Self {
             binary: binary.into(),
+            env_overrides: Vec::new(),
+        }
+    }
+
+    /// Add a per-spawn env var override. Mirrors
+    /// `ClaudeRunner::with_env_var`; used by the CLI to land
+    /// `[provider.gemini].api_key` into the `gemini` subprocess as
+    /// `GEMINI_API_KEY`.
+    pub fn with_env_var(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.env_overrides.push((key.into(), value.into()));
+        self
+    }
+
+    fn apply_env_overrides(&self, cmd: &mut Command) {
+        for (k, v) in &self.env_overrides {
+            cmd.env(k, v);
         }
     }
 
@@ -69,6 +90,7 @@ impl GeminiRunner {
 
     fn build_command(&self, prompt: &Prompt) -> Command {
         let mut cmd = Command::new(&self.binary);
+        self.apply_env_overrides(&mut cmd);
         cmd.args(Self::build_args(prompt));
         if let Some(cwd) = &prompt.cwd {
             cmd.current_dir(cwd);
@@ -163,6 +185,7 @@ impl Runner for GeminiRunner {
         on_chunk: &mut dyn FnMut(&str),
     ) -> RunnerResult<RunOutput> {
         let mut cmd = Command::new(&self.binary);
+        self.apply_env_overrides(&mut cmd);
         cmd.args(Self::build_args(prompt));
         if let Some(cwd) = &prompt.cwd {
             cmd.current_dir(cwd);
@@ -341,6 +364,47 @@ mod tests {
         assert!(
             msg.contains("<redacted>"),
             "expected redaction marker: {msg}"
+        );
+    }
+
+    /// v0.34.x bridge: `with_env_var` stacks env overrides that land
+    /// in the spawned subprocess. End-to-end check on Unix using a
+    /// tempdir shell script that echoes the env var.
+    #[cfg(unix)]
+    #[test]
+    fn gemini_runner_with_env_var_propagates_to_subprocess() {
+        use std::io::Write as _;
+        let _lock = test_script_lock();
+        let dir = tempfile::TempDir::new().unwrap();
+        let script = dir.path().join("env-echo-gem.sh");
+        {
+            let mut f = std::fs::File::create(&script).unwrap();
+            f.write_all(b"#!/bin/sh\nprintf '%s' \"${GEMINI_API_KEY:-MISSING}\"\n")
+                .unwrap();
+            f.sync_all().unwrap();
+        }
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&script).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&script, perms).unwrap();
+        }
+        let r = GeminiRunner::with_binary(&script).with_env_var("GEMINI_API_KEY", "AIza-xyz");
+        let out = r
+            .run(&Prompt {
+                user: "ignored".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(
+            out.stdout.contains("AIza-xyz"),
+            "expected GEMINI_API_KEY override in subprocess; got: {:?}",
+            out.stdout
+        );
+        assert!(
+            !out.stdout.contains("MISSING"),
+            "subprocess saw no value for GEMINI_API_KEY despite with_env_var: {:?}",
+            out.stdout
         );
     }
 
