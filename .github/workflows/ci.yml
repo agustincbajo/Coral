@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 # Cancel in-progress runs for the same ref. Saves Actions minutes when
 # pushes land back-to-back; the latest one wins.
