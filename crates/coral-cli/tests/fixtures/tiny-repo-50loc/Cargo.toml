@@ -1,0 +1,20 @@
+# Fixture crate for crates/coral-cli/tests/ollama_bootstrap.rs.
+#
+# Excluded from the Coral workspace (root Cargo.toml `exclude` list and
+# the `crates/coral-cli/tests/fixtures/**` path is not a member glob).
+# The fixture is consumed BY COPYING into a tempdir; nothing depends on
+# it being compilable from this location.
+
+[package]
+name = "tiny-greeter"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Tiny library used as a Coral bootstrap fixture (FR-ONB-28)"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "tiny-greeter"
+path = "src/main.rs"
