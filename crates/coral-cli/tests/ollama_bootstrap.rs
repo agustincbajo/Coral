@@ -248,10 +248,10 @@ fn walk(out: &mut Vec<PathBuf>, dir: &Path) {
         let p = entry.path();
         if p.is_dir() {
             walk(out, &p);
-        } else if p.extension().and_then(|e| e.to_str()) == Some("md") {
-            if std::fs::metadata(&p).map(|m| m.len() > 0).unwrap_or(false) {
-                out.push(p);
-            }
+        } else if p.extension().and_then(|e| e.to_str()) == Some("md")
+            && std::fs::metadata(&p).map(|m| m.len() > 0).unwrap_or(false)
+        {
+            out.push(p);
         }
     }
 }
