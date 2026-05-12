@@ -1,0 +1,154 @@
+name: Post-release smoke
+
+# v0.34.0 onboarding (PRD §6.8 FR-ONB-23 + §6.10 FR-ONB-32 +
+# docs/SMOKE-TESTS.md): the moment a GitHub Release is published,
+# walk through the install -> self-check -> self-upgrade --check-only
+# flow on a fresh runner for each supported OS. Failures here block
+# promoting the tag to `latest` (the release manager flips that flag
+# manually after this workflow goes green).
+#
+# Why a separate workflow instead of bolting onto `release.yml`?
+#   * release.yml runs BEFORE the binary is uploaded; we need to
+#     install via the published artifacts, which only exist after the
+#     release is published.
+#   * Smoke failures are diagnostics, not release blockers — the
+#     release itself succeeds; this workflow surfaces "tag is published
+#     but install path is broken" in a dedicated check.
+#
+# The matrix mirrors `cross-platform-smoke` in ci.yml so end-user
+# install parity stays gated on every supported platform.
+
+on:
+  release:
+    types: [published]
+  # Allow manual re-runs against a specific tag (handy when a prior
+  # run timed out on a flaky runner).
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to smoke (e.g. v0.34.0). Defaults to the latest published tag.'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: Smoke install (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Coral via install.sh (unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # When the workflow is triggered by a release, GITHUB_REF
+          # carries the tag; on manual dispatch, the user-supplied tag
+          # wins. Both fall back to invoking install.sh with no version
+          # pin (resolves `latest` on its own).
+          if [ -n "${{ inputs.tag }}" ]; then
+            CORAL_VERSION="${{ inputs.tag }}"
+          elif [ "${{ github.event_name }}" = "release" ]; then
+            CORAL_VERSION="${{ github.event.release.tag_name }}"
+          else
+            CORAL_VERSION=""
+          fi
+          echo "Installing Coral version: ${CORAL_VERSION:-latest}"
+          if [ -n "${CORAL_VERSION:-}" ]; then
+            curl -fsSL https://raw.githubusercontent.com/agustincbajo/Coral/main/scripts/install.sh \
+              | bash -s -- --version "$CORAL_VERSION"
+          else
+            curl -fsSL https://raw.githubusercontent.com/agustincbajo/Coral/main/scripts/install.sh \
+              | bash
+          fi
+
+      - name: Install Coral via install.ps1 (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $tag = if ('${{ inputs.tag }}') { '${{ inputs.tag }}' }
+                 elseif ('${{ github.event_name }}' -eq 'release') { '${{ github.event.release.tag_name }}' }
+                 else { '' }
+          Write-Output ("Installing Coral version: {0}" -f ($tag, 'latest' -ne '')[0])
+          $url = 'https://raw.githubusercontent.com/agustincbajo/Coral/main/scripts/install.ps1'
+          if ($tag) {
+            iwr -useb $url | iex
+            # install.ps1 doesn't yet accept a --version flag the same way;
+            # if the manual tag is set we re-install from the explicit asset URL.
+            $asset = "https://github.com/agustincbajo/Coral/releases/download/$tag/coral-windows-x86_64.zip"
+            Invoke-WebRequest -Uri $asset -OutFile coral.zip
+            Expand-Archive -Force coral.zip "$env:USERPROFILE\.coral\bin"
+          } else {
+            iwr -useb $url | iex
+          }
+
+      - name: Refresh PATH (unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          # install.sh drops the binary into ~/.coral/bin and patches the
+          # shell rc; in a fresh non-interactive workflow shell we have
+          # to add it ourselves so the smoke step can resolve `coral`.
+          echo "$HOME/.coral/bin" >> $GITHUB_PATH
+
+      - name: Refresh PATH (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Add-Content $env:GITHUB_PATH "$env:USERPROFILE\.coral\bin"
+
+      - name: Smoke `coral --version`
+        shell: bash
+        run: |
+          set -euo pipefail
+          coral --version
+
+      - name: Smoke `coral self-check --quick --format=json`
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT=$(coral self-check --format=json --quick)
+          # 8000-char envelope cap (FR-ONB-9). Fail loudly if a future
+          # build regresses the cap so the SessionStart hook would
+          # truncate silently.
+          if [ "${#OUT}" -gt 8000 ]; then
+            echo "::error::self-check --quick envelope exceeds 8000-char cap (${#OUT} chars)"
+            exit 1
+          fi
+          # Sanity: required keys per FR-ONB-6 / Appendix F.
+          echo "$OUT" | python3 -c "
+          import json, sys
+          d = json.load(sys.stdin)
+          for k in ('schema_version','coral_status','coral_version','in_path','platform'):
+              assert k in d, f'missing {k!r} in self-check envelope: {d}'
+          assert d['schema_version'] == 1, f\"schema_version != 1 (got {d['schema_version']!r})\"
+          assert d['coral_status'] in ('ok','degraded'), f\"unexpected status {d['coral_status']!r}\"
+          assert d['in_path'] is True, 'in_path != true after install'
+          "
+
+      - name: Smoke `coral doctor --non-interactive`
+        shell: bash
+        run: |
+          set -euo pipefail
+          coral doctor --non-interactive | python3 -c "
+          import json, sys
+          d = json.load(sys.stdin)
+          assert 'schema_version' in d, 'doctor --non-interactive missing schema_version (leaked legacy project-doctor format?)'
+          assert 'coral_status' in d, 'doctor --non-interactive missing coral_status'
+          "
+
+      - name: Smoke `coral self-upgrade --check-only`
+        shell: bash
+        run: |
+          set -euo pipefail
+          # `--check-only` queries the GitHub releases endpoint and
+          # reports up_to_date / update_available without downloading.
+          # Either outcome is acceptable; we only fail on non-zero exit.
+          coral self-upgrade --check-only
