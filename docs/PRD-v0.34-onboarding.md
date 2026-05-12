@@ -1,10 +1,27 @@
 # PRD — Coral v0.34: Zero-Friction Onboarding via Claude Code
 
-**Versión del documento:** 1.2 (post second-pass review independiente)
+**Versión del documento:** 1.3 (post third-pass adversarial review)
 **Fecha:** 2026-05-12
 **Autor:** Agustín Bajo
-**Estado:** Borrador validado, 2 iteraciones
+**Estado:** Borrador validado, 3 iteraciones
 **Versiones objetivo:** Coral v0.34.0 (M1, 6–8 semanas) → v0.34.x patches → v0.35.0 (M2 marketplace polish + daemon + wizard + i18n)
+
+**Cambios v1.2 → v1.3** (third-pass adversarial review; cada cambio verificado contra docs oficiales):
+
+*Bloqueos técnicos para implementación, verificados:*
+1. **FR-ONB-9 capea JSON output a <8000 chars + fallback**. Verificado en `code.claude.com/docs/en/hooks`: hook stdout inyectado como contexto tiene **cap de 10,000 chars**; si excede se guarda a archivo y reemplaza por preview + path → el routing del CLAUDE.md (que asume keys específicas en el JSON) **rompe silenciosamente**. Fix: `--quick` cap output a 8000 chars, fallback a `{"coral_status":"ok"}` si excede, test en CI.
+2. **FR-ONB-34 nuevo: `coral init` agrega `.coral/` y `.wiki/.bootstrap-state.json` a `.gitignore`**. Sin esto, primer user que corra `git add .` después de `coral init` commitea su Anthropic API key en `.coral/config.toml`. Security-critical.
+3. **FR-ONB-32 Windows-specific: rename-then-replace para self-upgrade**. Verificado: Windows no permite sobreescribir un `.exe` en ejecución (`ERROR_SHARING_VIOLATION`). Fix: descargar a `coral.exe.new`, rename running `coral.exe` → `coral.exe.old`, rename `.new` → `coral.exe`. Equivalente al patrón de rustup-init y Stripe CLI.
+
+*Tradeoffs no auditados, acknowledged:*
+4. **FR-ONB-25 valida tamaño de CLAUDE.md preexistente antes de append**. Verificado en `code.claude.com/docs/en/memory`: recomendación oficial <200 líneas para mantener adherence. Si CLAUDE.md existente > 150 líneas, `coral init` warn al user antes de append y ofrece `/coral:coral-doctor` slash command como fallback de routing.
+5. **§11 decisión #3 ampliada con caveat**: target ±15% en M2 depende de `n≥30` datapoints de feedback crowd-sourced — operacionalmente difícil sin telemetría. Fallback explícito: si n<30 al cerrar M2, target queda en ±25% (sin regresión vs M1) y M3 puede revisitar.
+6. **§16 DoD #3 reformulado como "best-effort routing"**: el comportamiento de Claude leyendo CLAUDE.md no es determinístico. Mecanismo primario sigue siendo CLAUDE.md + SessionStart hook combo; **fallback explícito**: `/coral:coral-doctor` slash command (`disable-model-invocation: true`) garantiza una entrada determinística para el user.
+7. **§7.2 cost model añade nota sobre prompt caching**: el estimate actual asume cero caching. Si bootstrap usa caching (5m cache write 1.25x, hits 0.1x), el cost real puede ser 30-50% menor. M2 puede calibrar con caching factored in.
+
+*Falsos hallazgos del third-pass review, refutados con docs oficiales:*
+- ❌ "El schema de `extraKnownMarketplaces` es object con alias keys". **FALSO.** Verificado en `code.claude.com/docs/en/settings`: es **array de marketplace objects** `[{"source":"github","repo":"..."}]`. El FR-ONB-26 v1.2 ya estaba correcto. Sin cambios.
+- ❌ "Hooks corren en paralelo y se deduplican por identical command". **NO documentado** en hooks reference; no diseñar asumiendo este behavior.
 
 **Cambios v1.1 → v1.2** (second-pass review, todos verificados contra docs oficiales de Claude Code):
 
@@ -405,13 +422,27 @@ Codificación: `FR-ONB-<n>`. Cada FR mapea a un mecanismo + a una persona.
 | `coral-doctor` skill | no existe | **NUEVA** — self-check + provider mini-wizard | Cierra F1, F3, sin-claude-CLI |
 | `/coral:coral-doctor` slash command | no existe | **NUEVO** — versión determinística | Power-user shortcut |
 
-- **FR-ONB-9** — Hook `SessionStart` ejecuta `${CLAUDE_PLUGIN_ROOT}/scripts/on-session-start.sh`. **Budget <100ms** (CI verifica). Comportamiento:
+- **FR-ONB-9** — Hook `SessionStart` ejecuta `${CLAUDE_PLUGIN_ROOT}/scripts/on-session-start.sh`. **Budget cross-platform: <150ms p95 Linux/macOS, <400ms p95 Windows** (Windows process spawn overhead es 50-200ms baseline). CI verifica con `hyperfine`. Comportamiento:
   - Early-exit si `coral` no en PATH (típico <10ms).
   - `--quick` flag salta probes lentos (MCP, UI, git fetch, update-available).
-  - `timeout 5` como hard cap.
-  - Output JSON estructurado; Claude lo lee y combina con `CLAUDE.md` para rutear.
+  - `timeout 5` como hard cap absoluto.
+  - **JSON output capped at 8000 chars** (verificado: docs oficiales especifican 10k cap en hook stdout inyectado a contexto; si excede se trunca con preview + file path → el routing del CLAUDE.md rompería silenciosamente). Si `coral self-check --quick` produce JSON > 8000 chars (e.g. muchos warnings), el wrapper bash emite **fallback minimal**:
+    ```bash
+    OUTPUT=$(timeout 5 coral self-check --format=json --quick 2>/dev/null)
+    if [ ${#OUTPUT} -gt 8000 ]; then
+      printf '{"coral_status":"ok","note":"full self-check output truncated; run /coral:coral-doctor"}'
+    else
+      printf '%s' "$OUTPUT"
+    fi
+    ```
+  - CI test verifica que `--quick` sobre repos representativos NUNCA excede 8000 chars en la implementación normal.
 
-- **FR-ONB-25 (NUEVO)** — `coral init` **genera `CLAUDE.md`** en el repo con instrucciones de routing (ver §3.3). **Append-safe**: si ya existe, añade sección `## Coral routing` al final si no está; si está, no-op.
+- **FR-ONB-25 (NUEVO)** — `coral init` **genera `CLAUDE.md`** en el repo con instrucciones de routing (ver §3.3). **Append-safe con size guard**:
+  - Si `CLAUDE.md` no existe → escribir template completo (~30 líneas).
+  - Si existe y NO tiene sección `## Coral routing` y existing_lines + 30 ≤ 200 → append sección.
+  - Si existe y NO tiene sección Y existing_lines > 150 → **warn al user**: *"Existing CLAUDE.md is X lines. Adding Coral routing (~30 lines) may exceed the 200-line recommendation that Anthropic suggests for adherence. Options: (a) append anyway, (b) skip and use /coral:coral-doctor slash command as fallback routing, (c) abort."* Default: option (b).
+  - Si ya tiene sección `## Coral routing` → no-op.
+  - Nunca sobrescribir contenido del user.
 
 - **FR-ONB-10** — Skill `coral-bootstrap` (actualizada): SIEMPRE ejecuta `coral bootstrap --estimate` ANTES de pedir confirmación. Mensaje:
   ```
@@ -525,8 +556,13 @@ Codificación: `FR-ONB-<n>`. Cada FR mapea a un mecanismo + a una persona.
   - Default: latest same-major (v0.34.x → v0.34.y).
   - `--check-only`: solo reporta `update_available`.
   - Major bumps (0.34 → 0.35) **requieren install.sh explícito** (anti-feature AF-9 — evita data-corruption silenciosa si schemas cambian).
-  - Implementación: re-ejecuta install script con `--version` target, in-place sobre el binary.
   - Self-upgrade NO toca el plugin (Claude Code lo auto-actualiza vía marketplace).
+  
+  **Implementación per-platform** (verificado: Windows no permite sobreescribir un `.exe` en ejecución → `ERROR_SHARING_VIOLATION`):
+  - **Linux/macOS**: descargar a `<install-dir>/coral.new`, verify SHA-256, atomic rename a `coral` (Unix permite reemplazo de inode mientras el viejo binary sigue corriendo desde memoria). Imprime: *"Upgraded. Next invocation will use v0.34.y."*
+  - **Windows**: descargar a `<install-dir>\coral.exe.new`, verify SHA-256, ejecutar (a) `MoveFileEx coral.exe → coral.exe.old` con `MOVEFILE_REPLACE_EXISTING`, (b) `MoveFileEx coral.exe.new → coral.exe`. Imprime: *"Upgraded. Restart your shell to use v0.34.y. The old binary will be removed on next reboot."* Si `coral.exe.old` está locked (otro proceso usando), schedule cleanup via `MoveFileEx(MOVEFILE_DELAY_UNTIL_REBOOT)`.
+  - Self-upgrade en Windows también imprime el hint Defender SmartScreen (FR-ONB-31).
+  - Post-upgrade: ejecuta `coral self-check` y reporta success/fail con el nuevo binary path.
 - **FR-ONB-33 (NUEVO)** — `coral self-uninstall`:
   ```bash
   coral self-uninstall [--keep-data]
@@ -536,6 +572,18 @@ Codificación: `FR-ONB-<n>`. Cada FR mapea a un mecanismo + a una persona.
   - Con `--keep-data`: mantiene `~/.coral/`.
   - NO toca `.wiki/` del repo (es del repo, no del binary).
   - Imprime: `*Plugin still registered in Claude Code. Remove with `/plugin uninstall coral@coral`.*`
+
+- **FR-ONB-34 (NUEVO)** — `coral init` **agrega entries a `.gitignore`** del repo. Security-critical (sin esto, `.coral/config.toml` con API keys termina commiteado en el primer `git add .`):
+  - Si `.gitignore` no existe → crearlo con:
+    ```
+    # Coral local data (do not commit)
+    .coral/
+    .wiki/.bootstrap-state.json
+    ```
+  - Si `.gitignore` existe Y no contiene `.coral/` → append esas líneas.
+  - Si `.gitignore` ya tiene esos entries → no-op.
+  - **Nunca remover** entries existentes del user.
+  - El template también añade `.coral/` al `.gitignore` global del user (`~/.config/git/ignore`) como sugerencia opcional con `--global-gitignore` flag, no por default.
 
 ---
 
@@ -669,6 +717,12 @@ pub fn estimate_cost(plan: &BootstrapPlan, provider: &Provider) -> CostEstimate 
 ```
 
 Calibración: medir **10 runs reales** en M1 (small Rust, mid TS, large Python, monorepo, OpenAPI, Ollama variant, etc.).
+
+**Nota sobre prompt caching** (Anthropic API): el cost model actual asume **cero caching**. Si el bootstrap usa prompt caching (5min cache write @ 1.25x base rate, hits @ 0.1x base rate), el cost real puede ser **30-50% menor** para repos donde múltiples páginas compartan contexto (ej: monorepo con un mismo README de raíz inyectado en cada página). M1 reporta upper-bound conservador (sin caching). M2 puede:
+- Añadir flag `--with-caching` que cambia el cost model a usar caching, o
+- Calibrar empíricamente runs con caching ON y reportar ambos números (with/without caching) en `--estimate`.
+
+Decision M1: reportar el upper-bound conservador (sin caching) en el message del skill, con nota *"Actual cost may be 30-50% lower if prompt caching is enabled (M2 will calibrate)."* Esto evita la sobre-promesa de "$0.42 baked" cuando el cost real es $0.20.
 
 ### 7.3 Nueva skill: `coral-doctor` + provider mini-wizard
 
@@ -831,7 +885,9 @@ Implementación:
 
 2. **`coral-onboard-prompt` skill triggers amplios?** → **RESUELTO: la skill se eliminó (v1.1)**. Usamos `SessionStart` hook (silencioso) + **`CLAUDE.md` template** (v1.2 fix). El combo cubre estado dinámico (hook) e instrucciones de routing estáticas (CLAUDE.md) — y `CLAUDE.md` es el único mecanismo documentado para que Claude responda correctamente al primer prompt sin que el user tenga que invocar una skill específica por nombre.
 
-3. **`coral bootstrap --estimate` llama al LLM?** → **RESUELTO: NO**. Heurísticas locales. M1 target ±25% con `n=10`; M2 calibra a ±15% con `n≥30` vía **opt-in `coral feedback submit`**: el comando imprime un JSON con (a) repo size + filetypes, (b) estimate generado, (c) actual cost de ese run. El user copia el JSON y lo pega en un GitHub Discussion del repo Coral. **No telemetry, no auto-send.** Calibración crowd-sourced explícita.
+3. **`coral bootstrap --estimate` llama al LLM?** → **RESUELTO: NO**. Heurísticas locales. M1 target ±25% con `n=10`; M2 **aspira** a ±15% con `n≥30` vía **opt-in `coral feedback submit`**: el comando imprime un JSON con (a) repo size + filetypes (sin filenames ni paths), (b) estimate generado, (c) actual cost de ese run, (d) coral_version + provider. El user copia el JSON y lo pega en un GitHub Discussion del repo Coral. **No telemetry, no auto-send.**
+  
+  **Caveat operacional (third-pass review)**: la calibración crowd-sourced sin telemetry es operacionalmente difícil — no hay scraper automático sobre GitHub Discussions API, hay sesgo de power-users, no hay anti-spam. **Fallback explícito**: si al cerrar M2 `n<30`, target M2 queda en ±25% (sin regresión vs M1); ±15% pasa a M3. La alternativa "telemetry opt-in con flag" sigue siendo anti-feature AF-1 (cero `phone home`). Acceptable hacer M2 best-effort sobre ±15% sin comprometer el AF-1.
 
 4. **`coral ui daemon` feature-gated?** → **RESUELTO: M2**. `daemonize` crate no soporta Windows; abstracción custom es scope creep. M1 usa `nohup`/`Start-Process` con degradation documentada (FR-ONB-18).
 
@@ -858,6 +914,11 @@ Implementación:
 | R9 (NUEVO) | Ollama path falla en M1 (E2E test inestable) | M | M | Test fixture mini-repo; si Ollama no instalado en runner, skip test con mensaje claro; documentar "Ollama experimental in M1, prod-ready in M2" |
 | R10 (NUEVO) | `coral bootstrap --resume` corrompe `.wiki/` si checkpoint schema cambia entre versiones | B | A | Schema-versioned checkpoint JSON; `--resume` aborta con mensaje claro si schema desactualizada; require misma versión de binary |
 | R11 (NUEVO) | `CLAUDE.md` ya existe en el repo y `coral init` rompe contenido del user | B | A | `coral init` detecta CLAUDE.md existente; **append** sección `## Coral routing` solo si no existe; nunca sobrescribir; test fixture con CLAUDE.md pre-existente |
+| R12 (NUEVO) | CLAUDE.md > 200 líneas tras append degrada adherence de TODAS las instrucciones del user, no solo las de Coral | M | M | FR-ONB-25 valida tamaño existente; warn al user si > 150 líneas; default skip append y ofrecer `/coral:coral-doctor` slash command como entry point determinístico |
+| R13 (NUEVO) | El JSON output del SessionStart hook excede 10k chars → trunca con preview, routing falla silencioso | M | A | FR-ONB-9 wrapper bash cap a 8000 chars + fallback `{"coral_status":"ok"}`; CI test sobre repos representativos |
+| R14 (NUEVO) | `coral self-upgrade` falla en Windows por lock sobre `.exe` en ejecución | A | A | FR-ONB-32 implementa rename-then-replace via `MoveFileEx`; documenta "restart shell required" en mensaje post-upgrade |
+| R15 (NUEVO) | `.coral/config.toml` con API keys se commitea por descuido del user | A | A | FR-ONB-34 obliga `coral init` a añadir `.coral/` a `.gitignore` (idempotente, append-safe); README pre-flight check documenta security model |
+| R16 (NUEVO) | El routing del CLAUDE.md NO es determinístico (Claude puede ignorar instructions); KPI "≤80% users complete onboarding" depende de probabilismo no medible en CI | M | A | DoD #3 reformulado como "best-effort"; mecanismo primario CLAUDE.md + hook combo; **fallback determinístico**: `/coral:coral-doctor` slash command con `disable-model-invocation: true` — documentado en CLAUDE.md template como "type this if Claude doesn't suggest anything" |
 
 ---
 
@@ -937,7 +998,7 @@ Semana 7–8 — Release + buffer
 
 1. `curl install.sh | bash` (sin flags) instala el binario v0.34.0 e imprime las **3 paste lines** + escribe `.coral/claude-paste.txt`. Tiempo total ≤ 60s.
 2. `curl install.sh | bash -s -- --with-claude-config` adicionalmente parchea `.claude/settings.json` del proyecto actual con `extraKnownMarketplaces` (backup atómico al directorio, idempotente). Imprime path del backup.
-3. Después del install + paste (o solo install con `--with-claude-config`), abrir Claude Code en el repo + **cualquier prompt del user** (incluyendo "hola") dispara la respuesta correcta de Claude routeada por **`CLAUDE.md`** (provista por `coral init`) + **`SessionStart` hook context**.
+3. Después del install + paste (o solo install con `--with-claude-config`), abrir Claude Code en el repo + **cualquier prompt del user** (incluyendo "hola") dispara — en best-effort — la respuesta correcta de Claude routeada por **`CLAUDE.md`** (provista por `coral init`) + **`SessionStart` hook context**. **Fallback determinístico**: el CLAUDE.md template instruye al user *"if Claude doesn't suggest a Coral action, type `/coral:coral-doctor`"* — ese slash command tiene `disable-model-invocation: true` y siempre dispara el flow del doctor sin gastar tokens.
 4. `coral bootstrap --estimate` muestra costo con **upper-bound explícito** y margen ±25% verificable contra 10 calibration runs reales.
 5. `coral bootstrap --max-cost=USD` aborta antes de pagar si `estimate.upper_bound > max-cost`, o aborta mid-flight con checkpoint si actual cost > max-cost; `coral bootstrap --resume` retoma desde checkpoint.
 6. `coral self-check --format=json` cubre **10 checks** incluyendo `providers_available`, `providers_configured`, `update_available`, `claude_md_present`.
@@ -949,9 +1010,12 @@ Semana 7–8 — Release + buffer
 12. CI matrix Linux + macOS + Windows todos verdes con E2E onboarding via `claude --print` mock.
 13. `plugin.json` y `marketplace.json` ambos en v0.34.0, sincronizados automáticamente por `release.yml` con `[skip ci]` guard.
 14. README tiene sección "Getting Started in 60 seconds" con GIF/video.
-15. **`CLAUDE.md` template provisto por `coral init`** es append-safe (no sobrescribe existente; añade sección `## Coral routing` solo si no está; no-op si ya está).
-16. **BC sagrada**: todas las skills/commands existentes (`coral-bootstrap`, `coral-query`, `coral-onboard`, `coral-ui`) siguen funcionando idénticas a v0.33.0; lo nuevo es aditivo.
-17. **Items movidos a M2 (NO bloquean M1)**: `coral ui daemon`, `coral project init --wizard`, ±15% estimate accuracy, marketplace submission a Anthropic, WebUI empty-state coaching, i18n ES.
+15. **`CLAUDE.md` template provisto por `coral init`** es append-safe con **size guard** (no sobrescribe existente; warn si pre-existente > 150 líneas y default skip append; ofrece `/coral:coral-doctor` slash command como fallback de routing; nunca degrada adherence del CLAUDE.md del user).
+16. **`coral init` agrega `.coral/` y `.wiki/.bootstrap-state.json` a `.gitignore`** del repo (security-critical, FR-ONB-34). Append-safe; nunca remueve entries existentes.
+17. **`coral self-upgrade` cross-platform** funciona en Windows via rename-then-replace (`MoveFileEx`), en Linux/macOS via atomic rename. Post-upgrade ejecuta `coral self-check` y reporta resultado.
+18. **SessionStart hook output cap a 8000 chars** (verificado vs 10k cap del hook injection en docs); fallback a JSON minimal si excede. CI test sobre repos representativos verifica que el cap nunca se hit en uso normal.
+19. **BC sagrada**: todas las skills/commands existentes (`coral-bootstrap`, `coral-query`, `coral-onboard`, `coral-ui`) siguen funcionando idénticas a v0.33.0; lo nuevo es aditivo.
+20. **Items movidos a M2 (NO bloquean M1)**: `coral ui daemon`, `coral project init --wizard`, ±15% estimate accuracy (best-effort, fallback ±25% si n<30 datapoints crowd-sourced), marketplace submission a Anthropic, WebUI empty-state coaching, i18n ES, cost model con prompt caching factored in.
 
 ---
 
@@ -1023,7 +1087,10 @@ Run a cost-confirmed wiki bootstrap for the current repo.
 
 ---
 
-*Fin del PRD v1.2 — incorpora 3 críticos + 8 medianos + 4 huecos cerrados del second-pass review independiente.*
+*Fin del PRD v1.3 — incorpora bloqueos técnicos del third-pass adversarial review.*
 
-*v1.0 → v1.1 (first-pass): Apéndice D.*
-*v1.1 → v1.2 (second-pass): cabecera.*
+*v1.0 → v1.1 (first-pass, architectural): Apéndice D.*
+*v1.1 → v1.2 (second-pass, UX/friction): cabecera bloque "v1.1 → v1.2".*
+*v1.2 → v1.3 (third-pass, adversarial técnico): cabecera bloque "v1.2 → v1.3".*
+
+3 iteraciones de revisión independiente. 16 riesgos auditados (R1-R16). 34 FRs codificados. Bloqueos técnicos verificados contra docs oficiales y resueltos. PRD listo para implementación M1.
