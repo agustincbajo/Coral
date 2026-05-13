@@ -15,5 +15,5 @@
 pub mod http_sse;
 pub mod stdio;
 
-pub use http_sse::{HttpSseTransport, serve_http_sse};
+pub use http_sse::{AuthConfig, HttpSseTransport, serve_http_sse};
 pub use stdio::serve_stdio;

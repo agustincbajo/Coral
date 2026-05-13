@@ -106,6 +106,51 @@ impl NotificationHub {
     }
 }
 
+/// v0.35 SEC-01 / CP-3: bearer-auth configuration for the HTTP
+/// transport. Pre-fix the HTTP transport had only an Origin allowlist
+/// + a 127.0.0.1 default bind; a user who followed the `--bind
+/// 0.0.0.0` warning exposed an unauthenticated tool-execution
+/// endpoint on the LAN.
+///
+/// `bind_label` records the bind address as a string so the auth
+/// check can decide whether to bypass token enforcement on loopback
+/// (matches the coral-ui pattern via the shared `coral_core::auth::
+/// is_loopback`). `expected_token` is `None` when no token was
+/// configured AND the bind is loopback (the "frictionless local dev"
+/// path) — in that case the auth gate is a no-op.
+///
+/// **Threat-model note (CP-5 pre-empt).** Auth is checked BEFORE the
+/// body is read and BEFORE the session table is touched, so a
+/// missing-token request returns 401 with O(1) work. Once CON-02's
+/// drain timeout lands, this ordering eliminates the "unauthenticated
+/// long-running request stalls shutdown" composition — an attacker
+/// cannot enqueue into the drain queue without first presenting the
+/// token.
+#[derive(Debug, Clone)]
+pub struct AuthConfig {
+    /// Expected bearer token. `None` means no token was configured —
+    /// auth becomes a no-op on loopback binds, and a misconfiguration
+    /// (`None` + non-loopback bind) errors at `bind_with_auth` time
+    /// rather than per-request.
+    pub expected_token: Option<String>,
+    /// Stringified bind address (`"127.0.0.1"`, `"0.0.0.0"`, `"::1"`,
+    /// …). Compared against the shared `is_loopback` helper to decide
+    /// whether the loopback bypass applies.
+    pub bind_label: String,
+}
+
+impl AuthConfig {
+    /// Convenience: an unauthenticated config (only valid for
+    /// loopback binds). Used by tests and by the
+    /// backwards-compatible `HttpSseTransport::bind` constructor.
+    pub fn unauth_loopback() -> Self {
+        Self {
+            expected_token: None,
+            bind_label: "127.0.0.1".to_string(),
+        }
+    }
+}
+
 /// Public handle for the bound HTTP/SSE transport. Tests use
 /// [`Self::local_addr`] when binding to port 0.
 pub struct HttpSseTransport {
@@ -118,13 +163,62 @@ pub struct HttpSseTransport {
     /// for SSE notifications. Populated by the dispatcher thread
     /// spawned in [`Self::bind`].
     notifications: Arc<NotificationHub>,
+    /// v0.35 SEC-01: bearer-auth configuration. `Arc` so the
+    /// per-request `handle_request` dispatch can share without
+    /// cloning the token string per call.
+    auth: Arc<AuthConfig>,
 }
 
 impl HttpSseTransport {
-    /// Bind a `tiny_http::Server` to `addr` and return a handle ready
-    /// for [`Self::serve_blocking`]. Bind errors (`EADDRINUSE`, etc.)
-    /// surface as plain `io::Error`.
+    /// Bind a `tiny_http::Server` to `addr` with no bearer-auth gate
+    /// (loopback-only). Bind errors (`EADDRINUSE`, etc.) surface as
+    /// plain `io::Error`. Delegates to [`Self::bind_with_auth`] with
+    /// an [`AuthConfig::unauth_loopback`] — callers that need a real
+    /// token (i.e. anything that goes off-loopback) MUST use
+    /// `bind_with_auth` directly.
+    ///
+    /// Kept as the v0.21+ public API so the existing e2e tests and
+    /// the `serve_http_sse` shortcut keep working unchanged.
     pub fn bind(addr: SocketAddr, handler: Arc<McpHandler>) -> io::Result<Self> {
+        Self::bind_with_auth(addr, handler, AuthConfig::unauth_loopback())
+    }
+
+    /// v0.35 SEC-01: bind with an explicit [`AuthConfig`]. Use this
+    /// from the CLI when wiring `coral mcp serve --transport http
+    /// --token <hex>` so every dispatch path enforces the bearer.
+    ///
+    /// Validates the config at bind time:
+    /// - non-loopback `bind_label` + `expected_token == None` →
+    ///   `io::Error` (matches the coral-ui pre-flight bail). This
+    ///   catches the misconfiguration on startup instead of letting
+    ///   every request 500 at runtime.
+    /// - loopback + no token → unauthenticated (back-compat path).
+    /// - any bind + `Some(token)` → token enforced on every request
+    ///   under `/mcp` (the `.well-known/mcp/server-card.json`
+    ///   discovery endpoint stays public by design).
+    pub fn bind_with_auth(
+        addr: SocketAddr,
+        handler: Arc<McpHandler>,
+        auth: AuthConfig,
+    ) -> io::Result<Self> {
+        if auth.expected_token.is_none()
+            && !coral_core::auth::is_loopback(&auth.bind_label)
+        {
+            return Err(io::Error::other(format!(
+                "coral mcp serve: bind {bind} is non-loopback but no --token was \
+                 configured. Pass --token <hex> (or set CORAL_MCP_TOKEN) before \
+                 starting the server, or bind to 127.0.0.1.",
+                bind = auth.bind_label,
+            )));
+        }
+        Self::bind_inner(addr, handler, Arc::new(auth))
+    }
+
+    fn bind_inner(
+        addr: SocketAddr,
+        handler: Arc<McpHandler>,
+        auth: Arc<AuthConfig>,
+    ) -> io::Result<Self> {
         let server = tiny_http::Server::http(addr).map_err(|e| {
             io::Error::other(format!(
                 "could not bind MCP HTTP transport to {addr}: {e}. \
@@ -177,6 +271,7 @@ impl HttpSseTransport {
             active: Arc::new(AtomicUsize::new(0)),
             local_addr,
             notifications,
+            auth,
         })
     }
 
@@ -197,6 +292,7 @@ impl HttpSseTransport {
             sessions,
             active,
             notifications,
+            auth,
             ..
         } = self;
         for request in server.incoming_requests() {
@@ -204,6 +300,7 @@ impl HttpSseTransport {
             let sessions = Arc::clone(&sessions);
             let active = Arc::clone(&active);
             let notifications = Arc::clone(&notifications);
+            let auth = Arc::clone(&auth);
             // Enforce the concurrent-handler cap. We pre-increment
             // and check, then decrement either when the handler
             // returns or in the "too many" branch.
@@ -223,7 +320,9 @@ impl HttpSseTransport {
                 .name("coral-mcp-http".to_string())
                 .spawn(move || {
                     let _guard = ActiveGuard(active_for_guard);
-                    if let Err(e) = handle_request(request, &handler, &sessions, &notifications) {
+                    if let Err(e) =
+                        handle_request(request, &handler, &sessions, &notifications, &auth)
+                    {
                         tracing::warn!(error = %e, "MCP HTTP request handler error");
                     }
                 });
@@ -260,13 +359,18 @@ fn handle_request(
     handler: &McpHandler,
     sessions: &Arc<Mutex<HashMap<String, Instant>>>,
     notifications: &Arc<NotificationHub>,
+    auth: &AuthConfig,
 ) -> io::Result<()> {
     reap_expired_sessions(sessions);
 
     let method = request.method().clone();
     let url = request.url().to_string();
 
-    // CORS preflight — answered before any other validation.
+    // CORS preflight — answered before any other validation. CORS
+    // preflight intentionally bypasses auth: browsers MUST be able to
+    // probe the allow-headers list before they can supply the
+    // Authorization header on the real request. The preflight reveals
+    // nothing beyond "this URL exists and accepts POST/GET/DELETE".
     if matches!(method, tiny_http::Method::Options) {
         return respond_options(request);
     }
@@ -305,6 +409,38 @@ fn handle_request(
             "application/json",
             r#"{"error":"not found; MCP transport is mounted at /mcp"}"#,
         );
+    }
+
+    // v0.35 SEC-01 / CP-3 / CP-5 pre-empt: bearer-auth check happens
+    // BEFORE Origin validation, BEFORE Accept negotiation, BEFORE the
+    // body is read, and BEFORE the session table is touched. An
+    // unauthenticated request burns O(1) work — a single header lookup
+    // + constant-time compare — before getting 401, so a malformed
+    // payload cannot DoS the dispatcher pre-auth. (Pairs with the Q-C1
+    // parking_lot migration in the same PR: a panic in the auth-check
+    // path would no longer poison the session table, but the auth
+    // check itself is non-panicking by construction.)
+    //
+    // Loopback bypass: when `expected_token` is `None` and the bind is
+    // loopback, the gate is a no-op — matches the coral-ui pattern
+    // for "frictionless local dev". Off-loopback without a token is
+    // rejected at `bind_with_auth` time, so this arm cannot reach a
+    // running server.
+    if let Some(expected) = auth.expected_token.as_deref() {
+        let provided = header_value(request.headers(), "Authorization");
+        if let Err(e) = coral_core::auth::verify_bearer(provided.as_deref(), expected.as_bytes()) {
+            tracing::warn!(
+                error = e.label(),
+                bind = auth.bind_label.as_str(),
+                "MCP HTTP request rejected: bearer auth failed"
+            );
+            return respond_simple(
+                request,
+                401,
+                "application/json",
+                r#"{"error":"unauthorized; pass Authorization: Bearer <token>"}"#,
+            );
+        }
     }
 
     // Origin validation (DNS-rebinding mitigation per MCP spec).
