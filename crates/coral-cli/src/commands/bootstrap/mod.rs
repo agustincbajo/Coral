@@ -479,6 +479,43 @@ fn apply_pages(
                 continue;
             }
         };
+
+        // SEC-06: the LLM-emitted body is structurally untrusted —
+        // an attacker that controls a repo file the planner reads can
+        // try to coax the bootstrap LLM into emitting prompt-injection
+        // markers (`<|system|>`, `Authorization: Bearer …`, etc.).
+        // Run `coral_lint::structural::check_injection` and refuse to
+        // commit a page that trips it. The same defense is already
+        // applied to wiki bodies that downstream commands fence into
+        // LLM prompts (see commands/common/untrusted_fence.rs); we
+        // now enforce it AT INGEST time so the poisoned content never
+        // lands on disk.
+        let injection_hits =
+            coral_lint::structural::check_injection(std::slice::from_ref(&page));
+        if !injection_hits.is_empty() {
+            let detail = injection_hits
+                .iter()
+                .filter_map(|h| h.context.clone())
+                .collect::<Vec<_>>()
+                .join(",");
+            tracing::warn!(
+                slug = %entry.slug,
+                hits = %detail,
+                "page: SEC-06 injection check tripped; refusing to write"
+            );
+            eprintln!(
+                "warn: refusing to write `{}`: bootstrap LLM body tripped \
+                 prompt-injection check ({detail}). Re-run `coral bootstrap \
+                 --resume` once the source files have been reviewed.",
+                entry.slug
+            );
+            state.pages[i].status = PageStatus::Failed;
+            state.pages[i].error = Some(format!("injection check: {detail}"));
+            state.save_atomic(root)?;
+            skipped.push(entry.slug.clone());
+            continue;
+        }
+
         page.write()?;
         let rel_path = page_relative_path(root, page.frontmatter.page_type, &page.frontmatter.slug);
         index.upsert(IndexEntry {
