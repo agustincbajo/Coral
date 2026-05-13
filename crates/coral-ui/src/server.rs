@@ -499,10 +499,7 @@ fn respond_static(request: Request, r: static_assets::StaticResponse) {
 
 fn json_header() -> Header {
     // Static ASCII header name + value.
-    #[allow(
-        clippy::expect_used,
-        reason = "static ASCII Content-Type header"
-    )]
+    #[allow(clippy::expect_used, reason = "static ASCII Content-Type header")]
     Header::from_bytes(b"Content-Type" as &[u8], b"application/json" as &[u8])
         .expect("valid header")
 }

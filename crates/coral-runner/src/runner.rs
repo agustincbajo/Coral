@@ -167,10 +167,9 @@ pub(crate) fn scrub_secrets(text: &str) -> String {
             clippy::expect_used,
             reason = "static regex literal; validity guarded by unit tests"
         )]
-        let r = regex::Regex::new(
-            r"(?i)(?:authorization|x-api-key)\s*:\s*\S+(?:\s+\S+)?|bearer\s+\S+",
-        )
-        .expect("valid regex");
+        let r =
+            regex::Regex::new(r"(?i)(?:authorization|x-api-key)\s*:\s*\S+(?:\s+\S+)?|bearer\s+\S+")
+                .expect("valid regex");
         r
     });
     re.replace_all(text, "<redacted>").to_string()

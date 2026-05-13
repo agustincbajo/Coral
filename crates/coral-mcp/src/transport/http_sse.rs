@@ -1032,10 +1032,7 @@ fn reap_expired_sessions(sessions: &Arc<Mutex<HashMap<String, Instant>>>) {
 /// a freshly-launched process when nextest runs many test binaries in
 /// parallel — the flake originally enumerated as Cat D in the v0.36
 /// Windows nextest handoff).
-fn reap_expired_sessions_with_ttl(
-    sessions: &Arc<Mutex<HashMap<String, Instant>>>,
-    ttl: Duration,
-) {
+fn reap_expired_sessions_with_ttl(sessions: &Arc<Mutex<HashMap<String, Instant>>>, ttl: Duration) {
     let now = Instant::now();
     let mut guard = sessions.lock();
     guard.retain(|_, last_seen| now.saturating_duration_since(*last_seen) < ttl);

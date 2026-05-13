@@ -117,10 +117,7 @@ impl ApiError {
 fn json_content_type() -> Header {
     // Static ASCII header name + value — valid by RFC 7230 token rules,
     // verified by the from_bytes contract.
-    #[allow(
-        clippy::expect_used,
-        reason = "static ASCII Content-Type header"
-    )]
+    #[allow(clippy::expect_used, reason = "static ASCII Content-Type header")]
     Header::from_bytes(b"Content-Type" as &[u8], b"application/json" as &[u8])
         .expect("valid content-type header")
 }

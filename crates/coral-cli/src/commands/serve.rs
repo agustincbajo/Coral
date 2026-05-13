@@ -114,10 +114,7 @@ fn handle_request(request: tiny_http::Request, pages: &[Page]) {
     // RFC 7230 token + field-value bytes, so `from_bytes` is infallible
     // here. Surface failure as a panic only because there is no caller
     // to bubble it to (this is the request-handler hot path).
-    #[allow(
-        clippy::expect_used,
-        reason = "static ASCII header name + value"
-    )]
+    #[allow(clippy::expect_used, reason = "static ASCII header name + value")]
     let header =
         tiny_http::Header::from_bytes(b"Content-Type" as &[u8], response.content_type.as_bytes())
             .expect("valid header");
