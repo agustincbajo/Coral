@@ -1,0 +1,136 @@
+name: Bench — mimalloc allocator baseline
+
+# v0.37-prep follow-up to ADR-0012. The v0.36 baseline measured mimalloc
+# vs the system allocator on Windows MSVC (host: a developer laptop) and
+# recorded +29-43% wins across three production hot paths. That ADR was
+# promoted to "Accepted, baseline measured" — single platform.
+#
+# This workflow re-runs the same `crates/coral-core/benches/allocator.rs`
+# harness on ubuntu-latest and macos-latest so the cross-platform delta
+# is also a captured artefact. Windows numbers exist in
+# `docs/bench/MIMALLOC-BASELINE-2026-05-13.md` and are not re-measured
+# here (the developer laptop run is the reference and stable).
+#
+# The bench is expensive (~5 minutes per workload × 2 variants × 2
+# matrix rows ≈ 30+ minutes wallclock), so we do NOT run it on every
+# push. Two triggers:
+#   * `workflow_dispatch` — manual via the Actions UI, used during
+#     v0.37-prep to capture the initial Linux/macOS numbers.
+#   * `schedule` weekly — drifts a CI artefact so allocator regressions
+#     introduced by a Cargo bump or upstream mimalloc release are seen
+#     within 7 days instead of "next time someone looks."
+#
+# Both runs publish criterion's HTML reports + a plain-text summary as
+# artefacts. The summary is also written to the run's $GITHUB_STEP_SUMMARY
+# so the diff is visible in the Actions UI without downloading anything.
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 04:30 UTC every Monday — between the nightly real-API smoke
+    # (05:00 daily) and the scorecard cron, so the runner queue is
+    # cold and noise floor low.
+    - cron: '30 4 * * 1'
+
+env:
+  RUST_BACKTRACE: 1
+  # Criterion picks up CARGO_TERM_COLOR=never to print plain text that
+  # we can grep for the median lines without ANSI escapes. The artefact
+  # uploaded as `bench-output.txt` is what the docs reference.
+  CARGO_TERM_COLOR: never
+
+jobs:
+  bench:
+    name: Bench (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    # 45 min ceiling — measured ~30 min on a clean cache; the buffer
+    # absorbs cold-cache toolchain installs.
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: bench-allocator-${{ matrix.os }}
+
+      # Build once with each feature variant before measuring. Criterion
+      # respects a warm target/ but the first build emits a wall of
+      # compile output that pollutes the bench logs.
+      - name: cargo build --bench allocator (mimalloc)
+        run: cargo build --release --bench allocator -p coral-core
+
+      - name: cargo build --bench allocator (system_alloc)
+        run: cargo build --release --bench allocator -p coral-core --features system_alloc
+
+      # ─── Measurement run 1: mimalloc (production allocator) ─────
+      #
+      # Criterion writes baseline samples to target/criterion/. Saving
+      # this with `--save-baseline mimalloc` lets the second run produce
+      # a change-detection comparison (the `change: [...]` lines in the
+      # v0.36 doc) without us re-implementing the math.
+      - name: cargo bench (mimalloc baseline)
+        run: |
+          cargo bench --bench allocator -p coral-core -- \
+            --save-baseline mimalloc 2>&1 | tee bench-mimalloc.txt
+
+      # ─── Measurement run 2: system allocator, compared to mimalloc ─
+      - name: cargo bench (system_alloc, compare vs mimalloc)
+        run: |
+          cargo bench --bench allocator -p coral-core --features system_alloc -- \
+            --baseline mimalloc 2>&1 | tee bench-system.txt
+
+      # ─── Summary ────────────────────────────────────────────────
+      #
+      # Extract the `time:` and `change:` lines per workload and write
+      # them to the run summary. This is the bit a human pastes into
+      # the doc when the workflow_dispatch run completes.
+      - name: Generate run summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "## mimalloc baseline — ${{ matrix.os }}"
+            echo
+            echo "### mimalloc (production allocator)"
+            echo
+            echo '```'
+            grep -E "^(allocator/|time:|change:)" bench-mimalloc.txt || \
+              echo "(no median lines found; see artefact)"
+            echo '```'
+            echo
+            echo "### system allocator (compared vs mimalloc baseline)"
+            echo
+            echo '```'
+            grep -E "^(allocator/|time:|change:)" bench-system.txt || \
+              echo "(no median lines found; see artefact)"
+            echo '```'
+            echo
+            echo "Full criterion HTML reports are uploaded as an artefact."
+          } | tee bench-summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      # Upload the raw text so the docs/ commit can quote exact numbers
+      # without re-running the bench locally.
+      - name: Upload bench text output
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-output-${{ matrix.os }}
+          path: |
+            bench-mimalloc.txt
+            bench-system.txt
+            bench-summary.md
+          retention-days: 90
+
+      # Criterion HTML reports — useful for the deep-dive view. Large
+      # (~5 MB per workload × 3 workloads × 2 baselines), retain shorter.
+      - name: Upload criterion HTML reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: criterion-reports-${{ matrix.os }}
+          path: target/criterion/**/report.html
+          retention-days: 30
