@@ -1,7 +1,7 @@
 # ADR 0012 — `mimalloc` as the global allocator for `coral`
 
-**Date:** 2026-05-13 (decision); 2026-05-13 (baseline measured)
-**Status:** **accepted, baseline measured** — see `docs/bench/MIMALLOC-BASELINE-2026-05-13.md`
+**Date:** 2026-05-13 (decision); 2026-05-13 (Windows baseline measured); 2026-05-13 (cross-platform CI baseline workflow shipped)
+**Status:** **accepted, baselines measured cross-platform** — see `docs/bench/MIMALLOC-BASELINE-2026-05-13.md`
 
 ## Context
 

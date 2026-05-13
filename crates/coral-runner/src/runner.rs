@@ -750,6 +750,11 @@ mod tests {
         (dir, path)
     }
 
+    // Windows note: these tests invoke `/bin/echo` and `/usr/bin/false`
+    // directly. Coverage of runner error-paths on Windows is via
+    // integration tests; unit-level checks stay POSIX. See Cat B in
+    // `docs/audits/HANDOFF-7-WINDOWS-NEXTEST-2026-05-13.md`.
+    #[cfg(unix)]
     #[test]
     fn claude_runner_uses_echo_substitute() {
         let r = ClaudeRunner::with_binary("/bin/echo");
@@ -899,6 +904,7 @@ mod tests {
         assert!(matches!(err, RunnerError::NotFound));
     }
 
+    #[cfg(unix)]
     #[test]
     fn claude_runner_non_zero_returns_error() {
         // /usr/bin/false exists on both macOS and Linux; /bin/false is missing on macOS.

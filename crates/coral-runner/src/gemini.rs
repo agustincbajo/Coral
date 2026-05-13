@@ -280,6 +280,12 @@ mod tests {
         assert!(matches!(err, RunnerError::NotFound));
     }
 
+    // Windows note: tests that invoke `/bin/echo` or `/usr/bin/false` are
+    // Unix-only. Coverage of the runner error-paths on Windows is via
+    // integration tests / fixture binaries; the unit-level checks here
+    // keep their original POSIX semantics. See Cat B in
+    // `docs/audits/HANDOFF-7-WINDOWS-NEXTEST-2026-05-13.md`.
+    #[cfg(unix)]
     #[test]
     fn gemini_runner_runs_against_echo_substitute_with_real_args() {
         // /bin/echo doesn't understand -p / -m, but it does echo whatever
@@ -308,6 +314,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn gemini_runner_non_zero_returns_error() {
         let r = GeminiRunner::with_binary("/usr/bin/false");
@@ -322,6 +329,7 @@ mod tests {
 
     /// v0.19.6 audit H2: stderr that contains a bearer-shaped header
     /// must be scrubbed before being wrapped in `RunnerError::*`.
+    #[cfg(unix)]
     #[test]
     fn gemini_runner_non_zero_scrubs_bearer_token_from_error() {
         use std::io::Write as _;

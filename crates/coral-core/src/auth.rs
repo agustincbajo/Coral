@@ -117,7 +117,10 @@ pub fn mint_bearer_token() -> String {
         use std::fmt::Write as _;
         // `write!` to a String only fails on OOM, which would already
         // have killed the process — `expect` is appropriate.
-        write!(&mut s, "{b:02x}").expect("hex format must not fail");
+        #[allow(clippy::expect_used, reason = "write! to String is infallible except on OOM")]
+        {
+            write!(&mut s, "{b:02x}").expect("hex format must not fail");
+        }
     }
     s
 }

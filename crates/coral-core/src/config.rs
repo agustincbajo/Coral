@@ -465,12 +465,14 @@ fn merge_section(doc: &mut toml::Value, section: &str, value: toml::Value) -> Re
         let entry = current
             .entry(key.to_string())
             .or_insert_with(|| toml::Value::Table(toml::value::Table::new()));
-        if !entry.is_table() {
-            return Err(CoralError::Manifest(format!(
+        // `as_table_mut()` returns `None` iff the entry isn't a table; we
+        // surface that as a `Manifest` error rather than panicking so the
+        // CLI can report which key collided.
+        current = entry.as_table_mut().ok_or_else(|| {
+            CoralError::Manifest(format!(
                 "section path collides with non-table value at `{key}`"
-            )));
-        }
-        current = entry.as_table_mut().expect("just checked is_table");
+            ))
+        })?;
     }
 
     let final_key = parts[parts.len() - 1].to_string();

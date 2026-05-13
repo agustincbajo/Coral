@@ -104,6 +104,64 @@ cargo bench --bench allocator -p coral-core --features system_alloc
 Criterion writes HTML reports to `target/criterion/`. Median lines
 above were taken from the terminal `time: [low, mid, high]` output.
 
+## Linux + macOS baselines (CI-generated, v0.37-prep)
+
+A CI workflow now runs the same `crates/coral-core/benches/allocator.rs`
+harness on `ubuntu-latest` and `macos-latest`:
+
+- Workflow: [`.github/workflows/bench-allocator.yml`](../../.github/workflows/bench-allocator.yml).
+- Triggers: `workflow_dispatch` (manual, used to capture the initial
+  numbers below) and a weekly cron (Mondays 04:30 UTC) so regressions
+  introduced by a Cargo bump or upstream mimalloc release are caught
+  within 7 days.
+- Output: `bench-mimalloc.txt`, `bench-system.txt`, and
+  `bench-summary.md` are uploaded as run artefacts (90-day retention);
+  criterion HTML reports are also uploaded (30-day retention).
+
+### Results
+
+> **Status (v0.37-prep, 2026-05-13):** workflow created and committed
+> in this sprint. First `workflow_dispatch` run pending — operator to
+> trigger from the Actions UI and paste the median lines from the
+> `bench-summary.md` artefact into the two tables below. The table
+> shape is identical to the Windows results above so cross-platform
+> comparison is a one-glance read.
+
+#### Linux (ubuntu-latest, glibc `ptmalloc2`)
+
+| Workload | mimalloc (median) | system (median) | mimalloc speedup |
+|----------|-------------------|------------------|------------------|
+| A — TF-IDF 100 pages, 2-token query        | _pending_ | _pending_ | _pending_ |
+| B — page parse, 50 docs                    | _pending_ | _pending_ | _pending_ |
+| C — JSON Value 10 routes × 5 props         | _pending_ | _pending_ | _pending_ |
+
+#### macOS (macos-latest, `libsystem_malloc`)
+
+| Workload | mimalloc (median) | system (median) | mimalloc speedup |
+|----------|-------------------|------------------|------------------|
+| A — TF-IDF 100 pages, 2-token query        | _pending_ | _pending_ | _pending_ |
+| B — page parse, 50 docs                    | _pending_ | _pending_ | _pending_ |
+| C — JSON Value 10 routes × 5 props         | _pending_ | _pending_ | _pending_ |
+
+### Cross-platform expectation
+
+Prior to running, the predicted shape (based on each system allocator's
+known performance characteristics on the "many small allocations" path)
+is:
+
+| Platform | System allocator | Expected mimalloc win | Note |
+|----------|------------------|------------------------|------|
+| Windows MSVC | msvcrt `HeapAlloc` | Large (measured: +29–43%) | HeapAlloc has historically been the weakest mainstream malloc for small-object churn; the v0.36 numbers above match prior published benchmarks. |
+| Linux | glibc `ptmalloc2` | Moderate (estimated: +10–25%) | ptmalloc2 is reasonably competitive on multi-thread small-object workloads; mimalloc's typical published win on this shape sits in the +15–20% range. |
+| macOS | libsystem `nano_malloc` | Moderate (estimated: +10–25%) | Apple's nano-allocator path is fast on small allocations but still slower than mimalloc's thread-local freelist; published deltas land near Linux's. |
+
+If the measured Linux + macOS numbers stay above the +10% lower bound
+of ADR-0012's original claim, the cross-platform decision to keep
+mimalloc is confirmed unconditionally. If either platform falls below
++5% on all three workloads, ADR-0012 should be revisited as a
+platform-specific decision (mimalloc on Windows only) — see the
+"Re-evaluation triggers" section of ADR-0012.
+
 ## Follow-up tracked
 
 - **v0.36 portfolio review:** the wins are big enough that the
@@ -114,6 +172,8 @@ above were taken from the terminal `time: [low, mid, high]` output.
   binary inherits it transitively, but `coral mcp serve` running as
   a sibling process via stdio transport does not. Worth investigating
   in v0.36.x.
-- **Linux re-run in CI.** Add a `make bench-allocator` target that
-  runs the same workloads on `ubuntu-latest` and commits a sibling
-  `MIMALLOC-BASELINE-linux-YYYY-MM-DD.md` for cross-platform parity.
+- **Linux re-run in CI.** ✅ Shipped in v0.37-prep
+  (`.github/workflows/bench-allocator.yml`). The original sketch
+  proposed a `make bench-allocator` target writing a sibling
+  `MIMALLOC-BASELINE-linux-YYYY-MM-DD.md`; we collapsed that into the
+  cross-platform sections above so the comparison lives in one file.

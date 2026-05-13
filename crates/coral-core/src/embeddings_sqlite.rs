@@ -64,6 +64,16 @@ impl SqliteEmbeddingsIndex {
 
     /// In-memory database for tests. Provider/dim are taken verbatim and stored
     /// into `meta` so behaviour matches an on-disk open.
+    ///
+    /// # Panics
+    ///
+    /// Panics if SQLite cannot allocate an in-memory database or if the
+    /// schema creation fails — both indicate the SQLite library itself
+    /// is broken and the process cannot proceed. Used in tests only.
+    #[allow(
+        clippy::expect_used,
+        reason = "test-only constructor; in-memory sqlite failure is unrecoverable"
+    )]
     pub fn empty(provider: &str, dim: usize) -> Self {
         let conn = Connection::open_in_memory().expect("in-memory sqlite open");
         let mut me = Self {

@@ -253,6 +253,11 @@ mod tests {
         assert!(matches!(err, RunnerError::NotFound));
     }
 
+    // Windows note: these tests invoke `/bin/echo` and `/usr/bin/false`
+    // directly. Coverage of runner error-paths on Windows is via
+    // integration tests; unit-level checks stay POSIX. See Cat B in
+    // `docs/audits/HANDOFF-7-WINDOWS-NEXTEST-2026-05-13.md`.
+    #[cfg(unix)]
     #[test]
     fn local_runner_runs_against_echo_substitute_with_real_args() {
         // /bin/echo doesn't understand llama flags, but it does echo whatever
@@ -276,6 +281,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn local_runner_non_zero_returns_error() {
         let r = LocalRunner::with_binary("/usr/bin/false");
@@ -294,6 +300,7 @@ mod tests {
     /// shell script that prints a fake `Authorization: Bearer …` line
     /// and exits non-zero — the resulting `RunnerError::NonZeroExit`'s
     /// stderr must NOT contain the secret.
+    #[cfg(unix)]
     #[test]
     fn local_runner_non_zero_scrubs_bearer_token_from_error() {
         use std::io::Write as _;

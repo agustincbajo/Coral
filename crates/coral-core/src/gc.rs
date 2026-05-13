@@ -129,6 +129,16 @@ pub fn render_markdown(report: &GcReport) -> String {
 }
 
 /// Renders a [`GcReport`] as pretty-printed JSON.
+///
+/// # Panics
+///
+/// Never panics — `GcReport` is a plain `#[derive(Serialize)]` struct with
+/// no failure modes (no `serialize_with` closures, no maps with
+/// non-string keys). The `expect` is documentation, not error handling.
+#[allow(
+    clippy::expect_used,
+    reason = "GcReport is a pure data struct; serde_json cannot fail"
+)]
 pub fn render_json(report: &GcReport) -> String {
     serde_json::to_string_pretty(report).expect("GcReport is always serializable")
 }
