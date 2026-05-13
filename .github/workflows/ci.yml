@@ -73,22 +73,35 @@ jobs:
             -A clippy::panic
 
   clippy-panic-risk:
-    # v0.35 Phase C — informational job. Counts the new workspace
-    # clippy lints on lib + bins (production code, not tests). The
-    # count is logged but does NOT fail the build — the strict job
-    # above is the gate. BACKLOG.md tracks the ratchet plan; this
-    # job is the CI-side telemetry.
-    name: Clippy (panic-risk informational)
+    # v0.35 Phase C introduced workspace `unwrap_used` / `expect_used` /
+    # `panic` lints as warn-only. v0.36 dev batch took the production
+    # count 104 -> 45 (-57%) via test-fixture #[allow] + safe-by-
+    # construction unwraps. v0.37 prep ratchet took 45 -> 0 by
+    # replacing remaining `?`-eligible sites with proper error
+    # surfaces and gating documented sites with per-call #[allow]
+    # + reason= justifications.
+    #
+    # As of v0.37 this job is now a HARD gate on production code
+    # (lib + bins). Tests still allow these lints via module-level
+    # `#[allow]` because test fixtures legitimately need unwrap on
+    # known-good inputs; that's why we scope to `--lib --bins` here.
+    # The first `clippy` job above remains the workspace gate (all
+    # targets) with these three lints suppressed there.
+    #
+    # If you legitimately need a new unwrap/expect/panic in
+    # production code, add a per-call `#[allow(clippy::*, reason =
+    # "...")]` with a one-line justification. Do NOT downgrade the
+    # workspace lint level.
+    name: Clippy (panic-risk, production-only)
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - name: cargo clippy --lib --bins (warn-only)
-        run: cargo clippy --workspace --lib --bins --no-deps
+      - name: cargo clippy --lib --bins (deny warnings on production)
+        run: cargo clippy --workspace --lib --bins --no-deps -- -D warnings
 
   test:
     name: Test (stable)
