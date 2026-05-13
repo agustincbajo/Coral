@@ -305,10 +305,18 @@ impl HttpSseTransport {
             let inflight = active.fetch_add(1, Ordering::SeqCst) + 1;
             if inflight > MAX_CONCURRENT_HANDLERS {
                 active.fetch_sub(1, Ordering::SeqCst);
+                // v0.35 Phase C (CP-2 follow-up): the body is a JSON
+                // envelope (`{"error":"..."}`) so the Content-Type
+                // must be `application/json`. Pre-fix this advertised
+                // `text/plain; charset=utf-8`, which forced JSON-aware
+                // clients (e.g. the CP-2 WebUI fetch wrapper) into a
+                // fallback path that re-parsed the body as text. The
+                // WebUI's 503 handler now matches the same Content-
+                // Type pattern as every other JSON error in the tree.
                 let _ = respond_simple(
                     request,
                     503,
-                    "text/plain; charset=utf-8",
+                    "application/json",
                     "{\"error\":\"server busy: too many concurrent requests\"}",
                 );
                 continue;
