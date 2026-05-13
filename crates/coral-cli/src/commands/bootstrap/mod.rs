@@ -305,12 +305,13 @@ fn apply_pages(
         let mut entry_with_body = entry.clone();
         let mut real_usage: Option<coral_runner::TokenUsage> = None;
         if entry.body.is_none() {
-            // One runner call per page (FR-ONB-30).
-            let page_prompt = build_page_prompt(&entry, cwd);
-            match runner.run(&page_prompt) {
-                Ok(out) => {
-                    entry_with_body.body = Some(out.stdout.clone());
-                    real_usage = out.usage;
+            // One runner call per page (FR-ONB-30). Extracted so the
+            // parallel apply path can call the same pure helper without
+            // touching shared state.
+            match render_page_body(runner, &entry, cwd) {
+                Ok((body, usage)) => {
+                    entry_with_body.body = Some(body);
+                    real_usage = usage;
                 }
                 Err(e) => {
                     eprintln!("warn: per-page runner failed for `{}`: {e}", entry.slug);
@@ -484,6 +485,24 @@ fn build_page_prompt(entry: &PlanEntry, _cwd: &Path) -> Prompt {
         cwd: None,
         timeout: None,
     }
+}
+
+/// Pure per-page LLM call: one `runner.run` for the page body, returning
+/// `(body, usage)` on success. No shared-state mutation — the caller
+/// owns the checkpoint write. Extracted from the sequential `apply_pages`
+/// loop so the rayon par-iter path (CP-1) can call the same helper from
+/// each worker thread.
+///
+/// Safety: `&dyn Runner` is `Send + Sync` per the trait bound, so this
+/// function is safe to call concurrently from a rayon thread pool.
+fn render_page_body(
+    runner: &dyn Runner,
+    entry: &PlanEntry,
+    cwd: &Path,
+) -> Result<(String, Option<coral_runner::TokenUsage>), RunnerError> {
+    let page_prompt = build_page_prompt(entry, cwd);
+    let out = runner.run(&page_prompt)?;
+    Ok((out.stdout, out.usage))
 }
 
 /// Cheap pre-page cost projection for the mid-flight gate. Uses the
