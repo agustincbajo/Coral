@@ -7,6 +7,427 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+This window covers the v0.38.0 sprint-prep batch. Items land on `main`;
+the orchestrator handles the actual release tag.
+
+### Added
+
+- **`coral feedback submit`** — opt-in JSON dump of the local
+  bootstrap calibration data for crowd-sourced cost-estimate
+  improvement (PRD §11 decision #3, finally implemented). Reads
+  `.wiki/.bootstrap-state.json` and `.coral/config.toml`, emits a
+  sanitized JSON envelope (`coral_version`, `platform`, `provider`,
+  `repo_signature`, `bootstrap_estimate`, `wallclock`) to stdout with
+  user-facing paste instructions. Sanitization is conservative: no
+  file paths, no file names, no git remote URLs, no API keys, no
+  user names — only LOC totals, file-extension counts, page counts,
+  predicted vs actual cost, and predicted vs actual wallclock.
+  Strictly AF-1 compliant (zero phone-home): the operator copies the
+  JSON manually into a discussion comment. `--copy` flag attempts
+  clipboard via `arboard` (best-effort; gracefully degrades to manual
+  paste with `--copy` informing the user).
+- **CHANGELOG.md backfilled** for the v0.34.0 → v0.37.0 release train
+  (this commit). The repo had drifted: only v0.32.x and v0.33.0 had
+  entries, so five missing release sections are reconstructed from
+  the git log with Keep-a-Changelog grouping.
+
+### Changed
+
+- **`docs/INSTALL.md` refreshed** for the v0.37 surface: 5 auto-
+  invoked skills (was 4 — `coral-doctor` added in v0.34.0), 2 slash
+  commands (`/coral:coral-bootstrap`, `/coral:coral-doctor`),
+  SessionStart hook (sh + ps1 + bash dispatcher), `--token` 128-bit
+  NIST entropy floor + auto-mint, provider mini-wizard 4 paths,
+  `coral self-upgrade` + `coral self-uninstall`, MSRV 1.85 → 1.89,
+  4-target cross-platform support matrix, SLSA verification cross-
+  reference, and a "provider not configured → `coral doctor --wizard`"
+  troubleshooting entry.
+
+### Removed (breaking — pre-1.0)
+
+- **`coral wiki serve` removed.** The v0.25.0 legacy HTML/Mermaid
+  wiki browser was deprecated in v0.34.1 with a removal target of
+  v0.36.0. Two release trains overdue (BACKLOG #9). Use
+  `coral ui serve` — same default port (`3838`), same `--bind` flag,
+  modern SPA with graph + bi-temporal slider + filtering + LLM
+  query playground. Cargo feature `webui` and the optional
+  `tiny_http` direct dep in `coral-cli` were both retired (tiny_http
+  remains a workspace dep; `coral-ui` and `coral-mcp` still use it).
+
+## [0.37.0] - 2026-05-13
+
+**Production-panic elimination — clippy panic-risk job promoted to
+hard gate (0 warnings achieved across the workspace).** v0.36.0
+landed the ratchet at 45 warnings; v0.37.0 retires the last of them
+across every crate, lands cross-platform mimalloc baselines for
+ADR-0012, and hardens a handful of test flakes that the v0.35
+parking_lot migration surfaced. `coral --version` reports `coral 0.37.0`.
+
+### Added
+
+- **Cross-platform mimalloc baseline benchmarks** under `bench/` with
+  Linux + macOS results landed from CI run 25804983205. ADR-0012
+  ("mimalloc as default allocator") is now backed by reproducible
+  per-platform numbers, not just a hand-wave.
+- **`mimalloc-allocator-bench` CI workflow** (`workflow_dispatch` +
+  weekly cron) so the baseline keeps re-running on `main` and any
+  regression surfaces without a human kicking it off.
+
+### Changed
+
+- **Clippy panic-risk job promoted from informational to hard gate.**
+  The v0.36.0 ratchet got the production warning count to 45;
+  v0.37.0's targeted refactors took it to 0. The job now blocks PRs
+  on any new `unwrap`/`expect`/`panic` call site outside `#[cfg(test)]`
+  and benches.
+- **`unwrap` / `expect` retired across the workspace** — 12 sites in
+  `coral-cli`, 12 in `coral-core`, 6 in `coral-ui`, 5 in `coral-mcp`,
+  3 in `coral-runner`, plus 6 stragglers in misc crates. Each turned
+  into a structured `Result` propagation or an explicit `expect` with
+  a "this branch is statically unreachable because …" justification
+  comment.
+
+### Fixed
+
+- **SQLite `Connection` lifetime around `remove_file`.** When the
+  search-index schema check failed and `coral search` tried to
+  delete the stale DB, the open `Connection` was still holding the
+  file handle on Windows. Connection now drops scope-explicitly
+  before the `remove_file` call.
+- **TOML render_toml escape backslashes + quotes.** Manifest writer
+  was emitting unescaped `\` and `"` in string values; round-trip
+  through `toml::from_str` then crashed on Windows path strings.
+  Fix lands a proper escape function with a round-trip test.
+- **MCP `session_table_reap` test flaked on `Instant::now()`.** The
+  test's clock-budget assertion was tighter than the OS's monotonic
+  clock granularity guarantees on a loaded CI VM. Widened the
+  tolerance to absorb the scheduler.
+- **`coral-runner` test gating.** `/bin/echo` and `/usr/bin/false`
+  tests now `#[cfg(unix)]`-gated (Windows nextest no longer fails
+  on the missing binaries).
+- **CRLF normalisation** in `coral-stats` and `coral-cli`
+  template-validation tests so they pass on Windows nextest without
+  `.gitattributes` magic.
+
+### Internal
+
+- **Audit doc cross-references**: `docs/adrs/0012-mimalloc-allocator.md`
+  now points at the live Linux + macOS baseline pages.
+
+## [0.36.0] - 2026-05-13
+
+**Clippy ratchet 104 → 45 + public-surface tightening.** A
+preparatory refactor batch that sets up v0.37.0's panic-risk hard
+gate: the bulk of the easy `unwrap`/`expect` sites are converted,
+and curated re-exports replace promiscuous `pub mod` declarations
+across `coral-core` (ARCH-C1 remainder). The SPA bundle gets pre-
+compressed gzip + brotli sibling artifacts for sub-200ms first paint.
+`coral --version` reports `coral 0.36.0`.
+
+### Added
+
+- **Pre-compressed SPA siblings.** `assets/dist/*.{js,css,html}` now
+  ship with `.gz` and `.br` siblings generated at build time; the
+  static-asset handler picks the smallest encoding the client
+  advertises in `Accept-Encoding`. Sibling files ≥ 100 KiB are
+  dropped if the raw bytes are smaller (some hashed bundles already
+  pre-compress poorly). `Vary: Accept-Encoding` is always emitted
+  so caches don't poison cross-client.
+- **mimalloc baseline benchmark** (initial Linux run) — closes
+  ADR-0012's "still need real numbers" loose end.
+
+### Changed
+
+- **Clippy production-warnings count ratcheted 104 → 45.** Mostly
+  trivial cleanups (`needless_borrow`, `redundant_clone`,
+  `single_match` → `if let`, etc.). The hard `unwrap`/`expect`
+  retirement lands in v0.37.0.
+- **`coral-core` public mod surface tightened.** Six modules that
+  had `pub mod` but zero external callers are demoted to
+  `pub(crate) mod`, with the actually-needed items re-exported at
+  the crate root. ARCH-C1 from the v0.34.1 architecture audit was
+  half-done in v0.35.0; this finishes the sweep.
+
+### Internal
+
+- **v0.36 handoff doc** enumerates 27 known Windows nextest
+  failures by name so the v0.37 cleanup is scoped, not aspirational.
+
+## [0.35.0] - 2026-05-13
+
+**Six-phase multi-agent audit (security, concurrency, performance,
+quality, testing, architecture) → CP-1 through CP-4 fix waves.**
+Top-line wins: bearer auth on the MCP HTTP transport (SEC-01),
+`--token` entropy floor + auto-mint on `coral ui serve` (SEC-02),
+parking_lot lock migration end-to-end (replaces ~30 `std::sync::Mutex`
+sites), parallel per-page render in `coral bootstrap` with a 4-thread
+rayon pool, MSRV bump to 1.89, and workspace clippy lints
+(`unwrap`/`expect`/`panic = warn`) wired into a split CI job (strict
+gate + informational panic-risk). `coral --version` reports `coral 0.35.0`.
+
+### Added — Security (CP-1 / CP-3)
+
+- **Bearer auth required on `coral mcp serve --transport http`** when
+  bound to a non-loopback address. Loopback (127.0.0.1, ::1) stays
+  unauthenticated for plug-and-play dev (SEC-01).
+- **`coral mcp serve --token <hex>`** with 128-bit entropy floor
+  (NIST SP 800-63B: 32 hex chars minimum). Auto-mint via
+  `coral_core::auth::mint_bearer_token` (CSPRNG, 256-bit) when no
+  token is supplied on a non-loopback bind — banner printed to stdout
+  with the curl-ready value.
+- **`coral ui serve --token`** flow mirrors the MCP one (SEC-02 /
+  CP-4): explicit token validated against the 128-bit floor; env var
+  `CORAL_UI_TOKEN` accepted; auto-mint on non-loopback bind.
+- **Shared `coral-core::auth` module** centralises bearer + loopback
+  helpers so the three serve surfaces (mcp http, ui, future) don't
+  reimplement the policy.
+- **Prompt-injection check on LLM response bodies** in `coral
+  bootstrap` (SEC-06). Bodies containing suspicious instruction-
+  injection markers are rejected before they hit the wiki.
+
+### Added — Concurrency / Performance (CP-1 / CP-2)
+
+- **Parallel per-page render in `coral bootstrap`** via a 4-thread
+  rayon pool. Per-page tracing spans + cost-gate events (Q-C3).
+  Sequential fallback preserved for `--threads 1`.
+- **MCP server thread-pool dispatch.** Each incoming request lands
+  on a fresh thread (P-C3 / CON-01 / CON-06); old single-threaded
+  recv loop was a noticeable cap on concurrent agent calls. 503
+  busy-body Content-Type now `application/json`.
+- **`parking_lot::{Mutex, RwLock}` everywhere** except `OnceLock`
+  and one-off cases where `std::sync` is part of the public API.
+  ~30 sites migrated; net effect is slightly smaller and faster locks
+  under contention.
+
+### Added — Quality / Provider Bridges
+
+- **`[provider.anthropic]` + `[provider.gemini]` env bridging.**
+  Config-resolved API keys now flow into the runner subprocess via
+  the new `with_env_var` builder on `RunnerBuilder`. Closes the
+  gap where `coral.toml` config wasn't actually being honored by
+  the subprocess runners.
+- **`[provider.ollama]` bridged** to `--provider=http` so the runner
+  speaks to a locally-running Ollama server with config-driven host
+  + model.
+
+### Changed
+
+- **MSRV 1.85 → 1.89.** Required for `let_chains` stabilization (now
+  used pervasively post-clippy auto-fix) and `is_multiple_of`.
+  Justified in the new ADR-0011 ("MSRV policy"). Edition 2024
+  unchanged.
+- **`bincode 1.x` → `2.x`** (RUSTSEC-2025-0141). Persisted BM25
+  index format-versioned with a one-shot migration on first load.
+- **CI clippy split** into a strict gate (`-D warnings`) and an
+  informational panic-risk job (`-W clippy::unwrap_used` etc.) so
+  the warning ratchet can advance without blocking PRs prematurely.
+
+### Fixed
+
+- **Plugin manifest sync** ran on every release-tag job so the
+  `.claude-plugin/marketplace.json` + `plugin.json` stayed in
+  lockstep with the binary version.
+
+### Internal
+
+- **ADR-0010, ADR-0011, ADR-0012 landed** documenting the substrate
+  (workspace shape), MSRV policy, and mimalloc decision.
+- **`coral_core::auth::mint_bearer_token`** hoisted out of
+  `coral-cli` (where it had originally been written for SEC-01 /
+  CP-3) into the core crate so `coral-ui` reuses it without crossing
+  the wrong dependency edge.
+- **`test_script_lock`** tagged `#[doc(hidden)]` with a TEST-ONLY
+  warning comment. Six zero-external-callers `pub mod` declarations
+  in `coral-core` demoted to `pub(crate) mod` (ARCH-C1 partial; rest
+  in v0.36.0).
+- **Six audit reports** committed under `docs/audits/` (security,
+  concurrency, performance, quality, testing, architecture) plus a
+  cross-phase synthesis. Each ran a 2-pass review (initial findings
+  → validation pass).
+
+## [0.34.1] - 2026-05-12
+
+**Smoke-workflow + self-upgrade hardening + Ollama bridge.** Patch
+release shipped same-day as v0.34.0 after the post-release smoke
+workflow surfaced several path / hook / runner-bridge bugs that the
+CI matrix had missed pre-release. `coral --version` reports `coral 0.34.1`.
+
+### Added
+
+- **`coral wiki serve` deprecation banner** announcing removal in
+  v0.36.0 (eventually shipped in v0.38.0 — see BACKLOG #9). Banner
+  prints to stderr on every invocation with the migration line
+  pointing at `coral ui serve`.
+- **`[provider.ollama]` → `--provider=http` runner bridge.** The
+  config-resolved host + model + (optional) bearer flow from
+  `.coral/config.toml` into the runner subprocess. v0.34.0 had the
+  config plumbing but the runner-side env was incomplete.
+- **`coral self-upgrade` honours `GITHUB_TOKEN` / `GH_TOKEN`** for
+  GitHub API authentication. Avoids rate-limit pain when CI invokes
+  the upgrade path.
+
+### Fixed
+
+- **Windows SessionStart hook latency.** v0.34.0 spawned a secondary
+  PowerShell host for the hook body; rewritten to run in the parent
+  PS process. New empirical Windows budget of 1200ms (was 800ms,
+  unrealistic for the 2× spawn overhead) — justified in the CI
+  workflow comment.
+- **Post-release smoke workflow PATH** matches the install.ps1
+  `$LOCALAPPDATA` default. Smoke had been searching the wrong path
+  on Windows.
+- **License allowlist + lint output paths.** Forward-slash paths in
+  `coral lint` output (so VS Code "go to file" Cmd-clicks land on
+  the right line on Windows); added `CDLA-Permissive-2.0` to the
+  `deny.toml` license allowlist (transitively pulled in via
+  `arrow-deps` adjacent crate).
+- **`coral self-upgrade` user-typed tag prefix** preserved across
+  messages + URLs. v0.34.0 stripped the leading `v` from `v0.34.0`
+  and then re-added it inconsistently; messages now mirror what the
+  user actually typed.
+
+## [0.34.0] - 2026-05-12
+
+**Zero-friction onboarding via Claude Code (PRD-v0.34, 4-week M1).**
+First-time UX redesigned end-to-end: a SessionStart hook auto-invokes
+the right Coral skill (bootstrap / query / onboard / ui / doctor),
+two slash commands (`/coral:coral-bootstrap`, `/coral:coral-doctor`)
+short-circuit the common asks, `coral doctor --wizard` walks new
+users through provider setup interactively, `coral self-upgrade` +
+`coral self-uninstall` close the install lifecycle, and `coral self-check`
+emits a JSON-schema'd health snapshot for both the wizard and CI.
+60-second "from zero to first wiki page" workflow is the new
+acceptance target. `coral --version` reports `coral 0.34.0`.
+
+### Added — Onboarding skills + slash commands
+
+- **`coral-doctor` skill + `/coral:coral-doctor` slash command** —
+  the fifth auto-invoked skill (was 4: bootstrap, query, onboard,
+  ui). Triggers on words like "broken", "provider", "stuck",
+  "not configured".
+- **`/coral:coral-bootstrap` slash command** shortcut to the same
+  flow as the autoinvoked `coral-bootstrap` skill — for users who
+  already know the model and just want to skip the natural-language
+  routing.
+- **`coral-ui` skill background-spawn pattern** (FR-ONB-11) — the
+  skill never blocks; it launches `coral ui serve` in the
+  background, waits for the listening banner, and opens the
+  browser.
+
+### Added — SessionStart hook
+
+- **`.claude-plugin/hooks/session-start.{sh,ps1,bat}`** wired via
+  the plugin manifest. The dispatcher detects platform + shell and
+  runs the right script. Empirical latency budget enforced in CI
+  via hyperfine: ≤800ms macOS/Linux, ≤1200ms Windows (FR-ONB-9).
+  Cap on `coral self-check --quick` JSON output at 8000 chars so
+  the hook payload stays small.
+
+### Added — `coral doctor` + provider mini-wizard
+
+- **`coral doctor` subcommand** distinct from `coral project doctor`
+  (FR-ONB-23 test pins the boundary). Reports MSRV / runner /
+  provider / token / UI / MCP status.
+- **`coral doctor --wizard`** synchronous mini-wizard guiding the
+  user through 4 provider paths: Anthropic API key, Gemini API
+  key, Ollama localhost, claude CLI (subprocess). Each path
+  validates with a 1-token HTTP ping (`ureq`, no async) before
+  persisting to `.coral/config.toml`.
+
+### Added — `coral self-check` + `coral self-upgrade` + `coral self-uninstall`
+
+- **`coral self-check`** emits a structured JSON-schema'd health
+  snapshot (FR-ONB-6). New `--print-schema` flag dumps the JSON
+  Schema for the `SelfCheck` struct so downstream tooling can pin
+  the contract (`schemars`-derived).
+- **`coral self-check --quick`** subset for the SessionStart hook
+  (FR-ONB-8): runner / provider / token / MCP / UI / update-
+  available probes, capped at 8000 chars total.
+- **`coral self-upgrade`** cross-platform binary self-replace
+  (FR-ONB-32). Windows path uses `MoveFileExW` with the rename-
+  then-replace dance (the running .exe can't be overwritten
+  directly while it executes); Linux + macOS use atomic
+  `rename(2)`. Update-source: GitHub releases API + binary
+  artifact download. Verifies SHA-256 before swap.
+- **`coral self-uninstall`** with `dialoguer::Confirm` safety
+  prompt (`--yes` to skip). Removes the binary + the
+  `.claude/plugins/` install + (with `--all`) `.coral/`.
+- **`coral self-register-marketplace`** for the plugin marketplace
+  flow (FR-ONB) — registers Coral with the local Claude Code
+  marketplace index.
+
+### Added — `coral init` template
+
+- **`coral init` generates a `CLAUDE.md` template** (FR-ONB-25 +
+  FR-ONB-34) and extends `.gitignore` with the Coral default
+  ignore set so the first-time experience leaves a clean working
+  tree.
+- **`InitArgs.yes` flag** — non-interactive init for CI / scripts.
+
+### Added — `coral bootstrap` per-page cost gate + estimate
+
+- **`coral bootstrap --estimate`** dry-run that prints predicted
+  cost (USD) + wallclock based on a per-page heuristic. Provider
+  pricing table lives in the new `coral_core::cost` module.
+- **`coral bootstrap --max-cost <usd>`** budget gate that aborts
+  mid-run if the running total threatens to exceed the budget.
+- **`coral bootstrap --resume`** picks up after a crash via the
+  per-page checkpoint persisted in `.wiki/.bootstrap-state.json`.
+  SHA-256 fingerprint of the plan detects "the plan changed between
+  runs" and refuses to silently overwrite.
+- **`Option<TokenUsage>` on `RunOutput`** across every runner
+  (anthropic, gemini, ollama, http, local) — required for the
+  per-page cost-gate to know what each call actually spent.
+
+### Added — `coral install` + install scripts
+
+- **`scripts/install.{sh,ps1}` flags** `--with-claude-config`,
+  `--skip-plugin-instructions` for non-interactive CI installs.
+  WSL2 detection + hints for Windows users running under WSL.
+
+### Added — `coral-core::config` module
+
+- **`.coral/config.toml`** schema + parser (PRD Appendix E). New
+  `coral_core::config` module owns the format; `[provider.*]`
+  tables for anthropic / gemini / ollama with `resolve_provider_credentials`
+  helper.
+
+### Added — `coral.toml` mitigation docs
+
+- **README**: explicit "How Coral mitigates multi-repo + functional-
+  testing problems" section to clarify the value prop vs flat-file
+  wiki / single-repo tools.
+
+### Changed
+
+- **Workspace bumped from 0.33.0 to 0.34.0.** Minor bump (PRD-v0.34
+  is strictly additive: every new command + skill + hook is opt-in;
+  no removed / renamed surface).
+- **Disk-management mechanics codified as a project workflow** —
+  documented in CONTRIBUTING.md so future agents don't end up with
+  10 GB of `target/` per branch.
+- **Release workflow** supports `workflow_dispatch` with explicit
+  tag input; `softprops/action-gh-release` pinned to
+  `env.RELEASE_TAG` to avoid the action drifting against the tag
+  we actually meant to release.
+
+### Fixed
+
+- **`coral init` + `coral bootstrap`** Week 3 B2 + Week 2 nits 1 & 2
+  cleanup: state-file round-trip on Windows, init-without-llm
+  template path resolution, and the ollama test walker's nested-if
+  flattening.
+- **Plugin manifest CI sync** — release jobs now write back the
+  bumped version into `.claude-plugin/manifest.json` +
+  `marketplace.json`, eliminating manual drift.
+
+### Internal
+
+- **PRD-v0.34 onboarding v1.4 (implementation-readiness audit)** —
+  4 review passes from initial draft v1.1 through implementation-
+  readiness v1.4 before code started landing. Documented in
+  `docs/PRD-v0.34-onboarding.md`.
+
 ## [0.33.0] - 2026-05-12
 
 **M2 + M3 of the WebUI roadmap, plus Sigstore-signed provenance and CI 100% green.** Closes every deferred item from `docs/PRD-v0.32-webui.md` except formal `llvm-cov` ≥ 70% threshold enforcement and Playwright in CI matrix (both setup-only deferrals, not feature gaps). Backward-compat sacred: `coral wiki serve` legacy, MCP server, 42 CLI subcommands, REST `/api/v1/*` v0.32.x wire format all unchanged. `coral --version` reports `coral 0.33.0`.
