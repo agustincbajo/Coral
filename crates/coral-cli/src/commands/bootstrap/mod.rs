@@ -361,59 +361,63 @@ fn apply_pages(
     }
 
     // ---- Phase B: parallel per-page runner calls -------------------------
-    let render_results: Vec<(usize, Result<(String, Option<coral_runner::TokenUsage>), RunnerError>)> =
-        if to_render.is_empty() {
-            Vec::new()
-        } else {
-            // Build a dedicated 4-thread pool so we never starve the
-            // global rayon pool (used by lints + symbol extraction).
-            // The pool is dropped at end of scope; build errors bubble
-            // up as anyhow so the caller surfaces "thread pool
-            // exhausted" instead of panicking.
-            let pool = rayon::ThreadPoolBuilder::new()
-                .num_threads(BOOTSTRAP_MAX_PARALLEL)
-                .thread_name(|i| format!("bootstrap-worker-{i}"))
-                .build()
-                .context("building bootstrap rayon thread pool")?;
-            tracing::info!(
-                workers = BOOTSTRAP_MAX_PARALLEL,
-                queued = to_render.len(),
-                "bootstrap: starting parallel page render"
-            );
-            // \`runner\` is \`&dyn Runner\` (Send + Sync per trait bound);
-            // \`cwd\` is a path. Both safely captured by reference.
-            let indices = to_render.clone();
-            pool.install(|| {
-                indices
-                    .par_iter()
-                    .map(|&i| {
-                        let entry = &state.plan[i];
-                        let _span = tracing::info_span!(
-                            "page.render",
-                            idx = i,
+    //
+    // Each tuple is `(plan_index, render_result)` where the result is
+    // `(body, optional_usage)` on success — defined as a type alias to
+    // keep the par-iter call-site readable (clippy::type_complexity).
+    type RenderResult = Result<(String, Option<coral_runner::TokenUsage>), RunnerError>;
+    let render_results: Vec<(usize, RenderResult)> = if to_render.is_empty() {
+        Vec::new()
+    } else {
+        // Build a dedicated 4-thread pool so we never starve the
+        // global rayon pool (used by lints + symbol extraction).
+        // The pool is dropped at end of scope; build errors bubble
+        // up as anyhow so the caller surfaces "thread pool
+        // exhausted" instead of panicking.
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(BOOTSTRAP_MAX_PARALLEL)
+            .thread_name(|i| format!("bootstrap-worker-{i}"))
+            .build()
+            .context("building bootstrap rayon thread pool")?;
+        tracing::info!(
+            workers = BOOTSTRAP_MAX_PARALLEL,
+            queued = to_render.len(),
+            "bootstrap: starting parallel page render"
+        );
+        // \`runner\` is \`&dyn Runner\` (Send + Sync per trait bound);
+        // \`cwd\` is a path. Both safely captured by reference.
+        let indices = to_render.clone();
+        pool.install(|| {
+            indices
+                .par_iter()
+                .map(|&i| {
+                    let entry = &state.plan[i];
+                    let _span = tracing::info_span!(
+                        "page.render",
+                        idx = i,
+                        slug = %entry.slug,
+                    )
+                    .entered();
+                    tracing::info!(slug = %entry.slug, "page: rendering (parallel)");
+                    let res = render_page_body(runner, entry, cwd);
+                    match &res {
+                        Ok((body, usage)) => tracing::info!(
                             slug = %entry.slug,
-                        )
-                        .entered();
-                        tracing::info!(slug = %entry.slug, "page: rendering (parallel)");
-                        let res = render_page_body(runner, entry, cwd);
-                        match &res {
-                            Ok((body, usage)) => tracing::info!(
-                                slug = %entry.slug,
-                                body_bytes = body.len(),
-                                has_usage = usage.is_some(),
-                                "page: runner returned"
-                            ),
-                            Err(e) => tracing::error!(
-                                slug = %entry.slug,
-                                error = %e,
-                                "page: runner failed"
-                            ),
-                        }
-                        (i, res)
-                    })
-                    .collect()
-            })
-        };
+                            body_bytes = body.len(),
+                            has_usage = usage.is_some(),
+                            "page: runner returned"
+                        ),
+                        Err(e) => tracing::error!(
+                            slug = %entry.slug,
+                            error = %e,
+                            "page: runner failed"
+                        ),
+                    }
+                    (i, res)
+                })
+                .collect()
+        })
+    };
 
     // ---- Phase C: apply results in plan order ----------------------------
     for (i, result) in render_results {
@@ -490,8 +494,7 @@ fn apply_pages(
         // LLM prompts (see commands/common/untrusted_fence.rs); we
         // now enforce it AT INGEST time so the poisoned content never
         // lands on disk.
-        let injection_hits =
-            coral_lint::structural::check_injection(std::slice::from_ref(&page));
+        let injection_hits = coral_lint::structural::check_injection(std::slice::from_ref(&page));
         if !injection_hits.is_empty() {
             let detail = injection_hits
                 .iter()
@@ -1831,8 +1834,8 @@ mod tests {
     #[test]
     fn parallel_apply_honors_thread_pool_cap() {
         use coral_runner::{Prompt, RunOutput, RunnerResult};
-        use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
         use std::time::Duration;
 
         struct CountingRunner {
