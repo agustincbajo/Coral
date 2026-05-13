@@ -22,9 +22,9 @@
 //! pattern is a direct port of `coral-mcp::transport::http_sse`
 //! (`MAX_CONCURRENT_HANDLERS = 32`, RAII guard on the in-flight counter,
 //! 503 JSON envelope when the cap is hit). We deliberately keep the
-//! 250 ms `recv_timeout` shutdown poll already in place — the std-thread
-//! + atomics pattern is intentionally tokio-free, matching the validated
-//! CP-1 architecture decision.
+//! 250 ms `recv_timeout` shutdown poll already in place — the
+//! std-thread / atomics pattern is intentionally tokio-free, matching
+//! the validated CP-1 architecture decision.
 
 use std::io::Read;
 use std::net::SocketAddr;
@@ -263,8 +263,7 @@ fn handle(state: &Arc<AppState>, mut request: Request) {
     // regardless of cfg — in release builds, the unmatched test path
     // falls through to the API 404 with the same error envelope shape
     // (no accidental SPA fallback for a test path).
-    let is_api =
-        path.starts_with("/api/") || path == "/health" || path.starts_with("/_test/");
+    let is_api = path.starts_with("/api/") || path == "/health" || path.starts_with("/_test/");
 
     if !is_api {
         let cfg = runtime_config_json(state);
@@ -631,9 +630,7 @@ mod tests {
     ///
     /// Joining bounds the recv-loop poll latency (250 ms) + the drain
     /// timeout.
-    fn spawn_test_server<F>(
-        make_state: F,
-    ) -> (u16, Arc<AtomicBool>, std::thread::JoinHandle<()>)
+    fn spawn_test_server<F>(make_state: F) -> (u16, Arc<AtomicBool>, std::thread::JoinHandle<()>)
     where
         F: FnOnce(u16) -> Arc<AppState>,
     {
@@ -661,9 +658,8 @@ mod tests {
     fn http_get(port: u16, path: &str) -> std::io::Result<(u16, String)> {
         let mut s = TcpStream::connect(("127.0.0.1", port))?;
         s.set_read_timeout(Some(Duration::from_secs(10)))?;
-        let req = format!(
-            "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
-        );
+        let req =
+            format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
         s.write_all(req.as_bytes())?;
         let mut reader = BufReader::new(s);
         let mut status_line = String::new();
