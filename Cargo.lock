@@ -430,7 +430,6 @@ dependencies = [
  "sha2",
  "signal-hook",
  "tempfile",
- "tiny_http",
  "toml",
  "tracing",
  "tracing-subscriber",

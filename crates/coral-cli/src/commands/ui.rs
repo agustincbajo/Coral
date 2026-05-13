@@ -1,8 +1,9 @@
 //! `coral ui serve` — REST API + embedded SPA.
 //!
-//! This is the v0.32.0 WebUI entry point. The legacy `coral wiki serve`
-//! command remains intact (BC); `coral ui serve` is the new, structured
-//! API surface that the SPA in `crates/coral-ui/assets/dist/` consumes.
+//! This is the v0.32.0 WebUI entry point. As of v0.38.0 it is the sole
+//! HTTP wiki browser — the legacy `coral wiki serve` was removed after
+//! a 3-version deprecation window. `coral ui serve` exposes the modern
+//! REST API + the SPA in `crates/coral-ui/assets/dist/`.
 //!
 //! Behind `#[cfg(feature = "ui")]` so a minimal CLI build can opt out.
 //!

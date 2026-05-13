@@ -301,15 +301,22 @@ poison recovery, well-known-path strategy) + ~1 hour to implement.
 
 ---
 
-### 9. `coral wiki serve` deprecation timeline
+### 9. `coral wiki serve` deprecation timeline — DONE (v0.38.0)
 
-The legacy v0.25.0 HTML/Mermaid server is preserved for BC. It works
-but is "stuck in time" — no dark mode, no graph, no filtering. As
-adoption of `coral ui serve` grows, consider a `--deprecated` banner
-on `coral wiki serve` startup and a removal target (v0.40.0?).
+The legacy v0.25.0 HTML/Mermaid server was deprecated in v0.34.1
+(stderr banner + removal target v0.36.0) and **removed in v0.38.0**
+after a 3-version window. `coral ui serve` is the full replacement
+(same default port, modern SPA, graph, bi-temporal slider, filtering,
+LLM query playground).
 
-Decision: not urgent until WebUI adoption metrics suggest the legacy
-path is no longer used.
+This was a breaking change pre-1.0, documented as such in the
+CHANGELOG and commit message. Migration is a one-line edit: replace
+`coral wiki serve` with `coral ui serve`.
+
+Files removed: `crates/coral-cli/src/commands/serve.rs`. Cargo
+feature `webui` and the `tiny_http` direct dep in `coral-cli` were
+both retired (tiny_http remains a workspace dep — `coral-ui` and
+`coral-mcp` still use it).
 
 ---
 

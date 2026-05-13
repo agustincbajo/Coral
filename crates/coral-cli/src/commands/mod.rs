@@ -25,8 +25,6 @@ pub mod self_check;
 pub mod self_register_marketplace;
 pub mod self_uninstall;
 pub mod self_upgrade;
-#[cfg(feature = "webui")]
-pub mod serve;
 pub mod session;
 pub mod skill;
 pub mod stats;

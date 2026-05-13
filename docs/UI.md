@@ -9,8 +9,10 @@ The WebUI is a single-page React app embedded in the `coral` binary via
 involved in production — `cargo install coral-cli` ships the UI as part
 of the binary.
 
-The legacy `coral wiki serve` command remains intact; this document
-covers the new `coral ui serve` surface.
+> **v0.38.0:** the legacy `coral wiki serve` was removed after a
+> 3-version deprecation window (announced v0.34.1). `coral ui serve`
+> is its full replacement — same `--port` / `--bind` defaults, modern
+> SPA with graph + bi-temporal slider + filtering.
 
 ---
 
@@ -264,14 +266,23 @@ is out of sync.
 
 ---
 
-## Backward compatibility
+## Migration from `coral wiki serve` (legacy, removed v0.38.0)
 
-`coral wiki serve` is **unchanged** in v0.32.0. It continues to serve
-the simple HTML/Mermaid view on the same port (3838). They are
-separate subcommands and never run simultaneously.
+`coral wiki serve` (the simple HTML/Mermaid single-page view shipped
+in v0.25.0) was deprecated in v0.34.1 and **removed in v0.38.0**.
+`coral ui serve` is its full replacement:
 
-If you depended on the old HTML output from `coral wiki serve`, your
-scripts continue to work. The new UI is opt-in: `coral ui serve`.
+- Same default port (`3838`) and `--bind` semantics.
+- Same loopback-by-default security posture.
+- Supersedes every endpoint the legacy server exposed (`/`, `/page/`,
+  `/graph`, `/health`) plus adds filtering, the force-directed graph,
+  bi-temporal slicing, manifest / interfaces / drift / affected /
+  tools / guarantee views, and the LLM query playground.
+
+Scripts that called `curl http://localhost:3838/` need no changes — the
+new UI binds the same default. Scripts that scraped the legacy
+`/page/<slug>` HTML must switch to the structured `GET /api/v1/pages`
+JSON endpoint (see [REST API](#rest-api) section above).
 
 ---
 

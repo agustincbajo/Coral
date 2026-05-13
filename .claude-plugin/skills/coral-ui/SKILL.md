@@ -126,10 +126,11 @@ Manager → find `coral.exe` → End task.
 - The user said "no GUI / keep it in the terminal".
 - The wiki doesn't exist yet — route them to `coral-bootstrap`.
 
-## Backward compat note
+## Legacy command (removed)
 
-`coral wiki serve` (the legacy v0.25.0 HTML/Mermaid view) still works
-and is a one-page fallback if the user has an old binary or wants
-something even simpler. `coral ui serve` is the new structured
-surface; they coexist. Background-spawn pattern above applies to
-either binary.
+`coral wiki serve` (the legacy v0.25.0 HTML/Mermaid view) was
+**removed in v0.38.0** after a 3-version deprecation window
+(announced v0.34.1, originally scheduled for v0.36.0). If a user on
+an older binary asks about it, point them at `coral ui serve` — same
+default port (`3838`) and `--bind` flag, modern SPA with filtering +
+graph + bi-temporal slider. Background-spawn pattern above applies.

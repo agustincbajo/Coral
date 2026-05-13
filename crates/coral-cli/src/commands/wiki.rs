@@ -1,9 +1,13 @@
 //! `coral wiki at <ref>` — time-travel wiki access.
-//! `coral wiki serve` — local HTTP wiki browser (M3.9).
 //!
 //! Extracts the wiki directory as it existed at any git ref (tag, commit,
 //! branch) and presents it for querying. ★ killer feature #3 from the
 //! v0.24 PRD.
+//!
+//! **Note (v0.38.0):** the legacy `coral wiki serve` subcommand was
+//! removed after a 3-version deprecation window (announced v0.34.1,
+//! originally scheduled for v0.36.0). Use `coral ui serve` instead —
+//! same `--port` / `--bind` flags, modern SPA with graph + filtering.
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, Subcommand};
@@ -21,9 +25,6 @@ pub struct WikiArgs {
 pub enum WikiCmd {
     /// View the wiki as it existed at a git ref (tag, commit, branch).
     At(AtArgs),
-    /// Start a local HTTP server for browsing the wiki.
-    #[cfg(feature = "webui")]
-    Serve(super::serve::ServeArgs),
 }
 
 #[derive(Args, Debug)]
@@ -51,8 +52,6 @@ pub struct AtArgs {
 pub fn run(args: WikiArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
     match args.command {
         WikiCmd::At(at_args) => run_at(at_args, wiki_root),
-        #[cfg(feature = "webui")]
-        WikiCmd::Serve(serve_args) => super::serve::run(serve_args, wiki_root),
     }
 }
 

@@ -190,7 +190,7 @@ coral ui serve
 
 The pre-built SPA is committed to `crates/coral-ui/assets/dist/` and embedded into the Rust binary at compile time via `include_dir!`. End-users **never** need Node or npm — `cargo install coral-cli` ships the UI with the binary. Loopback-only (`127.0.0.1`) and read-only by default; a bearer token (`--token` / `CORAL_UI_TOKEN`) gates the LLM query endpoint and any non-loopback bind.
 
-The legacy `coral wiki serve` (HTML/Mermaid, single page from v0.25.0) remains unchanged for backward compatibility.
+> **Removed in v0.38.0:** the legacy `coral wiki serve` (HTML/Mermaid, single page from v0.25.0) was retired after a 3-version deprecation window (announced v0.34.1). Use `coral ui serve` — same `--port` / `--bind` defaults, modern SPA with graph + bi-temporal slider.
 
 Full docs: [`docs/UI.md`](docs/UI.md).
 

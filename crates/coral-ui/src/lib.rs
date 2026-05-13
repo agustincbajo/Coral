@@ -12,7 +12,9 @@
 //! `error.rs` for the canonical error envelope.
 //!
 //! There is NO tokio dependency. Everything is synchronous; the runtime
-//! pattern mirrors `coral wiki serve` (legacy) and `coral mcp serve`.
+//! pattern mirrors `coral mcp serve`. (The legacy `coral wiki serve`
+//! used the same pattern; it was removed in v0.38.0 after a 3-version
+//! deprecation window — `coral ui serve` is its full replacement.)
 
 pub use error::ApiError;
 pub use server::{ServeConfig, serve};

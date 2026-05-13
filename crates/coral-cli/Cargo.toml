@@ -70,8 +70,6 @@ ureq = { workspace = true }
 zip = { workspace = true }
 # v0.23.1: SIGINT/SIGTERM clean-shutdown plumbing for `coral monitor up`.
 signal-hook = { workspace = true }
-# v0.25.0 M3.9: local HTTP wiki browser (`coral wiki serve`).
-tiny_http = { workspace = true, optional = true }
 # v0.32.0: REST API + embedded SPA for `coral ui serve`. Behind the
 # `ui` feature so a minimal `--no-default-features` build still
 # yields a single-binary CLI without HTTP plumbing.
@@ -86,14 +84,14 @@ coral-stats = { workspace = true }
 coral-test = { workspace = true }
 
 [features]
-default = ["webui", "ui"]
-# v0.25.0 M3.9: local HTTP wiki browser behind feature flag.
-# Included in default so `coral wiki serve` works out of the box;
-# strip with `--no-default-features` for a minimal single-binary.
-webui = ["dep:tiny_http"]
-# v0.32.0: new `coral ui serve` (REST API + SPA). Lives alongside the
-# legacy `webui` flag so operators can disable either independently;
-# both default-on for plug-and-play UX.
+default = ["ui"]
+# v0.32.0: `coral ui serve` (REST API + SPA). Default-on for plug-and-
+# play UX. Strip with `--no-default-features` for a minimal single-
+# binary CLI without HTTP plumbing.
+#
+# The legacy `webui` feature (gating `coral wiki serve`) was removed
+# in v0.38.0 after a 3-version deprecation window (announced v0.34.1).
+# `coral ui serve` is the modern replacement (same defaults).
 ui = ["dep:coral-ui"]
 # v0.23.2: enables `coral test record` (Linux-only Keploy capture).
 # Forwards to `coral-test/recorded` so the parser+replay path stays
