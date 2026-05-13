@@ -24,6 +24,15 @@ mime_guess = { workspace = true }
 coral-core = { workspace = true }
 coral-runner = { workspace = true }
 
+[build-dependencies]
+# v0.35 Phase C (P-H1): pre-compress the embedded SPA bundle so the
+# static-asset handler can serve `.gz` / `.br` siblings when the
+# client advertises support. flate2 + brotli are build-only — they
+# do NOT ship in the final binary. The compressed bytes get baked
+# in via `include_dir!`.
+flate2 = "1"
+brotli = "8"
+
 [dev-dependencies]
 tempfile = { workspace = true }
 

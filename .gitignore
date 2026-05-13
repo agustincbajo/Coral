@@ -24,3 +24,10 @@ Cargo.lock.bak
 .coral/sessions/*.lock
 .coral/sessions/index.json
 !.coral/sessions/distilled/
+# v0.35 Phase C (P-H1): coral-ui/build.rs pre-compresses the SPA
+# bundle into .gz / .br siblings on every cargo build. These are
+# pure build artifacts — committing them would churn on every UI
+# rebuild and gain nothing (the binary picks them up via
+# include_dir! at compile time).
+crates/coral-ui/assets/dist/**/*.gz
+crates/coral-ui/assets/dist/**/*.br

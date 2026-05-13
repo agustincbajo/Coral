@@ -267,7 +267,18 @@ fn handle(state: &Arc<AppState>, mut request: Request) {
 
     if !is_api {
         let cfg = runtime_config_json(state);
-        let resp = static_assets::serve_static(&path, &cfg)
+        // v0.35 Phase C (P-H1): read the Accept-Encoding header so the
+        // static-asset handler can pick `br` / `gzip` siblings when
+        // available. tiny_http exposes headers as a slice; we copy
+        // the value into a small String so the borrow ends before we
+        // pass `request` into `respond_static`.
+        let accept_encoding = request
+            .headers()
+            .iter()
+            .find(|h| h.field.equiv("Accept-Encoding"))
+            .map(|h| h.value.as_str().to_string())
+            .unwrap_or_default();
+        let resp = static_assets::serve_static(&path, &cfg, &accept_encoding)
             .or_else(|| static_assets::serve_index_fallback(&cfg));
         if let Some(r) = resp {
             respond_static(request, r);
@@ -449,10 +460,27 @@ fn respond_static(request: Request, r: static_assets::StaticResponse) {
         .expect("valid content-type");
     let cache = Header::from_bytes(b"Cache-Control" as &[u8], r.cache.as_bytes())
         .expect("valid cache-control");
-    let resp = Response::from_data(r.body)
+    // v0.35 Phase C (P-H1): mirror Content-Encoding back to the client
+    // when the handler chose a pre-compressed sibling. Without this
+    // header the browser would try to interpret the compressed bytes
+    // as the literal source MIME type — corrupting the SPA on every
+    // load. Pin the value tightly to the `&'static str` minted by the
+    // handler ("br" / "gzip"), so a typo can't slip in here.
+    let mut resp = Response::from_data(r.body)
         .with_status_code(r.status as i32)
         .with_header(ct)
         .with_header(cache);
+    if let Some(enc) = r.content_encoding {
+        let ce = Header::from_bytes(b"Content-Encoding" as &[u8], enc.as_bytes())
+            .expect("valid content-encoding");
+        resp = resp.with_header(ce);
+        // Per RFC 9110 §15.5.4 / §8.4: caches keyed on Vary:
+        // Accept-Encoding so a brotli response doesn't poison a
+        // gzip-only client's intermediate cache.
+        let vary = Header::from_bytes(b"Vary" as &[u8], b"Accept-Encoding" as &[u8])
+            .expect("valid vary");
+        resp = resp.with_header(vary);
+    }
     let _ = request.respond(resp);
 }
 
