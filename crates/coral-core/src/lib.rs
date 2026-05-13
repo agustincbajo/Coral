@@ -1,6 +1,7 @@
 //! Core types and utilities for Coral.
 
 pub mod atomic;
+pub mod auth;
 pub mod cache;
 pub mod config;
 pub mod cost;

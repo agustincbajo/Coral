@@ -147,6 +147,24 @@ ureq = { version = "2", features = ["json"] }
 # gracefully when stdin is not a TTY (we refuse to prompt and require
 # an explicit `--yes` flag instead).
 dialoguer = "0.11"
+# v0.35 SEC-07: CSPRNG-backed `Mcp-Session-Id` minting (replaces a
+# `timestamp_nanos * 0xdeadbeef + counter` mixer that was predictable
+# from the server's wall-clock). `rand` 0.9.x was already in the
+# dev-dep tree via `proptest`; promoting to a workspace dep centralizes
+# the version pin and lets non-test code (the MCP HTTP transport) call
+# `rand::random::<[u8; 16]>()` without re-introducing the
+# `getrandom` cfg dance ourselves. Pure-Rust, no net-new system deps.
+rand = "0.9"
+# v0.35 Q-C1: `parking_lot::Mutex` replaces every `std::sync::Mutex`
+# in `coral-mcp::server` + `transport::http_sse`. The std mutex
+# poisons on panic — combined with the pre-auth attack surface in the
+# HTTP transport (SEC-01), a single panicking handler thread would
+# kill every subsequent request. parking_lot has no poison semantics,
+# is ~2x faster on uncontended acquires, and lets us drop the
+# `.expect("…mutex")` boilerplate that masks the actual lock owner in
+# panic backtraces. Tiny dep (~50 KB), pure-Rust, single transitive
+# (`lock_api`) already pulled in by other deps.
+parking_lot = "0.12"
 coral-core = { path = "crates/coral-core", version = "0.34.1" }
 coral-env = { path = "crates/coral-env", version = "0.34.1" }
 coral-lint = { path = "crates/coral-lint", version = "0.34.1" }
