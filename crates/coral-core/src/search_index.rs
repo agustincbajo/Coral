@@ -880,7 +880,7 @@ mod tests {
             "search must transparently rebuild over a stale-format cache file"
         );
 
-        // After the rebuild, the cache file is a valid bincode-2.x
+        // After the rebuild, the cache file is a valid postcard 1.x
         // payload that decodes cleanly.
         let reloaded =
             SearchIndex::load_index(&index_path).expect("post-rebuild cache must decode cleanly");
