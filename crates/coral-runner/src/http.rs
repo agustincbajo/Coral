@@ -124,13 +124,13 @@ struct Message {
 pub(crate) fn build_payload(prompt: &Prompt) -> Result<String, serde_json::Error> {
     let model = prompt.model.as_deref().unwrap_or(DEFAULT_MODEL_PLACEHOLDER);
     let mut messages: Vec<ChatMessage<'_>> = Vec::new();
-    if let Some(system) = prompt.system.as_deref() {
-        if !system.is_empty() {
-            messages.push(ChatMessage {
-                role: "system",
-                content: system,
-            });
-        }
+    if let Some(system) = prompt.system.as_deref()
+        && !system.is_empty()
+    {
+        messages.push(ChatMessage {
+            role: "system",
+            content: system,
+        });
     }
     messages.push(ChatMessage {
         role: "user",

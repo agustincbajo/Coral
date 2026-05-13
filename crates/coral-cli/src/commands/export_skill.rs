@@ -215,12 +215,10 @@ fn extract_description(body: &str) -> String {
                 continue;
             }
         }
-        if in_frontmatter {
-            if let Some(rest) = trimmed.strip_prefix("description:") {
-                let desc = rest.trim().trim_matches('"').trim_matches('\'');
-                if !desc.is_empty() {
-                    return desc.to_string();
-                }
+        if in_frontmatter && let Some(rest) = trimmed.strip_prefix("description:") {
+            let desc = rest.trim().trim_matches('"').trim_matches('\'');
+            if !desc.is_empty() {
+                return desc.to_string();
             }
         }
         if (past_frontmatter || !in_frontmatter)
@@ -249,10 +247,10 @@ fn extract_triggers(body: &str) -> Vec<String> {
             if trimmed.starts_with("## ") || trimmed.starts_with("# ") {
                 break;
             }
-            if let Some(rest) = trimmed.strip_prefix("- ") {
-                if !rest.is_empty() {
-                    triggers.push(rest.to_string());
-                }
+            if let Some(rest) = trimmed.strip_prefix("- ")
+                && !rest.is_empty()
+            {
+                triggers.push(rest.to_string());
             }
         }
     }

@@ -179,12 +179,11 @@ pub fn status_name_pub(fm: &coral_core::frontmatter::Frontmatter) -> &'static st
 fn detect_project_name(wiki_root: &Path) -> String {
     let parent = wiki_root.parent().unwrap_or(wiki_root);
     let manifest_path = parent.join("coral.toml");
-    if let Ok(raw) = std::fs::read_to_string(&manifest_path) {
-        if let Ok(table) = raw.parse::<toml::Table>() {
-            if let Some(name) = table.get("name").and_then(|v| v.as_str()) {
-                return name.to_string();
-            }
-        }
+    if let Ok(raw) = std::fs::read_to_string(&manifest_path)
+        && let Ok(table) = raw.parse::<toml::Table>()
+        && let Some(name) = table.get("name").and_then(|v| v.as_str())
+    {
+        return name.to_string();
     }
     parent
         .file_name()

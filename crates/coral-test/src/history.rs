@@ -72,12 +72,11 @@ pub fn compute_flakes(records: &[TestRecord], max_age_days: Option<u64>) -> Vec<
     let mut stats: HashMap<&str, (usize, usize)> = HashMap::new(); // (pass, fail)
 
     for r in records {
-        if let Some(ref cut) = cutoff {
-            if let Ok(ts) = chrono::DateTime::parse_from_rfc3339(&r.timestamp) {
-                if ts < *cut {
-                    continue;
-                }
-            }
+        if let Some(ref cut) = cutoff
+            && let Ok(ts) = chrono::DateTime::parse_from_rfc3339(&r.timestamp)
+            && ts < *cut
+        {
+            continue;
         }
         let entry = stats.entry(r.case_id.as_str()).or_insert((0, 0));
         match r.status.as_str() {

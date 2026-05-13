@@ -342,30 +342,30 @@ impl UserDefinedRunner {
         let body = String::from_utf8_lossy(&output.stdout).into_owned();
         let (response_body, status_code) = split_curl_status(&body);
 
-        if let Some(expected) = step.expect.status {
-            if status_code != expected {
-                let kind = match status_code {
-                    0 => FailureKind::Timeout,
-                    s if (500..600).contains(&s) => FailureKind::Status5xx,
-                    s if (400..500).contains(&s) => FailureKind::Status4xx,
-                    _ => FailureKind::Other,
-                };
-                return Err(StepFailure {
-                    reason: format!("expected HTTP status {expected}, got {status_code}"),
-                    kind,
-                });
-            }
+        if let Some(expected) = step.expect.status
+            && status_code != expected
+        {
+            let kind = match status_code {
+                0 => FailureKind::Timeout,
+                s if (500..600).contains(&s) => FailureKind::Status5xx,
+                s if (400..500).contains(&s) => FailureKind::Status4xx,
+                _ => FailureKind::Other,
+            };
+            return Err(StepFailure {
+                reason: format!("expected HTTP status {expected}, got {status_code}"),
+                kind,
+            });
         }
-        if let Some(needle) = &step.expect.body_contains {
-            if !response_body.contains(needle.as_str()) {
-                return Err(StepFailure {
-                    reason: format!(
-                        "response body does not contain '{needle}' (first 200 bytes: {})",
-                        response_body.chars().take(200).collect::<String>()
-                    ),
-                    kind: FailureKind::Other,
-                });
-            }
+        if let Some(needle) = &step.expect.body_contains
+            && !response_body.contains(needle.as_str())
+        {
+            return Err(StepFailure {
+                reason: format!(
+                    "response body does not contain '{needle}' (first 200 bytes: {})",
+                    response_body.chars().take(200).collect::<String>()
+                ),
+                kind: FailureKind::Other,
+            });
         }
         // Snapshot assertion: write on first run / `--update-snapshots`,
         // compare otherwise.
@@ -434,13 +434,13 @@ impl UserDefinedRunner {
             kind: FailureKind::Other,
         })?;
         let exit = output.status.code().unwrap_or(-1);
-        if let Some(expected) = step.expect.exit_code {
-            if exit != expected {
-                return Err(StepFailure {
-                    reason: format!("expected exit {expected}, got {exit}"),
-                    kind: FailureKind::Other,
-                });
-            }
+        if let Some(expected) = step.expect.exit_code
+            && exit != expected
+        {
+            return Err(StepFailure {
+                reason: format!("expected exit {expected}, got {exit}"),
+                kind: FailureKind::Other,
+            });
         }
         if let Some(needle) = &step.expect.stdout_contains {
             let stdout = String::from_utf8_lossy(&output.stdout);

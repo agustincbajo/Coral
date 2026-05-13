@@ -167,10 +167,10 @@ fn select_service(plan: &EnvPlan, override_: Option<&str>) -> EnvResult<String> 
     // the alphabetic-fallback `z`. Treat empty string as no-repo so
     // Pass 2 catches it.
     for (name, svc) in &plan.services {
-        if let ServiceKind::Real(real) = &svc.kind {
-            if real.repo.as_deref().is_some_and(|s| !s.is_empty()) {
-                return Ok(name.clone());
-            }
+        if let ServiceKind::Real(real) = &svc.kind
+            && real.repo.as_deref().is_some_and(|s| !s.is_empty())
+        {
+            return Ok(name.clone());
         }
     }
     // Pass 2: any real service.

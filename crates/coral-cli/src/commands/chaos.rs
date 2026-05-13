@@ -371,10 +371,10 @@ pub(crate) fn pick_proxy_for_service(spec: &EnvironmentSpec, service: &str) -> O
     let suffix = format!("_to_{service}");
     let mut candidates: Vec<String> = Vec::new();
     for (consumer_name, consumer) in &spec.services {
-        if let coral_env::ServiceKind::Real(real) = consumer {
-            if real.depends_on.iter().any(|d| d == service) {
-                candidates.push(format!("{}{}", consumer_name, suffix));
-            }
+        if let coral_env::ServiceKind::Real(real) = consumer
+            && real.depends_on.iter().any(|d| d == service)
+        {
+            candidates.push(format!("{}{}", consumer_name, suffix));
         }
     }
     candidates.sort();
@@ -818,26 +818,26 @@ mod tests {
                     Err(_) => break, // timeout or other error
                 };
                 request.extend_from_slice(&buf[..n]);
-                if headers_end.is_none() {
-                    if let Some(pos) = request.windows(4).position(|w| w == b"\r\n\r\n") {
-                        headers_end = Some(pos + 4);
-                        // Look for Content-Length: N
-                        let header_str = String::from_utf8_lossy(&request[..pos]);
-                        for line in header_str.lines() {
-                            if let Some(rest) = line
-                                .strip_prefix("Content-Length:")
-                                .or_else(|| line.strip_prefix("content-length:"))
-                            {
-                                content_length = rest.trim().parse().ok();
-                                break;
-                            }
+                if headers_end.is_none()
+                    && let Some(pos) = request.windows(4).position(|w| w == b"\r\n\r\n")
+                {
+                    headers_end = Some(pos + 4);
+                    // Look for Content-Length: N
+                    let header_str = String::from_utf8_lossy(&request[..pos]);
+                    for line in header_str.lines() {
+                        if let Some(rest) = line
+                            .strip_prefix("Content-Length:")
+                            .or_else(|| line.strip_prefix("content-length:"))
+                        {
+                            content_length = rest.trim().parse().ok();
+                            break;
                         }
                     }
                 }
-                if let (Some(h), Some(cl)) = (headers_end, content_length) {
-                    if request.len() >= h + cl {
-                        break;
-                    }
+                if let (Some(h), Some(cl)) = (headers_end, content_length)
+                    && request.len() >= h + cl
+                {
+                    break;
                 }
                 if headers_end.is_some() && content_length.is_none() {
                     // No Content-Length and headers complete: assume no body.

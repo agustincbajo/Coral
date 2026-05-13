@@ -209,12 +209,11 @@ impl WikiResourceProvider {
                 Ok(guard) => guard.is_dirty(),
                 Err(_) => true, // poisoned: force a refresh attempt
             };
-            if need_refresh {
-                if let Ok(mut guard) = state.write() {
-                    if guard.is_dirty() {
-                        guard.refresh();
-                    }
-                }
+            if need_refresh
+                && let Ok(mut guard) = state.write()
+                && guard.is_dirty()
+            {
+                guard.refresh();
             }
             match state.read() {
                 Ok(guard) => guard.pages().to_vec(),
@@ -380,10 +379,10 @@ impl WikiResourceProvider {
             return Some(serde_json::json!({"status": "no .coral/ directory"}).to_string());
         }
         let coverage_path = coral_dir.join("coverage.json");
-        if coverage_path.exists() {
-            if let Ok(raw) = std::fs::read_to_string(&coverage_path) {
-                return Some(raw);
-            }
+        if coverage_path.exists()
+            && let Ok(raw) = std::fs::read_to_string(&coverage_path)
+        {
+            return Some(raw);
         }
         Some(serde_json::json!({"status": "no coverage data found"}).to_string())
     }

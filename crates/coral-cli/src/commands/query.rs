@@ -261,14 +261,14 @@ fn expand_by_hops<'a>(
             };
             // Expand via backlinks
             for bl in &page.frontmatter.backlinks {
-                if !included.contains(bl.as_str()) {
-                    if let Some(bp) = all_pages.iter().find(|p| p.frontmatter.slug == *bl) {
-                        included.insert(&bp.frontmatter.slug);
-                        result.push(bp);
-                        next_frontier.push_back(&bp.frontmatter.slug);
-                        if result.len() >= max_pages {
-                            break;
-                        }
+                if !included.contains(bl.as_str())
+                    && let Some(bp) = all_pages.iter().find(|p| p.frontmatter.slug == *bl)
+                {
+                    included.insert(&bp.frontmatter.slug);
+                    result.push(bp);
+                    next_frontier.push_back(&bp.frontmatter.slug);
+                    if result.len() >= max_pages {
+                        break;
                     }
                 }
             }
@@ -278,14 +278,14 @@ fn expand_by_hops<'a>(
             // Expand via outbound wikilinks (using pre-computed map)
             if let Some(links) = outbound_map.get(slug) {
                 for link in links {
-                    if !included.contains(link.as_str()) {
-                        if let Some(lp) = all_pages.iter().find(|p| p.frontmatter.slug == *link) {
-                            included.insert(&lp.frontmatter.slug);
-                            result.push(lp);
-                            next_frontier.push_back(&lp.frontmatter.slug);
-                            if result.len() >= max_pages {
-                                break;
-                            }
+                    if !included.contains(link.as_str())
+                        && let Some(lp) = all_pages.iter().find(|p| p.frontmatter.slug == *link)
+                    {
+                        included.insert(&lp.frontmatter.slug);
+                        result.push(lp);
+                        next_frontier.push_back(&lp.frontmatter.slug);
+                        if result.len() >= max_pages {
+                            break;
                         }
                     }
                 }

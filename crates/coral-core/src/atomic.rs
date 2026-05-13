@@ -39,13 +39,13 @@ static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// so two threads writing the same target would collide.
 pub fn atomic_write_string(path: impl AsRef<Path>, content: &str) -> Result<()> {
     let path = path.as_ref();
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent).map_err(|source| CoralError::Io {
-                path: parent.to_path_buf(),
-                source,
-            })?;
-        }
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent).map_err(|source| CoralError::Io {
+            path: parent.to_path_buf(),
+            source,
+        })?;
     }
 
     let pid = std::process::id();
@@ -107,13 +107,13 @@ pub fn atomic_write_string(path: impl AsRef<Path>, content: &str) -> Result<()> 
 /// reject non-UTF-8 bytes outright).
 pub fn atomic_write_bytes(path: impl AsRef<Path>, content: &[u8]) -> Result<()> {
     let path = path.as_ref();
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent).map_err(|source| CoralError::Io {
-                path: parent.to_path_buf(),
-                source,
-            })?;
-        }
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent).map_err(|source| CoralError::Io {
+            path: parent.to_path_buf(),
+            source,
+        })?;
     }
 
     let pid = std::process::id();
@@ -208,13 +208,13 @@ where
     let path = path.as_ref();
     let lock_path = lock_file_path(path);
 
-    if let Some(parent) = lock_path.parent() {
-        if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent).map_err(|source| CoralError::Io {
-                path: parent.to_path_buf(),
-                source,
-            })?;
-        }
+    if let Some(parent) = lock_path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent).map_err(|source| CoralError::Io {
+            path: parent.to_path_buf(),
+            source,
+        })?;
     }
 
     let lock_file = fs::OpenOptions::new()

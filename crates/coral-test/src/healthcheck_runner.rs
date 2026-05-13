@@ -37,23 +37,20 @@ impl HealthcheckRunner {
     pub fn cases_from_spec(spec: &EnvironmentSpec) -> Vec<TestCase> {
         let mut cases = Vec::new();
         for (name, kind) in &spec.services {
-            if let ServiceKind::Real(real) = kind {
-                if real.healthcheck.is_some() {
-                    cases.push(TestCase {
-                        id: format!("healthcheck:{name}"),
-                        name: format!("{name} healthcheck"),
-                        kind: TestKind::Healthcheck,
-                        service: Some(name.clone()),
-                        tags: vec!["healthcheck".into(), "smoke".into()],
-                        source: TestSource::Discovered {
-                            from: format!(
-                                "[environments.{}.services.{name}.healthcheck]",
-                                spec.name
-                            ),
-                        },
-                        spec: TestSpec::empty(),
-                    });
-                }
+            if let ServiceKind::Real(real) = kind
+                && real.healthcheck.is_some()
+            {
+                cases.push(TestCase {
+                    id: format!("healthcheck:{name}"),
+                    name: format!("{name} healthcheck"),
+                    kind: TestKind::Healthcheck,
+                    service: Some(name.clone()),
+                    tags: vec!["healthcheck".into(), "smoke".into()],
+                    source: TestSource::Discovered {
+                        from: format!("[environments.{}.services.{name}.healthcheck]", spec.name),
+                    },
+                    spec: TestSpec::empty(),
+                });
             }
         }
         cases

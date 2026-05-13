@@ -296,19 +296,17 @@ fn handle(state: &Arc<AppState>, mut request: Request) {
         let _ = request.respond(e.to_response());
         return;
     }
-    if matches!(method, Method::Post) {
-        if let Err(e) = crate::auth::validate_origin(state, &request) {
-            let _ = request.respond(e.to_response());
-            return;
-        }
+    if matches!(method, Method::Post)
+        && let Err(e) = crate::auth::validate_origin(state, &request)
+    {
+        let _ = request.respond(e.to_response());
+        return;
     }
     let token_required =
         path == "/api/v1/query" || path.starts_with("/api/v1/tools/") || state.token.is_some();
-    if token_required {
-        if let Err(e) = crate::auth::require_bearer(state, &request) {
-            let _ = request.respond(e.to_response());
-            return;
-        }
+    if token_required && let Err(e) = crate::auth::require_bearer(state, &request) {
+        let _ = request.respond(e.to_response());
+        return;
     }
 
     let query_string = url

@@ -70,17 +70,17 @@ impl TestRunner for TraceRunner {
                 let mut desc = format!(
                     "service_name={svc} span_name={span_name} otel_endpoint={otel_endpoint}"
                 );
-                if let Some(attrs) = expected_attributes {
-                    if let Some(obj) = attrs.as_object() {
-                        let keys: Vec<&String> = obj.keys().collect();
-                        desc.push_str(&format!(
-                            " expected_attrs=[{}]",
-                            keys.iter()
-                                .map(|k| k.as_str())
-                                .collect::<Vec<_>>()
-                                .join(",")
-                        ));
-                    }
+                if let Some(attrs) = expected_attributes
+                    && let Some(obj) = attrs.as_object()
+                {
+                    let keys: Vec<&String> = obj.keys().collect();
+                    desc.push_str(&format!(
+                        " expected_attrs=[{}]",
+                        keys.iter()
+                            .map(|k| k.as_str())
+                            .collect::<Vec<_>>()
+                            .join(",")
+                    ));
                 }
                 if let Some(min) = min_duration_ms {
                     desc.push_str(&format!(" min_duration_ms={min}"));

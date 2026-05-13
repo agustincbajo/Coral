@@ -270,15 +270,15 @@ fn parse_provider_for_repo(
     // anything bigger is almost certainly a checked-in dump that would
     // OOM the process. Surface as a parse-time warning instead of
     // bailing out of the whole project check.
-    if let Ok(meta) = std::fs::metadata(&spec_path) {
-        if meta.len() > 32 * 1024 * 1024 {
-            tracing::warn!(
-                path = %spec_path.display(),
-                bytes = meta.len(),
-                "openapi spec exceeds 32 MB cap; skipping for contract check"
-            );
-            return Ok(None);
-        }
+    if let Ok(meta) = std::fs::metadata(&spec_path)
+        && meta.len() > 32 * 1024 * 1024
+    {
+        tracing::warn!(
+            path = %spec_path.display(),
+            bytes = meta.len(),
+            "openapi spec exceeds 32 MB cap; skipping for contract check"
+        );
+        return Ok(None);
     }
     let raw_with_bom = std::fs::read_to_string(&spec_path).map_err(|source| TestError::Io {
         path: spec_path.clone(),
@@ -442,23 +442,23 @@ fn extract_from_yaml(path: &Path, refs: &mut Vec<EndpointReference>) -> TestResu
         None => return Ok(()),
     };
     for step in steps {
-        if let Some(http_line) = step.get("http").and_then(|v| v.as_str()) {
-            if let Some((method, path_str)) = parse_http_line(http_line) {
-                let expected_status = step
-                    .get("expect")
-                    .and_then(|e| e.get("status"))
-                    .and_then(|s| s.as_u64())
-                    .map(|s| s as u16);
-                // v0.24: detect whether the step sends a request body.
-                let sends_body = step.get("body").is_some() || step.get("json").is_some();
-                refs.push(EndpointReference {
-                    method,
-                    path: path_str,
-                    expected_status,
-                    sends_body,
-                    source: path.to_path_buf(),
-                });
-            }
+        if let Some(http_line) = step.get("http").and_then(|v| v.as_str())
+            && let Some((method, path_str)) = parse_http_line(http_line)
+        {
+            let expected_status = step
+                .get("expect")
+                .and_then(|e| e.get("status"))
+                .and_then(|s| s.as_u64())
+                .map(|s| s as u16);
+            // v0.24: detect whether the step sends a request body.
+            let sends_body = step.get("body").is_some() || step.get("json").is_some();
+            refs.push(EndpointReference {
+                method,
+                path: path_str,
+                expected_status,
+                sends_body,
+                source: path.to_path_buf(),
+            });
         }
     }
     Ok(())
@@ -498,17 +498,17 @@ fn extract_from_hurl(path: &Path, refs: &mut Vec<EndpointReference>) -> TestResu
             current_path = Some(path_str);
             continue;
         }
-        if let Some(rest) = trimmed.strip_prefix("HTTP ") {
-            if let (Some(m), Some(p)) = (current_method.take(), current_path.take()) {
-                let expected_status = rest.trim().parse::<u16>().ok();
-                refs.push(EndpointReference {
-                    method: m,
-                    path: p,
-                    expected_status,
-                    sends_body: false,
-                    source: path.to_path_buf(),
-                });
-            }
+        if let Some(rest) = trimmed.strip_prefix("HTTP ")
+            && let (Some(m), Some(p)) = (current_method.take(), current_path.take())
+        {
+            let expected_status = rest.trim().parse::<u16>().ok();
+            refs.push(EndpointReference {
+                method: m,
+                path: p,
+                expected_status,
+                sends_body: false,
+                source: path.to_path_buf(),
+            });
         }
     }
     // Record any trailing pending request without a status line.

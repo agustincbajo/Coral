@@ -161,13 +161,13 @@ impl Runner for MockRunner {
         // handler that returns `Some(Err(Timeout))` short-circuits
         // without burning a scripted response. Default behaviour
         // (handler `None`) is unchanged.
-        if let Some(handler) = self.timeout_handler.lock().unwrap().as_mut() {
-            if let Some(short_circuit) = handler(prompt.timeout) {
-                // Drain the streaming-chunks slot too so the FIFOs
-                // stay aligned with `responses`.
-                let _ = self.streaming_chunks.lock().unwrap().pop_front();
-                return short_circuit;
-            }
+        if let Some(handler) = self.timeout_handler.lock().unwrap().as_mut()
+            && let Some(short_circuit) = handler(prompt.timeout)
+        {
+            // Drain the streaming-chunks slot too so the FIFOs
+            // stay aligned with `responses`.
+            let _ = self.streaming_chunks.lock().unwrap().pop_front();
+            return short_circuit;
         }
         // Pop the streaming side too so the FIFOs stay aligned.
         let _ = self.streaming_chunks.lock().unwrap().pop_front();
@@ -191,11 +191,11 @@ impl Runner for MockRunner {
         // v0.20.2 audit-followup #40: same handler hook on the
         // streaming path so tests don't have to special-case the
         // two surfaces.
-        if let Some(handler) = self.timeout_handler.lock().unwrap().as_mut() {
-            if let Some(short_circuit) = handler(prompt.timeout) {
-                let _ = self.streaming_chunks.lock().unwrap().pop_front();
-                return short_circuit;
-            }
+        if let Some(handler) = self.timeout_handler.lock().unwrap().as_mut()
+            && let Some(short_circuit) = handler(prompt.timeout)
+        {
+            let _ = self.streaming_chunks.lock().unwrap().pop_front();
+            return short_circuit;
         }
         let chunks = self.streaming_chunks.lock().unwrap().pop_front().flatten();
         let response = self.responses.lock().unwrap().pop_front();

@@ -208,11 +208,11 @@ pub fn parse_cargo_mutants_output(json_str: &str) -> Result<MutantsReport> {
             let mut found = None;
             for line in json_str.lines().rev() {
                 let trimmed = line.trim();
-                if trimmed.starts_with('{') {
-                    if let Ok(v) = serde_json::from_str::<CargoMutantsOutput>(trimmed) {
-                        found = Some(v);
-                        break;
-                    }
+                if trimmed.starts_with('{')
+                    && let Ok(v) = serde_json::from_str::<CargoMutantsOutput>(trimmed)
+                {
+                    found = Some(v);
+                    break;
                 }
             }
             // If still nothing, try the full text as a JSON array of outcomes.

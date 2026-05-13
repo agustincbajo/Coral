@@ -72,11 +72,11 @@ pub fn build(output: Option<PathBuf>) -> Result<ExitCode> {
     let zip_bytes = write_zip(&entries)?;
 
     let target = resolve_output_path(output.as_deref())?;
-    if let Some(parent) = target.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("creating {}", parent.display()))?;
-        }
+    if let Some(parent) = target.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
     }
     write_bytes_atomic(&target, &zip_bytes)?;
 
@@ -119,10 +119,11 @@ fn locate_template_dir() -> Result<PathBuf> {
         if template.is_dir() && cargo.is_file() {
             // Cheap sanity-check: the workspace Cargo.toml mentions
             // `crates/*` (i.e. this is the Coral workspace root).
-            if let Ok(s) = std::fs::read_to_string(&cargo) {
-                if s.contains("members") && s.contains("crates/") {
-                    return Ok(template);
-                }
+            if let Ok(s) = std::fs::read_to_string(&cargo)
+                && s.contains("members")
+                && s.contains("crates/")
+            {
+                return Ok(template);
             }
         }
         cursor = p.parent();

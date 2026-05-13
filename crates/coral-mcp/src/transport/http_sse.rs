@@ -453,15 +453,15 @@ fn handle_request(
     // Native clients can spoof Origin, so this is a browser-side
     // defense — the load-bearing protection is the 127.0.0.1 default.
     let origin = header_value(request.headers(), "Origin");
-    if let Some(o) = origin.as_deref() {
-        if !is_origin_allowed(o) {
-            return respond_simple(
-                request,
-                403,
-                "application/json",
-                r#"{"error":"forbidden Origin: only null / http://localhost / http://127.0.0.1 allowed"}"#,
-            );
-        }
+    if let Some(o) = origin.as_deref()
+        && !is_origin_allowed(o)
+    {
+        return respond_simple(
+            request,
+            403,
+            "application/json",
+            r#"{"error":"forbidden Origin: only null / http://localhost / http://127.0.0.1 allowed"}"#,
+        );
     }
 
     // Accept header validation. POST and GET have different requirements.
@@ -525,15 +525,15 @@ fn handle_post(
     // Body size check. tiny_http exposes `body_length()` — preferred
     // when Content-Length is set; fall back to a streaming read with
     // a hard cap.
-    if let Some(len) = request.body_length() {
-        if len > MAX_BODY_BYTES {
-            return respond_simple(
-                request,
-                413,
-                "application/json",
-                r#"{"error":"payload too large; cap is 4 MiB"}"#,
-            );
-        }
+    if let Some(len) = request.body_length()
+        && len > MAX_BODY_BYTES
+    {
+        return respond_simple(
+            request,
+            413,
+            "application/json",
+            r#"{"error":"payload too large; cap is 4 MiB"}"#,
+        );
     }
 
     let mut body = Vec::with_capacity(request.body_length().unwrap_or(0).min(MAX_BODY_BYTES));

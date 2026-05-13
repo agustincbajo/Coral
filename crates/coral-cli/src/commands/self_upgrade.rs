@@ -587,10 +587,10 @@ const GITHUB_TOKEN_ENV_VARS: &[&str] = &["GITHUB_TOKEN", "GH_TOKEN"];
 /// output).
 fn github_token_from_env() -> Option<String> {
     for var in GITHUB_TOKEN_ENV_VARS {
-        if let Ok(v) = std::env::var(var) {
-            if !v.is_empty() {
-                return Some(v);
-            }
+        if let Ok(v) = std::env::var(var)
+            && !v.is_empty()
+        {
+            return Some(v);
         }
     }
     None

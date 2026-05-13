@@ -172,15 +172,15 @@ pub struct PageCandidate {
 /// untouched.
 fn strip_fences(s: &str) -> &str {
     let s = s.trim();
-    if let Some(stripped) = s.strip_prefix("```yaml") {
-        if let Some(stripped) = stripped.strip_suffix("```") {
-            return stripped.trim();
-        }
+    if let Some(stripped) = s.strip_prefix("```yaml")
+        && let Some(stripped) = stripped.strip_suffix("```")
+    {
+        return stripped.trim();
     }
-    if let Some(stripped) = s.strip_prefix("```") {
-        if let Some(stripped) = stripped.strip_suffix("```") {
-            return stripped.trim();
-        }
+    if let Some(stripped) = s.strip_prefix("```")
+        && let Some(stripped) = stripped.strip_suffix("```")
+    {
+        return stripped.trim();
     }
     s
 }

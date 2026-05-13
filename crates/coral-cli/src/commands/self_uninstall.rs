@@ -195,15 +195,15 @@ fn remove_binary(binary_path: &Path) -> Result<()> {
 }
 
 fn home_dir() -> Option<PathBuf> {
-    if let Some(home) = std::env::var_os("HOME") {
-        if !home.is_empty() {
-            return Some(PathBuf::from(home));
-        }
+    if let Some(home) = std::env::var_os("HOME")
+        && !home.is_empty()
+    {
+        return Some(PathBuf::from(home));
     }
-    if let Some(profile) = std::env::var_os("USERPROFILE") {
-        if !profile.is_empty() {
-            return Some(PathBuf::from(profile));
-        }
+    if let Some(profile) = std::env::var_os("USERPROFILE")
+        && !profile.is_empty()
+    {
+        return Some(PathBuf::from(profile));
     }
     None
 }

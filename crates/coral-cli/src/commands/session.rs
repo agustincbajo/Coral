@@ -492,22 +492,21 @@ fn run_auto_capture(args: AutoCaptureArgs, project_root: &Path) -> Result<ExitCo
     // and check the index.
     let sessions_dir = project_root.join(".coral").join("sessions");
     let index_path = sessions_dir.join("index.json");
-    if index_path.exists() {
-        if let Ok(index) = coral_session::capture::read_index(&index_path) {
-            // Parse just enough of the transcript to get its session_id.
-            if let Ok(parsed) = parse_transcript(&transcript_path) {
-                if index
-                    .sessions
-                    .iter()
-                    .any(|e| e.session_id == parsed.session_id)
-                {
-                    tracing::debug!(
-                        session_id = %parsed.session_id,
-                        "transcript already captured"
-                    );
-                    return Ok(ExitCode::SUCCESS);
-                }
-            }
+    if index_path.exists()
+        && let Ok(index) = coral_session::capture::read_index(&index_path)
+    {
+        // Parse just enough of the transcript to get its session_id.
+        if let Ok(parsed) = parse_transcript(&transcript_path)
+            && index
+                .sessions
+                .iter()
+                .any(|e| e.session_id == parsed.session_id)
+        {
+            tracing::debug!(
+                session_id = %parsed.session_id,
+                "transcript already captured"
+            );
+            return Ok(ExitCode::SUCCESS);
         }
     }
 
@@ -599,17 +598,16 @@ fn run_show(args: ShowArgs, project_root: &Path) -> Result<ExitCode> {
 /// Reads `$HOME` (or `%USERPROFILE%` on Windows). Pure stdlib so we
 /// don't pull in `dirs` for one path.
 fn home_dir() -> Option<PathBuf> {
-    if let Ok(h) = std::env::var("HOME") {
-        if !h.is_empty() {
-            return Some(PathBuf::from(h));
-        }
+    if let Ok(h) = std::env::var("HOME")
+        && !h.is_empty()
+    {
+        return Some(PathBuf::from(h));
     }
-    if cfg!(windows) {
-        if let Ok(h) = std::env::var("USERPROFILE") {
-            if !h.is_empty() {
-                return Some(PathBuf::from(h));
-            }
-        }
+    if cfg!(windows)
+        && let Ok(h) = std::env::var("USERPROFILE")
+        && !h.is_empty()
+    {
+        return Some(PathBuf::from(h));
     }
     None
 }
@@ -655,10 +653,10 @@ mod tests {
     fn home_dir_returns_home_env() {
         // SAFETY: this test only reads HOME; doesn't mutate. Avoid
         // contention with other env-mutating tests.
-        if let Ok(h) = std::env::var("HOME") {
-            if !h.is_empty() {
-                assert_eq!(home_dir().as_deref(), Some(Path::new(&h)));
-            }
+        if let Ok(h) = std::env::var("HOME")
+            && !h.is_empty()
+        {
+            assert_eq!(home_dir().as_deref(), Some(Path::new(&h)));
         }
     }
 

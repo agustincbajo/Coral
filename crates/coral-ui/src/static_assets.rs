@@ -68,18 +68,17 @@ pub fn serve_static(
     // v0.35 Phase C (P-H1): try to serve a pre-compressed sibling.
     // index.html is excluded — it needs runtime config injection,
     // which requires the raw bytes.
-    if !is_index_html {
-        if let Some((sibling_bytes, encoding)) = try_compressed_sibling(normalized, accept_encoding)
-        {
-            let cache = "public, max-age=31536000, immutable";
-            return Some(StaticResponse {
-                status: 200,
-                content_type: mime.to_string(),
-                body: sibling_bytes,
-                cache,
-                content_encoding: Some(encoding),
-            });
-        }
+    if !is_index_html
+        && let Some((sibling_bytes, encoding)) = try_compressed_sibling(normalized, accept_encoding)
+    {
+        let cache = "public, max-age=31536000, immutable";
+        return Some(StaticResponse {
+            status: 200,
+            content_type: mime.to_string(),
+            body: sibling_bytes,
+            cache,
+            content_encoding: Some(encoding),
+        });
     }
 
     let mut body = file.contents().to_vec();

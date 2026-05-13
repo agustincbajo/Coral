@@ -202,13 +202,13 @@ impl WikiLog {
         summary: impl Into<String>,
     ) -> Result<LogEntry> {
         let path = path.as_ref();
-        if let Some(parent) = path.parent() {
-            if !parent.as_os_str().is_empty() {
-                fs::create_dir_all(parent).map_err(|source| CoralError::Io {
-                    path: parent.to_path_buf(),
-                    source,
-                })?;
-            }
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            fs::create_dir_all(parent).map_err(|source| CoralError::Io {
+                path: parent.to_path_buf(),
+                source,
+            })?;
         }
 
         let entry = LogEntry {

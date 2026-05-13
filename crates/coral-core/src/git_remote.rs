@@ -77,13 +77,13 @@ pub fn sync_repo(url: &str, r#ref: &str, path: &Path) -> Result<SyncOutcome> {
 }
 
 fn clone_fresh(url: &str, r#ref: &str, path: &Path) -> Result<SyncOutcome> {
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent).map_err(|source| CoralError::Io {
-                path: parent.to_path_buf(),
-                source,
-            })?;
-        }
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent).map_err(|source| CoralError::Io {
+            path: parent.to_path_buf(),
+            source,
+        })?;
     }
     // v0.19.5 audit: keep all `--flag` arguments BEFORE the `--`
     // separator and put user-controlled positionals (`url`, `path`)

@@ -287,17 +287,14 @@ pub fn run_with_runner(
 /// Load governance policy from `coral.toml` `[governance]` section.
 fn load_governance_policy(wiki_root: &Path) -> coral_core::governance::GovernancePolicy {
     let manifest_path = wiki_root.parent().unwrap_or(wiki_root).join("coral.toml");
-    if let Ok(raw) = std::fs::read_to_string(&manifest_path) {
-        if let Ok(table) = raw.parse::<toml::Table>() {
-            if let Some(gov) = table.get("governance") {
-                if let Ok(policy) = gov
-                    .clone()
-                    .try_into::<coral_core::governance::GovernancePolicy>()
-                {
-                    return policy;
-                }
-            }
-        }
+    if let Ok(raw) = std::fs::read_to_string(&manifest_path)
+        && let Ok(table) = raw.parse::<toml::Table>()
+        && let Some(gov) = table.get("governance")
+        && let Ok(policy) = gov
+            .clone()
+            .try_into::<coral_core::governance::GovernancePolicy>()
+    {
+        return policy;
     }
     coral_core::governance::GovernancePolicy::default()
 }

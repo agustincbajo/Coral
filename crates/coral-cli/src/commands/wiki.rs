@@ -169,10 +169,10 @@ fn run_at(args: AtArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
     let mut shown = 0usize;
     for page in &pages {
         let slug = &page.frontmatter.slug;
-        if let Some(ref filter) = args.filter {
-            if !slug.contains(filter.as_str()) {
-                continue;
-            }
+        if let Some(ref filter) = args.filter
+            && !slug.contains(filter.as_str())
+        {
+            continue;
         }
         if args.full {
             println!("--- {} ---", slug);

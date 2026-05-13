@@ -130,18 +130,18 @@ pub(crate) fn resolve_http_endpoint(cwd: &Path) -> Option<HttpResolution> {
         .ok()
         .filter(|v| !v.is_empty());
 
-    if let Some(cfg) = cfg.as_ref() {
-        if let Some(ollama) = cfg.provider.ollama.as_ref() {
-            let endpoint = ollama_endpoint_with_chat_path(&ollama.endpoint);
-            // The schema currently has no `api_key` field for ollama,
-            // but a user may have a custom Ollama proxy requiring auth.
-            // Allow CORAL_HTTP_API_KEY to layer on top of a config
-            // endpoint — explicit env overrides default-no-auth.
-            return Some(HttpResolution {
-                endpoint,
-                api_key: env_api_key,
-            });
-        }
+    if let Some(cfg) = cfg.as_ref()
+        && let Some(ollama) = cfg.provider.ollama.as_ref()
+    {
+        let endpoint = ollama_endpoint_with_chat_path(&ollama.endpoint);
+        // The schema currently has no `api_key` field for ollama,
+        // but a user may have a custom Ollama proxy requiring auth.
+        // Allow CORAL_HTTP_API_KEY to layer on top of a config
+        // endpoint — explicit env overrides default-no-auth.
+        return Some(HttpResolution {
+            endpoint,
+            api_key: env_api_key,
+        });
     }
 
     // (2) Legacy env-var path. Preserves v0.33 behavior verbatim for

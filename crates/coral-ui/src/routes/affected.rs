@@ -68,10 +68,10 @@ pub fn handle(state: &Arc<AppState>, query_string: &str) -> Result<Vec<u8>, ApiE
             let stdout = String::from_utf8_lossy(&o.stdout);
             let mut dirs: BTreeSet<String> = BTreeSet::new();
             for line in stdout.lines().filter(|l| !l.is_empty()) {
-                if let Some(top) = line.split('/').next() {
-                    if !top.is_empty() {
-                        dirs.insert(top.to_string());
-                    }
+                if let Some(top) = line.split('/').next()
+                    && !top.is_empty()
+                {
+                    dirs.insert(top.to_string());
                 }
             }
             // Intersect with declared repos in coral.toml when present.

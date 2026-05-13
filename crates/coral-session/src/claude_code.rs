@@ -144,22 +144,21 @@ pub fn parse_transcript_text(content: &str, path: &Path) -> SessionResult<Parsed
 
         // Pin the session_id from the first record that carries one;
         // `sessionId` is repeated on every record but defensive.
-        if session_id.is_empty() {
-            if let Some(s) = &record.session_id {
-                session_id = s.clone();
-            }
+        if session_id.is_empty()
+            && let Some(s) = &record.session_id
+        {
+            session_id = s.clone();
         }
-        if cwd.is_none() {
-            if let Some(c) = &record.cwd {
-                cwd = Some(c.clone());
-            }
+        if cwd.is_none()
+            && let Some(c) = &record.cwd
+        {
+            cwd = Some(c.clone());
         }
-        if first_ts.is_none() {
-            if let Some(ts) = &record.timestamp {
-                if let Ok(parsed) = DateTime::parse_from_rfc3339(ts) {
-                    first_ts = Some(parsed.with_timezone(&Utc));
-                }
-            }
+        if first_ts.is_none()
+            && let Some(ts) = &record.timestamp
+            && let Ok(parsed) = DateTime::parse_from_rfc3339(ts)
+        {
+            first_ts = Some(parsed.with_timezone(&Utc));
         }
 
         match record.record_type.as_str() {
@@ -357,14 +356,14 @@ pub fn find_latest_for_cwd(home_dir: &Path, target_cwd: &Path) -> SessionResult<
             if line.is_empty() {
                 continue;
             }
-            if let Ok(rec) = serde_json::from_str::<ClaudeCodeRecord>(line) {
-                if let Some(c) = rec.cwd {
-                    let cwd_path = PathBuf::from(&c);
-                    let canonical = cwd_path.canonicalize().unwrap_or(cwd_path.clone());
-                    if canonical == target_cwd || cwd_path == target_cwd {
-                        matched = true;
-                        break;
-                    }
+            if let Ok(rec) = serde_json::from_str::<ClaudeCodeRecord>(line)
+                && let Some(c) = rec.cwd
+            {
+                let cwd_path = PathBuf::from(&c);
+                let canonical = cwd_path.canonicalize().unwrap_or(cwd_path.clone());
+                if canonical == target_cwd || cwd_path == target_cwd {
+                    matched = true;
+                    break;
                 }
             }
         }

@@ -187,17 +187,16 @@ impl ToolDispatcher for ContractToolDispatcher {
                 if let Ok(entries) = std::fs::read_dir(&contracts_dir) {
                     for entry in entries.flatten() {
                         let path = entry.path();
-                        if path.extension().and_then(|e| e.to_str()) == Some("json") {
-                            if let Ok(raw) = std::fs::read_to_string(&path) {
-                                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&raw) {
-                                    if let Some(repo) = repo_filter {
-                                        if val.get("repo").and_then(|r| r.as_str()) != Some(repo) {
-                                            continue;
-                                        }
-                                    }
-                                    reports.push(val);
-                                }
+                        if path.extension().and_then(|e| e.to_str()) == Some("json")
+                            && let Ok(raw) = std::fs::read_to_string(&path)
+                            && let Ok(val) = serde_json::from_str::<serde_json::Value>(&raw)
+                        {
+                            if let Some(repo) = repo_filter
+                                && val.get("repo").and_then(|r| r.as_str()) != Some(repo)
+                            {
+                                continue;
                             }
+                            reports.push(val);
                         }
                     }
                 }

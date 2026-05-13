@@ -294,7 +294,7 @@ fn encode_vec(v: &[f32]) -> Vec<u8> {
 }
 
 fn decode_vec(bytes: &[u8]) -> Vec<f32> {
-    if bytes.len() % 4 != 0 {
+    if !bytes.len().is_multiple_of(4) {
         return vec![];
     }
     bytes

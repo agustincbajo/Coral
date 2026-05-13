@@ -76,12 +76,12 @@ pub fn list(state: &Arc<AppState>, query_string: &str) -> Result<Vec<u8>, ApiErr
     // `is_safe_repo_name` so a future multi-repo refactor doesn't change
     // the API surface; today any string but the single repo simply
     // returns the full list.
-    if let Some(repo) = params.get("repo") {
-        if !is_safe_repo_name(repo) {
-            return Err(ApiError::InvalidFilter(format!(
-                "repo: {repo:?} not allowed"
-            )));
-        }
+    if let Some(repo) = params.get("repo")
+        && !is_safe_repo_name(repo)
+    {
+        return Err(ApiError::InvalidFilter(format!(
+            "repo: {repo:?} not allowed"
+        )));
     }
 
     let pages = read_pages(&state.wiki_root).map_err(|e| anyhow::anyhow!(e))?;
@@ -103,20 +103,20 @@ pub fn list(state: &Arc<AppState>, query_string: &str) -> Result<Vec<u8>, ApiErr
             if !statuses.is_empty() && !statuses.contains(&p.frontmatter.status) {
                 return false;
             }
-            if let Some(min) = conf_min {
-                if p.frontmatter.confidence.as_f64() < min {
-                    return false;
-                }
+            if let Some(min) = conf_min
+                && p.frontmatter.confidence.as_f64() < min
+            {
+                return false;
             }
-            if let Some(max) = conf_max {
-                if p.frontmatter.confidence.as_f64() > max {
-                    return false;
-                }
+            if let Some(max) = conf_max
+                && p.frontmatter.confidence.as_f64() > max
+            {
+                return false;
             }
-            if let Some(at) = &valid_at {
-                if !p.frontmatter.is_valid_at(at) {
-                    return false;
-                }
+            if let Some(at) = &valid_at
+                && !p.frontmatter.is_valid_at(at)
+            {
+                return false;
             }
             true
         })

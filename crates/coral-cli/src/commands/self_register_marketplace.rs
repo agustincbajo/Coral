@@ -104,15 +104,15 @@ fn resolve_settings_path(scope: Scope) -> Result<PathBuf> {
 /// (`$HOME`) and Windows (`%USERPROFILE%`) which are the only OSes
 /// Claude Code supports.
 fn home_dir() -> Option<PathBuf> {
-    if let Some(home) = std::env::var_os("HOME") {
-        if !home.is_empty() {
-            return Some(PathBuf::from(home));
-        }
+    if let Some(home) = std::env::var_os("HOME")
+        && !home.is_empty()
+    {
+        return Some(PathBuf::from(home));
     }
-    if let Some(profile) = std::env::var_os("USERPROFILE") {
-        if !profile.is_empty() {
-            return Some(PathBuf::from(profile));
-        }
+    if let Some(profile) = std::env::var_os("USERPROFILE")
+        && !profile.is_empty()
+    {
+        return Some(PathBuf::from(profile));
     }
     None
 }
@@ -162,14 +162,14 @@ fn upsert_marketplace(settings_path: &Path) -> Result<Outcome> {
     // the wording of the abort tells the user what to do (skip
     // --with-claude-config and use paste flow). Failing closed is
     // safer than corrupting their config.
-    if let Some(raw) = &existing_raw {
-        if looks_like_jsonc(raw) {
-            bail!(
-                "Refusing to touch JSONC. Strict JSON only in M1. \
+    if let Some(raw) = &existing_raw
+        && looks_like_jsonc(raw)
+    {
+        bail!(
+            "Refusing to touch JSONC. Strict JSON only in M1. \
                  Either remove `//` or `/* */` comments and re-run, or \
                  skip --with-claude-config and use the 3-line paste flow."
-            );
-        }
+        );
     }
 
     let original_json = match existing_raw.as_deref() {
@@ -303,12 +303,11 @@ fn looks_like_jsonc(raw: &str) -> bool {
         }
         if c == '"' {
             in_string = true;
-        } else if c == '/' {
-            if let Some(&next) = chars.peek() {
-                if next == '/' || next == '*' {
-                    return true;
-                }
-            }
+        } else if c == '/'
+            && let Some(&next) = chars.peek()
+            && (next == '/' || next == '*')
+        {
+            return true;
         }
         prev = c;
     }

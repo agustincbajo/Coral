@@ -74,10 +74,10 @@ impl RepoFilters {
             .collect();
 
         // Affected-repo filter: only keep repos with changes since `--since`.
-        if self.affected {
-            if let Some(ref since_ref) = self.since {
-                result.retain(|repo| repo_has_changes(repo, project, since_ref));
-            }
+        if self.affected
+            && let Some(ref since_ref) = self.since
+        {
+            result.retain(|repo| repo_has_changes(repo, project, since_ref));
         }
 
         result

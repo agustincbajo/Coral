@@ -83,10 +83,10 @@ pub fn start_watcher_with_state(
                 );
                 // Mark the in-memory cache as stale so the next
                 // resources/read triggers a refresh.
-                if let Some(ref state) = wiki_state {
-                    if let Ok(mut s) = state.write() {
-                        s.mark_dirty();
-                    }
+                if let Some(ref state) = wiki_state
+                    && let Ok(mut s) = state.write()
+                {
+                    s.mark_dirty();
                 }
                 handler.notify_resources_list_changed();
                 last_mtime = current_mtime;
@@ -113,22 +113,22 @@ fn collect_max_mtime(wiki_root: &Path) -> Option<SystemTime> {
 
     if let Ok(entries) = std::fs::read_dir(wiki_root) {
         for entry in entries.flatten() {
-            if let Ok(meta) = entry.metadata() {
-                if let Ok(mtime) = meta.modified() {
-                    max_mtime = Some(match max_mtime {
-                        Some(current) => current.max(mtime),
-                        None => mtime,
-                    });
-                }
+            if let Ok(meta) = entry.metadata()
+                && let Ok(mtime) = meta.modified()
+            {
+                max_mtime = Some(match max_mtime {
+                    Some(current) => current.max(mtime),
+                    None => mtime,
+                });
             }
             // Recurse into subdirectories.
-            if entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
-                if let Some(sub_mtime) = collect_max_mtime(&entry.path()) {
-                    max_mtime = Some(match max_mtime {
-                        Some(current) => current.max(sub_mtime),
-                        None => sub_mtime,
-                    });
-                }
+            if entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false)
+                && let Some(sub_mtime) = collect_max_mtime(&entry.path())
+            {
+                max_mtime = Some(match max_mtime {
+                    Some(current) => current.max(sub_mtime),
+                    None => sub_mtime,
+                });
             }
         }
     }

@@ -181,10 +181,10 @@ pub fn emit_k6(cases: &[TestCase], spec: &EnvironmentSpec) -> EmitOutput {
 fn collect_service_ports(spec: &EnvironmentSpec) -> Vec<(String, u16)> {
     let mut out = Vec::new();
     for (name, kind) in &spec.services {
-        if let ServiceKind::Real(real) = kind {
-            if let Some(&port) = real.ports.first() {
-                out.push((name.clone(), port));
-            }
+        if let ServiceKind::Real(real) = kind
+            && let Some(&port) = real.ports.first()
+        {
+            out.push((name.clone(), port));
         }
     }
     out

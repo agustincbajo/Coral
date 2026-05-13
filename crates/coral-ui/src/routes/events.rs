@@ -95,10 +95,10 @@ fn write_head(w: &mut dyn Write) -> std::io::Result<()> {
 pub(crate) fn collect_max_mtime(root: &Path) -> Option<SystemTime> {
     let mut max: Option<SystemTime> = None;
     walk_dir(root, &mut |path| {
-        if let Ok(meta) = std::fs::metadata(path) {
-            if let Ok(mtime) = meta.modified() {
-                max = Some(max.map_or(mtime, |m| m.max(mtime)));
-            }
+        if let Ok(meta) = std::fs::metadata(path)
+            && let Ok(mtime) = meta.modified()
+        {
+            max = Some(max.map_or(mtime, |m| m.max(mtime)));
         }
     });
     max

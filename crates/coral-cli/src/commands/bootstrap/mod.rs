@@ -450,23 +450,23 @@ fn apply_pages(
         // tradeoff of par-iter + collect (vs. per-worker cost-check
         // with shared mutex, which P-H4 will revisit in v0.36).
         let projected_page_cost = project_page_cost(&entry, cost_provider);
-        if let Some(cap) = max_cost {
-            if state.cost_spent_usd + projected_page_cost > cap {
-                tracing::warn!(
-                    cost_spent_usd = state.cost_spent_usd,
-                    cap_usd = cap,
-                    projected_page_cost,
-                    "page: --max-cost gate triggered; halting"
-                );
-                eprintln!(
-                    "Stopped at ${:.2} (cap ${cap:.2}). Run `coral bootstrap --resume` to continue.",
-                    state.cost_spent_usd
-                );
-                state.partial = true;
-                state.save_atomic(root)?;
-                partial = true;
-                break;
-            }
+        if let Some(cap) = max_cost
+            && state.cost_spent_usd + projected_page_cost > cap
+        {
+            tracing::warn!(
+                cost_spent_usd = state.cost_spent_usd,
+                cap_usd = cap,
+                projected_page_cost,
+                "page: --max-cost gate triggered; halting"
+            );
+            eprintln!(
+                "Stopped at ${:.2} (cap ${cap:.2}). Run `coral bootstrap --resume` to continue.",
+                state.cost_spent_usd
+            );
+            state.partial = true;
+            state.save_atomic(root)?;
+            partial = true;
+            break;
         }
 
         let mut entry_with_body = entry.clone();
