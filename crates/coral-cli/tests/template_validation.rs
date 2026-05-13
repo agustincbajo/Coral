@@ -10,7 +10,12 @@ fn template_dir() -> PathBuf {
 
 fn read_md(rel_path: &str) -> String {
     let p = template_dir().join(rel_path);
-    std::fs::read_to_string(&p).unwrap_or_else(|_| panic!("missing {}", p.display()))
+    let raw = std::fs::read_to_string(&p).unwrap_or_else(|_| panic!("missing {}", p.display()));
+    // Normalize CRLF -> LF so frontmatter / section assertions are
+    // platform-independent. Git's `core.autocrlf` setting checks out
+    // `*.md` files with CRLF on Windows, which would otherwise break
+    // `starts_with("---\n")` checks below.
+    raw.replace("\r\n", "\n")
 }
 
 #[test]
