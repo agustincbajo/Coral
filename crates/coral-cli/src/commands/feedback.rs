@@ -132,8 +132,7 @@ fn run_submit(args: SubmitArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
         .unwrap_or_else(|| cwd.join(".wiki"));
 
     let envelope = build_envelope(&cwd, &wiki_dir)?;
-    let json = serde_json::to_string_pretty(&envelope)
-        .context("serializing feedback envelope")?;
+    let json = serde_json::to_string_pretty(&envelope).context("serializing feedback envelope")?;
 
     println!("{json}");
 
@@ -336,15 +335,14 @@ fn load_calibration(path: &Path) -> Result<(Option<BootstrapEstimate>, Option<Wa
         _ => None,
     };
 
-    let predicted_seconds = v.get("predicted_wallclock_seconds").and_then(|x| x.as_u64());
-    let actual_seconds = v
-        .get("actual_wallclock_seconds")
-        .and_then(|x| x.as_u64())
-        .or_else(|| {
-            // Fallback: derive from started_at if completed_at is
-            // available — opportunistic only.
-            None
-        });
+    let predicted_seconds = v
+        .get("predicted_wallclock_seconds")
+        .and_then(|x| x.as_u64());
+    // `actual_wallclock_seconds` is the canonical field; future
+    // schema revisions may derive it from `started_at` /
+    // `completed_at` deltas, but for v0.38.0 we read the explicit
+    // field and return `None` when missing.
+    let actual_seconds = v.get("actual_wallclock_seconds").and_then(|x| x.as_u64());
     let wallclock = match (predicted_seconds, actual_seconds) {
         (Some(p), Some(a)) => Some(Wallclock {
             predicted_seconds: p,
@@ -577,14 +575,10 @@ mod tests {
         let json = serde_json::to_string(&envelope).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         let obj = v.as_object().unwrap();
-        let allowed: std::collections::HashSet<&str> = [
-            "coral_version",
-            "platform",
-            "provider",
-            "repo_signature",
-        ]
-        .into_iter()
-        .collect();
+        let allowed: std::collections::HashSet<&str> =
+            ["coral_version", "platform", "provider", "repo_signature"]
+                .into_iter()
+                .collect();
         for key in obj.keys() {
             assert!(
                 allowed.contains(key.as_str()),
