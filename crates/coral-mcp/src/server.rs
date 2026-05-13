@@ -276,18 +276,25 @@ impl McpHandler {
         let request: JsonRpcRequest = match serde_json::from_str(line) {
             Ok(r) => r,
             Err(e) => {
-                return Some(
-                    serde_json::to_value(JsonRpcResponse {
-                        jsonrpc: "2.0",
-                        id: None,
-                        result: None,
-                        error: Some(JsonRpcError {
-                            code: -32700,
-                            message: format!("parse error: {e}"),
-                        }),
-                    })
-                    .unwrap(),
-                );
+                // `JsonRpcResponse` is a plain `#[derive(Serialize)]`
+                // struct with no failure modes — `to_value` cannot fail
+                // here. Surface as a panic of last resort (failure here
+                // would mean serde_json itself is broken).
+                #[allow(
+                    clippy::unwrap_used,
+                    reason = "JsonRpcResponse is pure Serialize, no failure modes"
+                )]
+                let body = serde_json::to_value(JsonRpcResponse {
+                    jsonrpc: "2.0",
+                    id: None,
+                    result: None,
+                    error: Some(JsonRpcError {
+                        code: -32700,
+                        message: format!("parse error: {e}"),
+                    }),
+                })
+                .unwrap();
+                return Some(body);
             }
         };
         if request.jsonrpc != "2.0" {
@@ -352,10 +359,14 @@ impl McpHandler {
         // Including a `null` field would mislead clients that test
         // `if response.nextCursor` for the existence of more data.
         if let Some(cursor) = next_cursor {
-            response
-                .as_object_mut()
-                .expect("json object")
-                .insert("nextCursor".to_string(), serde_json::Value::String(cursor));
+            // `response` was just minted from `json!({ ... })` with a top-
+            // level object literal — `as_object_mut` is statically `Some`.
+            #[allow(
+                clippy::expect_used,
+                reason = "json!({...}) literal is always a JSON object"
+            )]
+            let obj = response.as_object_mut().expect("json object");
+            obj.insert("nextCursor".to_string(), serde_json::Value::String(cursor));
         }
         Ok(response)
     }
@@ -418,10 +429,12 @@ impl McpHandler {
             .map_err(HandlerError::InvalidParams)?;
         let mut response = serde_json::json!({ "tools": page });
         if let Some(cursor) = next_cursor {
-            response
-                .as_object_mut()
-                .expect("json object")
-                .insert("nextCursor".to_string(), serde_json::Value::String(cursor));
+            #[allow(
+                clippy::expect_used,
+                reason = "json!({...}) literal is always a JSON object"
+            )]
+            let obj = response.as_object_mut().expect("json object");
+            obj.insert("nextCursor".to_string(), serde_json::Value::String(cursor));
         }
         Ok(response)
     }
@@ -649,6 +662,12 @@ fn lookup_tool_kind(name: &str) -> Option<ToolKind> {
     map.get(name).copied()
 }
 
+#[allow(
+    clippy::unwrap_used,
+    reason = "JsonRpcResponse is pure Serialize: id/result/error are all \
+              serde_json::Value (passthrough); the wrapper has no \
+              custom serializer that could fail."
+)]
 fn ok_response(id: Option<serde_json::Value>, result: serde_json::Value) -> serde_json::Value {
     serde_json::to_value(JsonRpcResponse {
         jsonrpc: "2.0",
@@ -659,6 +678,10 @@ fn ok_response(id: Option<serde_json::Value>, result: serde_json::Value) -> serd
     .unwrap()
 }
 
+#[allow(
+    clippy::unwrap_used,
+    reason = "JsonRpcResponse is pure Serialize, see ok_response"
+)]
 fn error_response(id: Option<serde_json::Value>, code: i64, message: &str) -> serde_json::Value {
     serde_json::to_value(JsonRpcResponse {
         jsonrpc: "2.0",
