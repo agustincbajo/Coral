@@ -6,6 +6,14 @@ use std::sync::OnceLock;
 
 fn wikilink_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
+    // Static regex literal; verified at compile-time by the parser via
+    // the unit tests in this module. The `expect` is a sentinel for
+    // future refactors — if you change the pattern and it stops
+    // compiling, the panic message tells you to fix it.
+    #[allow(
+        clippy::expect_used,
+        reason = "static regex; compile validity guarded by unit tests"
+    )]
     RE.get_or_init(|| Regex::new(r"\[\[([^\]\n]+)\]\]").expect("valid wikilink regex"))
 }
 
@@ -44,13 +52,21 @@ pub fn extract(content: &str) -> Vec<String> {
         }
 
         for cap in re.captures_iter(line) {
-            let m = cap.get(0).expect("group 0 always present");
+            // `cap.get(0)` is `Some` whenever a match exists (the iterator
+            // only yields matched captures). `cap.get(1)` is `Some`
+            // because group 1 in the pattern `\[\[([^\]\n]+)\]\]` requires
+            // at least one non-`]` char to match. Both are unreachable
+            // failure modes — `if let` keeps clippy quiet without a panic.
+            let Some(m) = cap.get(0) else { continue };
             let abs_start = line_start + m.start();
             // Escape check: if char immediately before is a backslash, skip.
             if abs_start > 0 && bytes[abs_start - 1] == b'\\' {
                 continue;
             }
-            let target_raw = cap.get(1).expect("group 1 captured").as_str();
+            let Some(target_match) = cap.get(1) else {
+                continue;
+            };
+            let target_raw = target_match.as_str();
             // Honor `\|` as an escaped pipe inside the link body — Obsidian
             // semantics (#27). Substitute a sentinel byte (UNIT SEPARATOR,
             // U+001F) that cannot legally occur in slugs before alias-splitting,

@@ -535,9 +535,20 @@ fn map_tiered(raw: RawTiered, manifest_path: &Path) -> Result<TieredManifest> {
             missing.join(", ")
         )));
     }
-    let planner = map_tier_spec(raw.planner.unwrap());
-    let executor = map_tier_spec(raw.executor.unwrap());
-    let reviewer = map_tier_spec(raw.reviewer.unwrap());
+    // Destructure with `Option::ok_or` so we never have to call `unwrap`
+    // even though the `missing` check above guarantees all three are
+    // `Some` at this point. The fallback error message is unreachable
+    // but cheap — it keeps clippy::unwrap_used clean without a blanket
+    // allow.
+    let unreachable_missing = || {
+        CoralError::Walk(format!(
+            "[runner.tiered] in {}: internal invariant violated",
+            manifest_path.display()
+        ))
+    };
+    let planner = map_tier_spec(raw.planner.ok_or_else(unreachable_missing)?);
+    let executor = map_tier_spec(raw.executor.ok_or_else(unreachable_missing)?);
+    let reviewer = map_tier_spec(raw.reviewer.ok_or_else(unreachable_missing)?);
 
     let budget = match raw.budget {
         Some(b) => {
