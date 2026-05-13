@@ -43,13 +43,15 @@ curl -fsSL https://raw.githubusercontent.com/agustincbajo/Coral/main/scripts/ins
 `extraKnownMarketplaces` so even step 1 is skipped — see FR-ONB-26 in
 `docs/PRD-v0.34-onboarding.md`.)
 
-The `coral.dev/install` shortcut referenced in the PRD sketch was an
-aspirational rustup-style URL. The domain is not owned by this
-project and there is no concrete plan to acquire it — the GitHub raw
-URL above is the operational install path. Most users will install
-via the Anthropic curated marketplace (Path B below) once approved,
-in which case the binary install is handled by the plugin itself and
-no curl-pipe-bash command runs.
+The `coral.dev/install` shortcut referenced in the PRD sketch is an
+aspirational rustup-style URL (`curl rustup.rs | sh` pattern). The
+domain is not currently owned by this project. The decision to
+acquire a brandable domain (`coral.sh`, `coral.run`, `getcoral.dev`,
+…) is deferred — see BACKLOG.md item #11. The GitHub raw URL above
+is the operational install path either way, and most users will
+install via the Anthropic curated marketplace (Path B below) once
+approved, in which case the binary install is handled by the plugin
+itself and no curl-pipe-bash command runs.
 
 **Discovery surface:** README + social + word-of-mouth. The plugin is
 NOT in the Claude Code "Discover" tab unless users follow Path B

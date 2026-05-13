@@ -358,6 +358,48 @@ Coral v0.33.0 is in production with:
 
 The seven open items above are sequel work, not unfinished business.
 
+---
+
+### 11. Brandable install-URL domain (decision deferred)
+
+The PRD (`docs/PRD-v0.34-onboarding.md` §1) sketches a rustup-style
+shortcut for the install script:
+
+```bash
+curl -fsSL https://coral.dev/install | bash -s -- --with-claude-config
+```
+
+`coral.dev` itself is registered by a third party. Candidate
+alternatives if we pursue the shortcut:
+
+- `coral.sh` — terse, dev-aesthetic, ~$25/yr at typical registrars
+- `coral.run` — same shape, ~$25/yr
+- `getcoral.dev` — verb-prefixed (Stripe-style `stripe.com/docs`),
+  cheaper TLD, ~$10/yr
+- `coral-cli.dev` — explicit-tool branding
+
+**Trade-offs auditados in-session:**
+
+- **For**: tagline in marketing material is shorter
+  (`coral.sh/install` vs raw GitHub URL); future repo moves don't
+  break the install script; aesthetics matter post-launch.
+- **Against**: most users install via Anthropic's curated marketplace
+  (UI-driven, no URL), or via `/plugin marketplace add agustincbajo/Coral`
+  (no domain involved). The `curl install.sh` flow is one-shot and
+  the raw GitHub URL is acceptable verbosity. DNS + TLS + renewal is
+  ongoing maintenance for a cosmetic win.
+
+**Status**: decision deferred. Not blocking anything. Revisit if/when
+a tagged marketing push or first conference talk gives Coral a name
+to live up to. If acquired, set up a Cloudflare Pages redirect from
+`<domain>/install` → `raw.githubusercontent.com/agustincbajo/Coral/
+main/scripts/install.sh` and update `docs/PUBLISH.md` + README + the
+PRD §1 mention.
+
+Cost: ~$10-25/yr registrar + ~1 hour Cloudflare setup. No code work.
+
+---
+
 ### v0.34.0 sprint status (shipped)
 
 PRD `docs/PRD-v0.34-onboarding.md` v1.4 — onboarding-stack milestone M1.
