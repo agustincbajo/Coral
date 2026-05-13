@@ -31,12 +31,24 @@ Claude Code marketplace flow. This works because:
 Or one-step with the binary install via the project's own installer:
 
 ```bash
-curl -fsSL https://coral.dev/install | bash -s -- --with-claude-config
+# Linux / macOS
+curl -fsSL https://raw.githubusercontent.com/agustincbajo/Coral/main/scripts/install.sh \
+  | bash -s -- --with-claude-config
+
+# Windows PowerShell
+& ([scriptblock]::Create((iwr -useb https://raw.githubusercontent.com/agustincbajo/Coral/main/scripts/install.ps1).Content)) -WithClaudeConfig
 ```
 
 (The installer can patch `.claude/settings.json` with
 `extraKnownMarketplaces` so even step 1 is skipped — see FR-ONB-26 in
 `docs/PRD-v0.34-onboarding.md`.)
+
+> **Note on the `coral.dev/install` shortcut.** The PRD references
+> `curl -fsSL https://coral.dev/install | bash` as the aspirational
+> install path (rustup/sh.rustup.rs style). The `coral.dev` domain is
+> not currently owned by this project. Until the domain is acquired
+> and a redirect to `raw.githubusercontent.com/...` is configured,
+> use the full GitHub raw URL above.
 
 **Discovery surface:** README + social + word-of-mouth. The plugin is
 NOT in the Claude Code "Discover" tab unless users follow Path B

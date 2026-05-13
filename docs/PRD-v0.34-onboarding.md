@@ -77,7 +77,12 @@ Este PRD lleva el onboarding a **2 actos en el happy path con `--with-claude-con
 
 ```bash
 # Acto 1: el usuario corre
+# (aspirational shortcut once `coral.dev` is acquired)
 curl -fsSL https://coral.dev/install | bash -s -- --with-claude-config
+
+# Current working URL (raw GitHub):
+curl -fsSL https://raw.githubusercontent.com/agustincbajo/Coral/main/scripts/install.sh \
+  | bash -s -- --with-claude-config
 
 # Acto 2: abre Claude Code en su repo y escribe CUALQUIER COSA
 #   ("hola", "qué es este repo", "help", "/coral:coral-bootstrap"...)
