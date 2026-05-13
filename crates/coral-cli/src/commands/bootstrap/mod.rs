@@ -780,10 +780,10 @@ pub fn run_from_symbols(args: BootstrapArgs, wiki_root: Option<&Path>) -> Result
         );
     }
 
-    let scan_dir = args
-        .path
-        .clone()
-        .unwrap_or_else(|| std::env::current_dir().expect("cwd"));
+    let scan_dir = match args.path.clone() {
+        Some(p) => p,
+        None => std::env::current_dir().context("getting cwd for scan path")?,
+    };
 
     let all_symbols = extract_from_dir(&scan_dir, SYMBOL_EXTENSIONS);
     if all_symbols.is_empty() {

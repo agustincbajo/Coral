@@ -426,13 +426,21 @@ fn render_watch(ws: &crate::spec::WatchSpec, plan: &ServiceSpecPlan) -> Option<V
     // Resolve a host-side path against `plan.resolved_context` the
     // same way `build.context` is resolved — so a relative path under
     // a `repo = "..."` service hits the actual checkout root.
+    //
+    // v0.37 prep: normalize backslashes to forward slashes on the
+    // resolved string. PathBuf::join uses OS-native separators, which
+    // on Windows produces mixed-separator strings like
+    // `/work/repos/api\./src`. Docker compose (and Docker Desktop on
+    // Windows) accepts forward-slash paths universally, so emitting
+    // them avoids the mixed-separator artifact and keeps the YAML
+    // identical across host OSes.
     let resolve = |path: &std::path::Path| -> String {
         let resolved = plan
             .resolved_context
             .clone()
             .map(|root| root.join(path))
             .unwrap_or_else(|| path.to_path_buf());
-        resolved.to_string_lossy().into_owned()
+        resolved.to_string_lossy().replace('\\', "/")
     };
 
     for rule in &ws.sync {

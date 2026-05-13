@@ -54,10 +54,14 @@ pub fn run(args: SyncArgs, _wiki_root: Option<&Path>) -> Result<ExitCode> {
     let mut written = 0usize;
 
     let resolved_version: String = if args.remote {
+        // `--remote requires --version` was enforced at the top of `run`;
+        // we re-surface the check as an explicit error here instead of
+        // unwrapping so a refactor that drops the early `bail!` cannot
+        // turn into a runtime panic. Cost is one branch on the cold path.
         let version = args
             .version
             .as_ref()
-            .expect("checked above; --remote requires --version");
+            .ok_or_else(|| anyhow::anyhow!("--remote requires --version"))?;
         sync_from_remote(version, &dest, args.force, &mut written)?;
         version.trim_start_matches('v').to_string()
     } else {

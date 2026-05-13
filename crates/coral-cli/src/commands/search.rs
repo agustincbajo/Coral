@@ -441,7 +441,16 @@ fn print_embedding_results(
             "model": model,
             "results": json,
         });
-        println!("{}", serde_json::to_string_pretty(&payload).unwrap());
+        // `serde_json::Value` built via `json!` is always serialisable:
+        // no `Map` non-string keys, no `serialize_with` closures. The
+        // only failure mode of `to_string_pretty` is custom serializers,
+        // which don't apply here.
+        #[allow(
+            clippy::unwrap_used,
+            reason = "Value from json! macro is infallibly serialisable"
+        )]
+        let pretty = serde_json::to_string_pretty(&payload).unwrap();
+        println!("{pretty}");
     } else if scored.is_empty() {
         println!("No results found for: {}", args.query);
     } else {

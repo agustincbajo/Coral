@@ -897,6 +897,10 @@ pub(crate) fn normalize_wikilink_spacing(body: &str) -> Option<String> {
     // Failure to compile is a programmer error; the literal is
     // checked at test time.
     static RE: OnceLock<Regex> = OnceLock::new();
+    #[allow(
+        clippy::expect_used,
+        reason = "static regex literal; validity guarded by unit tests"
+    )]
     let re = RE.get_or_init(|| {
         Regex::new(
             r"\[\[[ \t]+([^\]\n]*?)[ \t]+\]\]|\[\[[ \t]+([^\]\n]*?)\]\]|\[\[([^\]\n]*?)[ \t]+\]\]",

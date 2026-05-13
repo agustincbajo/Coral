@@ -479,6 +479,13 @@ fn ingest_docs_pdfs(docs_dir: &Path, wiki_root: &Path, head_sha: &str) -> (usize
             slug: slug.clone(),
             page_type: PageType::Reference,
             last_updated_commit: head_sha.to_string(),
+            // `Confidence::try_new` rejects values outside [0.0, 1.0]; 0.3
+            // is a compile-time literal in range, so the `Result` is
+            // statically `Ok`. Unit tests in coral-core pin the range.
+            #[allow(
+                clippy::expect_used,
+                reason = "0.3 is a compile-time literal in the valid Confidence range"
+            )]
             confidence: Confidence::try_new(0.3).expect("0.3 is valid"),
             sources: vec![source_path],
             backlinks: vec![],

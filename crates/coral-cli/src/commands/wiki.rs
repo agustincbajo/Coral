@@ -118,10 +118,13 @@ fn run_at(args: AtArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
         .stdin(Stdio::piped())
         .spawn()
         .context("failed to spawn tar")?;
+    // `.stdin(Stdio::piped())` above guarantees `tar_proc.stdin` is
+    // `Some` after a successful spawn. Surface the impossible-but-not-
+    // unsafe `None` as an error rather than panicking.
     tar_proc
         .stdin
         .as_mut()
-        .expect("stdin piped")
+        .ok_or_else(|| anyhow::anyhow!("tar stdin not captured despite Stdio::piped()"))?
         .write_all(&archive_output.stdout)
         .context("failed to write to tar stdin")?;
     let tar_status = tar_proc.wait().context("tar failed")?;

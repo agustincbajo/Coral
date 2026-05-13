@@ -215,6 +215,10 @@ fn render_markdown_bundle(pages: &[Page]) -> String {
 pub(crate) fn translate_wikilinks_to_anchors(body: &str) -> String {
     use std::sync::OnceLock;
     static RE: OnceLock<regex::Regex> = OnceLock::new();
+    #[allow(
+        clippy::expect_used,
+        reason = "static regex literal; validity guarded by unit tests"
+    )]
     let re =
         RE.get_or_init(|| regex::Regex::new(r"\[\[([^\]\n]+)\]\]").expect("valid wikilink regex"));
     re.replace_all(body, |caps: &regex::Captures| {
@@ -348,6 +352,10 @@ fn translate_wikilinks_to_multi(
 ) -> String {
     use std::sync::OnceLock;
     static RE: OnceLock<regex::Regex> = OnceLock::new();
+    #[allow(
+        clippy::expect_used,
+        reason = "static regex literal; validity guarded by unit tests"
+    )]
     let re =
         RE.get_or_init(|| regex::Regex::new(r"\[\[([^\]\n]+)\]\]").expect("valid wikilink regex"));
     re.replace_all(body, |caps: &regex::Captures| {

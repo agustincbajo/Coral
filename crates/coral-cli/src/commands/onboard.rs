@@ -150,6 +150,12 @@ pub(crate) fn persist_onboarding_page(
             slug,
             page_type: PageType::Operation,
             last_updated_commit: head_sha(root).unwrap_or_else(|| "unknown".into()),
+            // 0.7 is a compile-time literal in the valid Confidence
+            // range; the `Result` is statically `Ok`.
+            #[allow(
+                clippy::unwrap_used,
+                reason = "0.7 is a compile-time literal in [0.0, 1.0]"
+            )]
             confidence: Confidence::try_new(0.7).unwrap(),
             sources: vec![],
             backlinks: vec![],

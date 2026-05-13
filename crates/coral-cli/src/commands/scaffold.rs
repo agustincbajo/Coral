@@ -103,6 +103,12 @@ pub fn scaffold_from_template(fm: &Frontmatter, body: &str, new_slug: &str) -> S
         slug: new_slug.to_string(),
         page_type: fm.page_type,
         last_updated_commit: "0000000".to_string(),
+        // 0.3 is a compile-time literal in the valid Confidence range;
+        // the `Result` is statically `Ok`.
+        #[allow(
+            clippy::unwrap_used,
+            reason = "0.3 is a compile-time literal in [0.0, 1.0]"
+        )]
         confidence: Confidence::try_new(0.3).unwrap(),
         sources: vec![],
         backlinks: vec![],

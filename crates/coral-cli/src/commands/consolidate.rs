@@ -629,6 +629,10 @@ pub(crate) fn apply_consolidate_plan(
 /// split handled by string ops in the replace closure.
 fn outbound_wikilink_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
+    #[allow(
+        clippy::expect_used,
+        reason = "static regex literal; validity guarded by unit tests"
+    )]
     RE.get_or_init(|| Regex::new(r"\[\[([^\]\n]+)\]\]").expect("valid wikilink regex"))
 }
 
