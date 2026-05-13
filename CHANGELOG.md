@@ -22,6 +22,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   same fallback that already absorbed the v0.34.x bincode 1.x → 2.x
   flip. `cargo deny check advisories` now passes clean with zero
   suppressed advisories.
+- **Coverage floor bumped 55% → 60%** in the `Coverage` CI job
+  (`CORAL_COV_MIN_LINES`, BACKLOG #5 step 2/4). The v0.38.0 CI
+  measurement on commit `2e06caa` showed the workspace at 83.81%
+  lines (84121 LoC instrumented, 13616 missed), so the 60% target
+  clears with +23.81% margin. The original v0.35.0 plan called for
+  new `coral-runner::http` golden tests + SSE-push exercise to enable
+  this bump; accumulated test growth across v0.35..v0.38 cleared the
+  threshold without that work being load-bearing. Next step
+  (v0.40.0): bump to 65% after `coral-cli::commands::doctor` wizard
+  paths get end-to-end coverage (currently 39.22%).
 
 ## [0.38.0] - 2026-05-13
 

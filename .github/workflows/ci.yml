@@ -347,13 +347,20 @@ jobs:
     # configured floor.
     #
     # NOTE on the floor value (CORAL_COV_MIN_LINES):
-    # The 70% target lives in the PRD. We start the gate at a more
-    # forgiving 55% floor that has empirical headroom on the v0.34.1
-    # workspace and ratchet upward as suites grow. The escalation plan
-    # is documented in BACKLOG.md item #5. Bump the env below — do NOT
-    # silently widen it back down without a CHANGELOG entry.
+    # The 70% target lives in the PRD. We started the gate at a
+    # forgiving 55% in v0.34.x and ratchet upward as suites grow. The
+    # escalation plan is documented in BACKLOG.md item #5. Bump the env
+    # below — do NOT silently widen it back down without a CHANGELOG
+    # entry.
+    #
+    # v0.39.0 (BACKLOG #5 step 2/4): bumped 55 → 60. Measured workspace
+    # line coverage at the time of the bump was 83.81% on commit
+    # `2e06caa` (84121 LoC instrumented, 13616 missed), so 60% clears
+    # with +23.81% margin. The next step (v0.40.0) bumps to 65% once
+    # `coral-cli::commands::doctor` wizard paths get end-to-end
+    # coverage (currently 39.22%).
     env:
-      CORAL_COV_MIN_LINES: "55"
+      CORAL_COV_MIN_LINES: "60"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
