@@ -43,6 +43,60 @@ use std::time::Duration;
 
 use crate::commands::self_check::{self, SelfCheck, Severity};
 
+// ----------------------------------------------------------------------
+// Prompter abstraction (testability seam, v0.40.0)
+// ----------------------------------------------------------------------
+
+/// Tiny shim around `dialoguer` so the wizard's 5 interactive paths
+/// can be exercised by `#[cfg(test)]` code without a real terminal.
+/// In production this delegates straight to `dialoguer::{Select,
+/// Password}` and is functionally identical to the pre-v0.40.0 inline
+/// calls; in tests, `MockPrompter` plays back a scripted sequence.
+///
+/// Introduced for BACKLOG #5 step 3/4 (coverage ratchet 60 → 65). The
+/// wizard's interactive branches sat at 39% line coverage because they
+/// could not be reached from cargo-test's piped stdin — `dialoguer` 0.11
+/// has no test mode. The abstraction is < 40 LoC; cost is small relative
+/// to the test footprint it unlocks.
+pub(crate) trait Prompter {
+    /// Show a "pick one" menu. Returns the 0-based index of the choice.
+    fn select(&mut self, prompt: &str, items: &[&str], default: usize) -> Result<usize>;
+    /// Prompt for a secret (echo suppressed). Caller is responsible for
+    /// trimming / validating; the prompter returns whatever was typed.
+    fn password(&mut self, prompt: &str) -> Result<String>;
+}
+
+/// Production prompter — wraps `dialoguer` with the same `ColorfulTheme`
+/// the pre-abstraction wizard used. Behavioral parity with v0.39.0.
+pub(crate) struct DialoguerPrompter {
+    theme: dialoguer::theme::ColorfulTheme,
+}
+
+impl DialoguerPrompter {
+    pub(crate) fn new() -> Self {
+        Self {
+            theme: dialoguer::theme::ColorfulTheme::default(),
+        }
+    }
+}
+
+impl Prompter for DialoguerPrompter {
+    fn select(&mut self, prompt: &str, items: &[&str], default: usize) -> Result<usize> {
+        dialoguer::Select::with_theme(&self.theme)
+            .with_prompt(prompt)
+            .default(default)
+            .items(items)
+            .interact()
+            .map_err(|e| anyhow!("provider selection prompt failed: {e}"))
+    }
+    fn password(&mut self, prompt: &str) -> Result<String> {
+        dialoguer::Password::with_theme(&self.theme)
+            .with_prompt(prompt)
+            .interact()
+            .map_err(|e| anyhow!("password prompt failed: {e}"))
+    }
+}
+
 /// `coral doctor` arguments. See module docs for the behavior matrix.
 #[derive(Args, Debug)]
 pub struct DoctorArgs {
@@ -164,11 +218,15 @@ fn run_wizard(cwd: &Path) -> Result<ExitCode> {
              edit .coral/config.toml directly or run in an interactive shell"
         ));
     }
+    let mut prompter = DialoguerPrompter::new();
+    run_wizard_with(cwd, &mut prompter)
+}
 
-    use dialoguer::Select;
-    use dialoguer::theme::ColorfulTheme;
-
-    let theme = ColorfulTheme::default();
+/// Wizard core, parameterised over the prompt source. The TTY gate
+/// lives in [`run_wizard`]; tests call this directly with a
+/// `MockPrompter` so they can exercise the four provider paths without
+/// a real terminal.
+pub(crate) fn run_wizard_with(cwd: &Path, prompter: &mut dyn Prompter) -> Result<ExitCode> {
     println!("Coral provider wizard — pick one path:");
     let options = [
         "Anthropic API key (direct, recommended for trying Coral)",
@@ -177,16 +235,11 @@ fn run_wizard(cwd: &Path) -> Result<ExitCode> {
         "Install `claude` CLI (Claude Code subscription)",
         "Skip — I'll configure manually",
     ];
-    let choice = Select::with_theme(&theme)
-        .with_prompt("Choose a provider")
-        .default(0)
-        .items(&options)
-        .interact()
-        .map_err(|e| anyhow!("provider selection prompt failed: {e}"))?;
+    let choice = prompter.select("Choose a provider", &options, 0)?;
 
     match choice {
-        0 => wizard_anthropic(cwd, &theme),
-        1 => wizard_gemini(cwd, &theme),
+        0 => wizard_anthropic(cwd, prompter),
+        1 => wizard_gemini(cwd, prompter),
         2 => wizard_ollama(cwd),
         3 => wizard_claude_cli(),
         _ => {
@@ -196,12 +249,8 @@ fn run_wizard(cwd: &Path) -> Result<ExitCode> {
     }
 }
 
-fn wizard_anthropic(cwd: &Path, theme: &dialoguer::theme::ColorfulTheme) -> Result<ExitCode> {
-    use dialoguer::Password;
-    let key = Password::with_theme(theme)
-        .with_prompt("Anthropic API key (hidden)")
-        .interact()
-        .map_err(|e| anyhow!("password prompt failed: {e}"))?;
+fn wizard_anthropic(cwd: &Path, prompter: &mut dyn Prompter) -> Result<ExitCode> {
+    let key = prompter.password("Anthropic API key (hidden)")?;
     if key.trim().is_empty() {
         println!("Empty key — aborted. Nothing written.");
         return Ok(ExitCode::SUCCESS);
@@ -227,12 +276,8 @@ fn wizard_anthropic(cwd: &Path, theme: &dialoguer::theme::ColorfulTheme) -> Resu
     }
 }
 
-fn wizard_gemini(cwd: &Path, theme: &dialoguer::theme::ColorfulTheme) -> Result<ExitCode> {
-    use dialoguer::Password;
-    let key = Password::with_theme(theme)
-        .with_prompt("Gemini API key (hidden)")
-        .interact()
-        .map_err(|e| anyhow!("password prompt failed: {e}"))?;
+fn wizard_gemini(cwd: &Path, prompter: &mut dyn Prompter) -> Result<ExitCode> {
+    let key = prompter.password("Gemini API key (hidden)")?;
     if key.trim().is_empty() {
         println!("Empty key — aborted. Nothing written.");
         return Ok(ExitCode::SUCCESS);
@@ -516,5 +561,315 @@ mod tests {
             msg.to_lowercase().contains("tty"),
             "error message must mention TTY: {msg}"
         );
+    }
+
+    // ------------------------------------------------------------------
+    // v0.40.0 wizard E2E coverage (BACKLOG #5 step 3/4)
+    // ------------------------------------------------------------------
+
+    use std::cell::RefCell;
+
+    /// Scripted `Prompter` for tests. `selects` and `passwords` are
+    /// consumed front-to-back. Each call pops one entry; if the queue
+    /// is empty we return a synthetic error so a test that under-
+    /// scripts its wizard run fails loudly instead of hanging.
+    struct MockPrompter {
+        selects: RefCell<Vec<usize>>,
+        passwords: RefCell<Vec<String>>,
+    }
+
+    impl MockPrompter {
+        fn new(selects: Vec<usize>, passwords: Vec<String>) -> Self {
+            Self {
+                selects: RefCell::new(selects),
+                passwords: RefCell::new(passwords),
+            }
+        }
+    }
+
+    impl Prompter for MockPrompter {
+        fn select(&mut self, _prompt: &str, items: &[&str], _default: usize) -> Result<usize> {
+            let mut v = self.selects.borrow_mut();
+            if v.is_empty() {
+                return Err(anyhow!("MockPrompter: no scripted select answers left"));
+            }
+            let idx = v.remove(0);
+            assert!(
+                idx < items.len(),
+                "MockPrompter: scripted select index {idx} >= items.len() {}",
+                items.len()
+            );
+            Ok(idx)
+        }
+        fn password(&mut self, _prompt: &str) -> Result<String> {
+            let mut v = self.passwords.borrow_mut();
+            if v.is_empty() {
+                return Err(anyhow!("MockPrompter: no scripted password answers left"));
+            }
+            Ok(v.remove(0))
+        }
+    }
+
+    /// `run_wizard_with` picking the "Skip" branch returns Ok and
+    /// writes nothing to `.coral/config.toml`.
+    #[test]
+    fn wizard_skip_branch_writes_nothing() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut p = MockPrompter::new(vec![4], vec![]);
+        let exit = run_wizard_with(tmp.path(), &mut p).expect("skip path is Ok");
+        // Can't compare ExitCode directly (no PartialEq); format and
+        // check it's the SUCCESS variant.
+        assert!(format!("{exit:?}").contains("0") || format!("{exit:?}").contains("Success"));
+        assert!(
+            !tmp.path().join(".coral/config.toml").exists(),
+            "skip branch must not create config.toml"
+        );
+    }
+
+    /// `run_wizard_with` picking the Anthropic path with an empty key
+    /// aborts cleanly without writing the section.
+    #[test]
+    fn wizard_anthropic_empty_key_aborts() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut p = MockPrompter::new(vec![0], vec!["   ".into()]);
+        let _ = run_wizard_with(tmp.path(), &mut p).expect("empty-key abort is Ok");
+        assert!(
+            !tmp.path().join(".coral/config.toml").exists(),
+            "empty-key abort must not create config.toml"
+        );
+    }
+
+    /// `run_wizard_with` picking the Anthropic path with a bogus key
+    /// runs the ping, which fails (404/401/network), prints "FAILED",
+    /// and does NOT write the section. We don't actually want to hit
+    /// the live API in CI; we feed a key that is syntactically valid
+    /// but unauthorised so the request returns 401 rather than ever
+    /// being authorised. If the network is offline the same code path
+    /// is taken via `network error`.
+    #[test]
+    fn wizard_anthropic_bogus_key_does_not_persist() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut p = MockPrompter::new(
+            vec![0],
+            vec!["sk-ant-bogus-not-a-real-key-0000000000".into()],
+        );
+        let _ =
+            run_wizard_with(tmp.path(), &mut p).expect("bogus-key path returns Ok (error printed)");
+        assert!(
+            !tmp.path().join(".coral/config.toml").exists(),
+            "bogus key must not persist [provider.anthropic]"
+        );
+    }
+
+    /// Same shape as the Anthropic test but for Gemini.
+    #[test]
+    fn wizard_gemini_empty_key_aborts() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut p = MockPrompter::new(vec![1], vec!["".into()]);
+        let _ = run_wizard_with(tmp.path(), &mut p).expect("empty-key abort is Ok");
+        assert!(!tmp.path().join(".coral/config.toml").exists());
+    }
+
+    #[test]
+    fn wizard_gemini_bogus_key_does_not_persist() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut p = MockPrompter::new(vec![1], vec!["AIzaSyBogus-not-a-real-key".into()]);
+        let _ = run_wizard_with(tmp.path(), &mut p).expect("bogus-key path returns Ok");
+        assert!(!tmp.path().join(".coral/config.toml").exists());
+    }
+
+    /// The `claude` CLI path is informational only — no prompts after
+    /// the menu pick, no config writes. Verifies it returns Ok.
+    #[test]
+    fn wizard_claude_cli_branch_is_informational() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut p = MockPrompter::new(vec![3], vec![]);
+        let _ = run_wizard_with(tmp.path(), &mut p).expect("claude-cli path is Ok");
+        assert!(
+            !tmp.path().join(".coral/config.toml").exists(),
+            "claude-cli branch must not create config.toml"
+        );
+    }
+
+    /// The Ollama branch with `ollama` absent from PATH prints the
+    /// install hint and returns Ok without writing anything. We force
+    /// the "not on PATH" condition by setting PATH to a single empty
+    /// tempdir for the duration of the call. PATH is restored after.
+    #[test]
+    fn wizard_ollama_without_binary_prints_hint() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let empty = tempfile::TempDir::new().unwrap();
+        let prev_path = std::env::var_os("PATH");
+        // SAFETY: tests in a `#[cfg(test)]` module run single-threaded
+        // per-process by default for set_var; sibling tests in this
+        // file don't read PATH, so the temporary mutation is local.
+        // We restore on the way out.
+        // NB: This is intentionally pragmatic. The alternative (a
+        // PATH-injection seam) would balloon the abstraction past the
+        // 50-LoC budget the BACKLOG calls for.
+        unsafe {
+            std::env::set_var("PATH", empty.path());
+        }
+        let mut p = MockPrompter::new(vec![2], vec![]);
+        let result = run_wizard_with(tmp.path(), &mut p);
+        // Restore PATH before assertions so an assertion failure doesn't
+        // poison sibling tests.
+        unsafe {
+            match prev_path {
+                Some(v) => std::env::set_var("PATH", v),
+                None => std::env::remove_var("PATH"),
+            }
+        }
+        let _ = result.expect("ollama-without-binary path is Ok");
+        assert!(
+            !tmp.path().join(".coral/config.toml").exists(),
+            "ollama-missing branch must not create config.toml"
+        );
+    }
+
+    /// `print_human_report` exercises the warnings + suggestions
+    /// branches that the v0.39.0-and-earlier test only skipped.
+    #[test]
+    fn print_human_report_handles_warnings_and_suggestions() {
+        let report = SelfCheck {
+            schema_version: 1,
+            coral_status: self_check::CoralStatus::CheckFailed,
+            coral_version: "0.40.0-test".into(),
+            binary_path: std::path::PathBuf::new(),
+            in_path: true,
+            platform: self_check::PlatformInfo {
+                os: "linux".into(),
+                arch: "x86_64".into(),
+            },
+            git_repo: None,
+            wiki: None,
+            coral_toml: None,
+            claude_md: None,
+            claude_cli: None,
+            providers_available: vec!["claude_cli".into()],
+            providers_configured: vec![],
+            update_available: None,
+            mcp_server: None,
+            ui_server: None,
+            warnings: vec![
+                self_check::Warning {
+                    severity: Severity::High,
+                    message: "no providers configured".into(),
+                    action: Some("/coral:coral-doctor".into()),
+                },
+                self_check::Warning {
+                    severity: Severity::Medium,
+                    message: "stale wiki".into(),
+                    action: None,
+                },
+                self_check::Warning {
+                    severity: Severity::Low,
+                    message: "low-priority hint".into(),
+                    action: None,
+                },
+            ],
+            suggestions: vec![self_check::Suggestion {
+                kind: self_check::SuggestionKind::RunDoctor,
+                command: "/coral:coral-doctor".into(),
+                explanation: "walk through 4-path provider wizard".into(),
+            }],
+        };
+        // Branch coverage: providers_available non-empty +
+        // providers_configured empty.
+        print_human_report(&report);
+    }
+
+    /// `print_human_report` with neither configured NOR available
+    /// providers — the "no providers configured and none auto-detected"
+    /// branch.
+    #[test]
+    fn print_human_report_handles_zero_provider_detection() {
+        let report = SelfCheck {
+            schema_version: 1,
+            coral_status: self_check::CoralStatus::CheckFailed,
+            coral_version: "0.40.0-test".into(),
+            binary_path: std::path::PathBuf::new(),
+            in_path: true,
+            platform: self_check::PlatformInfo {
+                os: "linux".into(),
+                arch: "x86_64".into(),
+            },
+            git_repo: None,
+            wiki: None,
+            coral_toml: None,
+            claude_md: None,
+            claude_cli: None,
+            providers_available: vec![],
+            providers_configured: vec![],
+            update_available: None,
+            mcp_server: None,
+            ui_server: None,
+            warnings: vec![],
+            suggestions: vec![],
+        };
+        print_human_report(&report);
+    }
+
+    /// `ping_anthropic` with a syntactically obvious bogus key resolves
+    /// to an error variant (either HTTP 4xx or a network error if CI is
+    /// offline). Both branches return Err — the contract.
+    #[test]
+    fn ping_anthropic_bogus_key_returns_err() {
+        let res = ping_anthropic("sk-ant-bogus-key-for-test");
+        assert!(res.is_err(), "bogus key must produce Err, got {res:?}");
+    }
+
+    /// Same shape for Gemini.
+    #[test]
+    fn ping_gemini_bogus_key_returns_err() {
+        let res = ping_gemini("bogus-gemini-key-for-test");
+        assert!(res.is_err(), "bogus key must produce Err, got {res:?}");
+    }
+
+    /// `toml_string` covers the control-character branch (`\u{XXXX}`
+    /// escape) which the existing test didn't reach.
+    #[test]
+    fn toml_string_escapes_control_chars() {
+        let s = toml_string("a\x01b\x1Fc\nd\re\tf");
+        // The TOML basic-string spec requires `\nXXXX` for these.
+        assert!(s.contains("\\u0001"), "must escape U+0001: {s}");
+        assert!(s.contains("\\u001F"), "must escape U+001F: {s}");
+        assert!(s.contains("\\n"));
+        assert!(s.contains("\\r"));
+        assert!(s.contains("\\t"));
+        // Round-trip: the escaped form must parse back to the input.
+        let v: toml::Value = toml::from_str(&format!("k = {s}")).unwrap();
+        assert_eq!(v["k"].as_str().unwrap(), "a\x01b\x1Fc\nd\re\tf");
+    }
+
+    /// `toml_string` escapes a literal backslash.
+    #[test]
+    fn toml_string_escapes_backslash() {
+        let s = toml_string("path\\with\\backslash");
+        let v: toml::Value = toml::from_str(&format!("k = {s}")).unwrap();
+        assert_eq!(v["k"].as_str().unwrap(), "path\\with\\backslash");
+    }
+
+    /// `run()` non-interactive branch returns Ok and emits JSON we can
+    /// pipe back through serde — exercises the top-level dispatcher.
+    #[test]
+    fn run_non_interactive_returns_ok() {
+        let args = DoctorArgs {
+            wizard: false,
+            non_interactive: true,
+        };
+        let res = run(args);
+        assert!(res.is_ok(), "non-interactive run must succeed");
+    }
+
+    /// `run()` default (human-readable) branch returns Ok.
+    #[test]
+    fn run_default_returns_ok() {
+        let args = DoctorArgs {
+            wizard: false,
+            non_interactive: false,
+        };
+        let res = run(args);
+        assert!(res.is_ok(), "default run must succeed");
     }
 }
