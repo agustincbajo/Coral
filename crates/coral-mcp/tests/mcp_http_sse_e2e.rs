@@ -725,3 +725,230 @@ fn well_known_unknown_path_returns_404() {
         "/mcp must still respond 200 after well-known route landed"
     );
 }
+
+// ─── v0.35 SEC-01 / CP-3 / CP-5 — bearer-auth e2e tests ───────────────────
+
+use coral_mcp::transport::AuthConfig;
+
+/// Bind a server with bearer auth enabled. Mirrors `spawn_server` but
+/// goes through `HttpSseTransport::bind_with_auth` so the dispatcher
+/// enforces the token on every `/mcp` request.
+fn spawn_auth_server(handler: Arc<McpHandler>, token: &str) -> SocketAddr {
+    let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
+    let auth = AuthConfig {
+        expected_token: Some(token.to_string()),
+        bind_label: "127.0.0.1".to_string(),
+    };
+    let transport = coral_mcp::transport::HttpSseTransport::bind_with_auth(addr, handler, auth)
+        .expect("bind_with_auth");
+    let local = transport.local_addr().expect("local_addr");
+    std::thread::spawn(move || {
+        let _ = transport.serve_blocking();
+    });
+    std::thread::sleep(Duration::from_millis(20));
+    local
+}
+
+/// SEC-01 #1 — POST without `Authorization` header → 401.
+#[test]
+fn sec01_post_without_token_returns_401() {
+    let token = "test-token-abc";
+    let addr = spawn_auth_server(make_handler(), token);
+    let body = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#;
+    let req = build_post(addr, body, &[]);
+    let (status, _, resp_body) = send_request(addr, &req);
+    assert_eq!(
+        status, 401,
+        "POST without bearer must be 401, got body={}",
+        String::from_utf8_lossy(&resp_body)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&resp_body).expect("valid JSON");
+    assert!(
+        json["error"].as_str().unwrap_or("").contains("unauthorized"),
+        "401 body should mention unauthorized: {json}"
+    );
+}
+
+/// SEC-01 #2 — POST with the WRONG bearer → 401.
+#[test]
+fn sec01_post_with_wrong_token_returns_401() {
+    let addr = spawn_auth_server(make_handler(), "secret-token");
+    let body = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#;
+    let req = build_post(addr, body, &["Authorization: Bearer wrong-token"]);
+    let (status, _, _) = send_request(addr, &req);
+    assert_eq!(status, 401, "wrong bearer must be 401");
+}
+
+/// SEC-01 #3 — POST with the WRONG header shape (Basic auth) → 401.
+#[test]
+fn sec01_post_with_basic_auth_returns_401() {
+    let addr = spawn_auth_server(make_handler(), "secret-token");
+    let body = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#;
+    let req = build_post(addr, body, &["Authorization: Basic dXNlcjpwYXNz"]);
+    let (status, _, _) = send_request(addr, &req);
+    assert_eq!(status, 401, "Basic auth must be 401 (we require Bearer)");
+}
+
+/// SEC-01 #4 — POST with the CORRECT bearer → 200, session id minted.
+#[test]
+fn sec01_post_with_correct_token_returns_200_and_mints_session() {
+    let token = "the-real-token";
+    let addr = spawn_auth_server(make_handler(), token);
+    let body = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#;
+    let header_line = format!("Authorization: Bearer {token}");
+    let req = build_post(addr, body, &[&header_line]);
+    let (status, headers, resp_body) = send_request(addr, &req);
+    assert_eq!(status, 200, "valid bearer must be 200");
+    assert!(
+        header(&headers, "Mcp-Session-Id").is_some(),
+        "initialize must still mint a session id post-auth"
+    );
+    let json: serde_json::Value = serde_json::from_slice(&resp_body).expect("valid JSON");
+    assert_eq!(json["result"]["protocolVersion"], "2025-11-25");
+}
+
+/// SEC-01 #5 — POST with the bearer in lowercase `bearer` casing also
+/// accepted (matches RFC 6750 and the coral-ui pattern).
+#[test]
+fn sec01_post_with_lowercase_bearer_also_accepted() {
+    let token = "lower-case-token";
+    let addr = spawn_auth_server(make_handler(), token);
+    let body = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#;
+    let header_line = format!("Authorization: bearer {token}");
+    let req = build_post(addr, body, &[&header_line]);
+    let (status, _, _) = send_request(addr, &req);
+    assert_eq!(status, 200, "lowercase bearer must be 200");
+}
+
+/// SEC-01 #6 — GET /mcp (SSE) without bearer → 401.
+#[test]
+fn sec01_get_sse_without_token_returns_401() {
+    let addr = spawn_auth_server(make_handler(), "secret-token");
+    let req = format!(
+        "GET /mcp HTTP/1.1\r\n\
+         Host: {addr}\r\n\
+         Accept: text/event-stream\r\n\
+         Connection: close\r\n\r\n",
+    );
+    let (status, _, _) = send_request(addr, req.as_bytes());
+    assert_eq!(status, 401, "SSE GET without bearer must be 401");
+}
+
+/// SEC-01 #7 — DELETE /mcp without bearer → 401.
+#[test]
+fn sec01_delete_without_token_returns_401() {
+    let addr = spawn_auth_server(make_handler(), "secret-token");
+    let req = format!(
+        "DELETE /mcp HTTP/1.1\r\n\
+         Host: {addr}\r\n\
+         Mcp-Session-Id: some-id\r\n\
+         Connection: close\r\n\r\n",
+    );
+    let (status, _, _) = send_request(addr, req.as_bytes());
+    assert_eq!(status, 401, "DELETE without bearer must be 401");
+}
+
+/// SEC-01 #8 — the `/.well-known/mcp/server-card.json` discovery
+/// endpoint MUST stay public even when bearer auth is enabled. Pin
+/// the carve-out so a future refactor doesn't accidentally hide it
+/// behind the gate (registries probe cross-origin and a 401 there
+/// would defeat the point of "discoverable").
+#[test]
+fn sec01_well_known_card_stays_public_when_auth_enabled() {
+    let addr = spawn_auth_server(make_handler(), "secret-token");
+    let req = format!(
+        "GET /.well-known/mcp/server-card.json HTTP/1.1\r\n\
+         Host: {addr}\r\n\
+         Connection: close\r\n\r\n",
+    );
+    let (status, _, body) = send_request(addr, req.as_bytes());
+    assert_eq!(
+        status, 200,
+        "well-known card must remain public; got body={}",
+        String::from_utf8_lossy(&body)
+    );
+    // Sanity: the body is valid JSON.
+    serde_json::from_slice::<serde_json::Value>(&body).expect("card body must be JSON");
+}
+
+/// SEC-01 #9 — CORS preflight (OPTIONS) MUST bypass the bearer check
+/// so browsers can probe the allow-headers list before they're able to
+/// supply the Authorization header on the real request.
+#[test]
+fn sec01_options_preflight_bypasses_bearer() {
+    let addr = spawn_auth_server(make_handler(), "secret-token");
+    let req = format!(
+        "OPTIONS /mcp HTTP/1.1\r\n\
+         Host: {addr}\r\n\
+         Origin: http://localhost\r\n\
+         Access-Control-Request-Method: POST\r\n\
+         Access-Control-Request-Headers: Authorization, Content-Type\r\n\
+         Connection: close\r\n\r\n",
+    );
+    let (status, headers, _) = send_request(addr, req.as_bytes());
+    assert_eq!(status, 200, "OPTIONS preflight must succeed without bearer");
+    let allow_headers = header(&headers, "Access-Control-Allow-Headers").unwrap_or_default();
+    // The allow-headers list must include something the real request
+    // will need; pin the contract here so an accidental tightening of
+    // the CORS reply doesn't silently lock out browser clients.
+    assert!(
+        allow_headers.contains("Content-Type") || allow_headers.contains("content-type"),
+        "preflight should advertise Content-Type: {allow_headers}"
+    );
+}
+
+/// SEC-01 #10 — `bind_with_auth` REFUSES a non-loopback bind without a
+/// token (defense-in-depth — `serve()` should catch this at startup,
+/// but the transport-layer guard is what actually closes the gap if a
+/// library consumer instantiates `HttpSseTransport` directly).
+#[test]
+fn sec01_bind_with_auth_rejects_external_bind_without_token() {
+    let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
+    let auth = AuthConfig {
+        expected_token: None,
+        bind_label: "0.0.0.0".to_string(),
+    };
+    let result =
+        coral_mcp::transport::HttpSseTransport::bind_with_auth(addr, make_handler(), auth);
+    assert!(
+        result.is_err(),
+        "non-loopback bind without token must error at bind time"
+    );
+    let msg = result.err().unwrap().to_string();
+    assert!(
+        msg.contains("non-loopback") || msg.contains("0.0.0.0"),
+        "error message should explain the bind/token mismatch: {msg}"
+    );
+}
+
+/// SEC-01 #11 / Q-C1 composition — after a malformed pre-auth payload
+/// that previously could panic a handler, the server stays responsive
+/// to legitimate requests. Pre-fix, the std-mutex poisoning from any
+/// handler panic would kill every subsequent request. With both the
+/// parking_lot migration AND the pre-auth early-401 in place, an
+/// unauthenticated nonsense payload should be a no-op for the rest of
+/// the dispatch table.
+#[test]
+fn sec01_unauth_garbage_does_not_break_subsequent_auth_requests() {
+    let token = "real-token";
+    let addr = spawn_auth_server(make_handler(), token);
+
+    // Round 1: garbage POST without bearer. Body is intentionally
+    // invalid (would have tripped the JSON parser pre-auth had it
+    // been allowed in); the early 401 means it never reaches the
+    // dispatcher.
+    let garbage = "\u{0}\u{0}\u{0}\u{0}NOT-JSON";
+    let req1 = build_post(addr, garbage, &[]);
+    let (status1, _, _) = send_request(addr, &req1);
+    assert_eq!(status1, 401, "round 1 garbage must be 401");
+
+    // Round 2: a legit authed request right after.
+    let body = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#;
+    let header_line = format!("Authorization: Bearer {token}");
+    let req2 = build_post(addr, body, &[&header_line]);
+    let (status2, _, _) = send_request(addr, &req2);
+    assert_eq!(
+        status2, 200,
+        "round 2 must succeed — auth + parking_lot together close the pre-auth DoS"
+    );
+}
