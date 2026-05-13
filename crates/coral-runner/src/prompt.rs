@@ -31,6 +31,10 @@ impl PromptBuilder {
     /// Unknown variables remain literal in the output (e.g., `{{unknown}}`).
     pub fn render(&self) -> String {
         static VAR_RE: OnceLock<Regex> = OnceLock::new();
+        #[allow(
+            clippy::unwrap_used,
+            reason = "static regex literal; validity guarded by unit tests"
+        )]
         let re =
             VAR_RE.get_or_init(|| Regex::new(r"\{\{\s*([a-zA-Z_][a-zA-Z0-9_-]*)\s*\}\}").unwrap());
         re.replace_all(&self.template, |caps: &regex::Captures| -> String {

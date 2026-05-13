@@ -163,8 +163,15 @@ pub(crate) fn scrub_secrets(text: &str) -> String {
         // the keyword. Swallowing too much is preferable to leaking;
         // surrounding "innocuous text" can be reconstructed from the
         // pre-redaction bug report.
-        regex::Regex::new(r"(?i)(?:authorization|x-api-key)\s*:\s*\S+(?:\s+\S+)?|bearer\s+\S+")
-            .expect("valid regex")
+        #[allow(
+            clippy::expect_used,
+            reason = "static regex literal; validity guarded by unit tests"
+        )]
+        let r = regex::Regex::new(
+            r"(?i)(?:authorization|x-api-key)\s*:\s*\S+(?:\s+\S+)?|bearer\s+\S+",
+        )
+        .expect("valid regex");
+        r
     });
     re.replace_all(text, "<redacted>").to_string()
 }
@@ -245,7 +252,13 @@ pub(crate) fn run_streaming_command(
                 let _ = child.kill();
                 let _ = child.wait();
                 let _ = reader_thread.join();
-                let t = timeout.expect("must be Some to hit RecvTimeoutError::Timeout");
+                // `recv_timeout` only returns Timeout when `remaining`
+                // elapsed. If `timeout` is `Some(t)`, we want to surface
+                // that user-facing budget; if it's `None`, we fell
+                // through the 86_400-sec sentinel — surface that as a
+                // sentinel rather than panicking. Both branches give the
+                // caller something useful to log.
+                let t = timeout.unwrap_or(Duration::from_secs(86_400));
                 return Err(RunnerError::Timeout(t));
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
