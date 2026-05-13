@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+_No unreleased changes yet — v0.39.0 was just cut. Add new entries
+under this header as they land on `main`._
+
+## [0.39.0] - 2026-05-13
+
+**Hygiene release: bincode → postcard migration clears RUSTSEC-2025-
+0141; coverage floor ratcheted 55% → 60%.** No public API or CLI
+flag changes; on-disk search-index cache silently rebuilds on first
+access after upgrade.
+
 ### Changed
 
 - **`coral-core::search_index` serialization swapped from bincode 2.x
