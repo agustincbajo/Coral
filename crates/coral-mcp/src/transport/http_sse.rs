@@ -32,11 +32,12 @@
 //!   trivially. The 127.0.0.1 default is the load-bearing defense.
 
 use crate::server::McpHandler;
+use parking_lot::{Condvar, Mutex};
 use std::collections::{HashMap, VecDeque};
 use std::io::{self, Read, Write};
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 /// Maximum POST body size before the server returns 413. The MCP wire
@@ -95,7 +96,7 @@ impl NotificationHub {
     /// when the cap is exceeded. Wakes all parked SSE writers.
     pub(crate) fn publish(&self, value: serde_json::Value) {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
-        let mut buf = self.buffer.lock().expect("notification buffer mutex");
+        let mut buf = self.buffer.lock();
         if buf.len() >= SSE_REPLAY_BUFFER_SIZE {
             buf.pop_front();
         }
@@ -446,7 +447,6 @@ fn handle_post(
         let session_id = new_session_id();
         sessions
             .lock()
-            .expect("session map mutex")
             .insert(session_id.clone(), Instant::now());
         response_headers.push(("Mcp-Session-Id".to_string(), session_id));
     } else {
@@ -457,10 +457,7 @@ fn handle_post(
         // flag (tracked for v0.22+).
         if let Some(id) = header_value(request.headers(), "Mcp-Session-Id") {
             // Touch the entry's last-seen timestamp.
-            sessions
-                .lock()
-                .expect("session map mutex")
-                .insert(id, Instant::now());
+            sessions.lock().insert(id, Instant::now());
         }
     }
 
@@ -520,7 +517,7 @@ fn handle_get_sse(
     let mut cursor: u64 = last_event_id;
     let mut replay_batch: Vec<(u64, serde_json::Value)> = Vec::new();
     {
-        let buf = notifications.buffer.lock().expect("notification buffer");
+        let buf = notifications.buffer.lock();
         for (id, value) in buf.iter() {
             if *id > last_event_id {
                 replay_batch.push((*id, value.clone()));
@@ -543,24 +540,26 @@ fn handle_get_sse(
         // the lock briefly. We use Condvar::wait_timeout to block
         // efficiently — no busy-spin.
         let new_events: Vec<(u64, serde_json::Value)> = {
-            let buf = notifications.buffer.lock().expect("notification buffer");
-            // If there's nothing new, park.
+            // v0.35 Q-C1: `parking_lot::Mutex::lock()` returns the
+            // guard directly (no `LockResult`), and `Condvar::wait_for`
+            // takes `&mut MutexGuard<T>` rather than consuming + re-
+            // yielding it like the std API does. We mutably bind the
+            // guard so `wait_for` can re-acquire it in place; the
+            // `WaitTimeoutResult` (returned but ignored — same as the
+            // pre-migration `let (_buf, _) = ...` pattern) tells us
+            // whether the wakeup was a real notify or a timeout, but
+            // we re-check `cursor` either way.
+            let mut buf = notifications.buffer.lock();
             let has_new = buf.iter().any(|(id, _)| *id > cursor);
-            if has_new {
-                buf.iter()
-                    .filter(|(id, _)| *id > cursor)
-                    .map(|(id, v)| (*id, v.clone()))
-                    .collect()
-            } else {
-                let (buf, _) = notifications
+            if !has_new {
+                let _wait_result = notifications
                     .cond
-                    .wait_timeout(buf, SSE_KEEPALIVE_INTERVAL)
-                    .expect("condvar wait");
-                buf.iter()
-                    .filter(|(id, _)| *id > cursor)
-                    .map(|(id, v)| (*id, v.clone()))
-                    .collect()
+                    .wait_for(&mut buf, SSE_KEEPALIVE_INTERVAL);
             }
+            buf.iter()
+                .filter(|(id, _)| *id > cursor)
+                .map(|(id, v)| (*id, v.clone()))
+                .collect()
         };
 
         if new_events.is_empty() {
@@ -609,7 +608,7 @@ fn handle_delete(
             );
         }
     };
-    let removed = sessions.lock().expect("session map mutex").remove(&id);
+    let removed = sessions.lock().remove(&id);
     if removed.is_some() {
         respond_simple(request, 204, "application/json", "")
     } else {
@@ -817,25 +816,45 @@ pub fn parse_jsonrpc_method(body: &str) -> Option<String> {
         .and_then(|e| e.method)
 }
 
-/// Mint an opaque 36-char UUID-shaped session ID. This is NOT
-/// cryptographically random — the spec doesn't require it, and
-/// pulling `uuid` for one helper would inflate the dep tree.
-/// Format mimics a v4 UUID for client-side regex compatibility.
+/// Mint a cryptographically random 36-char UUID-shaped session ID.
+///
+/// v0.35 SEC-07: pre-fix this used `timestamp_nanos *
+/// 0xdeadbeef + counter` — a deterministic mixer over wall-clock
+/// nanoseconds and a per-process counter. An attacker who knew (or
+/// could approximate within ~µs) when a victim's session initialized
+/// could enumerate adjacent ids and hijack sessions by submitting
+/// guessed `Mcp-Session-Id` headers. Even with SEC-01 in place (the
+/// bearer-auth fix landed in the same PR), session ids are still
+/// session-bearer secrets — a leaked id is a leaked session.
+///
+/// Post-fix the 16 bytes come from `rand::random::<[u8; 16]>()`,
+/// which routes through `OsRng` on every supported platform (the
+/// kernel's CSPRNG: `getrandom(2)` on Linux, `BCryptGenRandom` on
+/// Windows, `SecRandomCopyBytes` on macOS). The bytes are then
+/// formatted into the v4 UUID visual shape (one nibble forced to
+/// `4` per RFC 4122 §4.4) so client-side regexes that expect UUID
+/// format keep passing — only the entropy source changed.
 pub fn new_session_id() -> String {
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0) as u128;
-    let counter = COUNTER.fetch_add(1, Ordering::Relaxed) as u128;
-    let mixed = nanos.wrapping_mul(0xdead_beef_u128).wrapping_add(counter);
-    let bytes: [u8; 16] = mixed.to_le_bytes();
+    let bytes: [u8; 16] = rand::random();
+    format_uuid_v4(bytes)
+}
+
+/// Render a 16-byte buffer as a v4 UUID-shaped string. Forces the
+/// version nibble per RFC 4122 §4.4. Pulled out as a pure function
+/// so the test suite can pin the formatting independently of the
+/// random source.
+fn format_uuid_v4(mut bytes: [u8; 16]) -> String {
+    // Set the version nibble (the top 4 bits of byte 6) to 0100b = 4.
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    // Set the variant bits (top 2 bits of byte 8) to 10b per RFC 4122.
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
     format!(
-        "{:08x}-{:04x}-4{:03x}-{:04x}-{:012x}",
-        u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
-        u16::from_le_bytes([bytes[4], bytes[5]]),
-        u16::from_le_bytes([bytes[6], bytes[7]]) & 0xfff,
-        u16::from_le_bytes([bytes[8], bytes[9]]),
-        u64::from_le_bytes([
-            bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15], 0, 0
-        ]) & 0xffff_ffff_ffff,
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        bytes[0], bytes[1], bytes[2], bytes[3],
+        bytes[4], bytes[5],
+        bytes[6], bytes[7],
+        bytes[8], bytes[9],
+        bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15],
     )
 }
 
@@ -844,7 +863,7 @@ pub fn new_session_id() -> String {
 /// thread.
 fn reap_expired_sessions(sessions: &Arc<Mutex<HashMap<String, Instant>>>) {
     let now = Instant::now();
-    let mut guard = sessions.lock().expect("session map mutex");
+    let mut guard = sessions.lock();
     guard.retain(|_, last_seen| now.saturating_duration_since(*last_seen) < SESSION_TTL);
 }
 
@@ -929,12 +948,12 @@ mod tests {
             .checked_sub(SESSION_TTL + Duration::from_secs(60))
             .expect("clock supports sub");
         {
-            let mut guard = sessions.lock().unwrap();
+            let mut guard = sessions.lock();
             guard.insert(expired_id.clone(), stale);
             guard.insert(fresh_id.clone(), Instant::now());
         }
         reap_expired_sessions(&sessions);
-        let guard = sessions.lock().unwrap();
+        let guard = sessions.lock();
         assert!(
             !guard.contains_key(&expired_id),
             "expired session should have been reaped"
@@ -983,13 +1002,59 @@ mod tests {
         assert_eq!(bytes[23], b'-');
     }
 
-    /// Successive session IDs differ — counter ensures uniqueness even
-    /// when the clock has nanosecond collisions.
+    /// Successive session IDs differ. Pre-fix this was guarded by a
+    /// per-process counter mixed into a wall-clock nanosecond seed —
+    /// post-SEC-07 it's the 128-bit OS CSPRNG, so collisions are
+    /// statistically impossible within the lifetime of the universe.
     #[test]
     fn session_ids_are_unique_across_calls() {
         let a = new_session_id();
         let b = new_session_id();
         assert_ne!(a, b, "two consecutive session IDs collided: {a} == {b}");
+    }
+
+    /// v0.35 SEC-07 — `format_uuid_v4` sets the version + variant
+    /// nibbles per RFC 4122 §4.4 regardless of the input bytes. Pin
+    /// the formatting so a refactor of `new_session_id` can't quietly
+    /// drop the version marker (which would break clients that
+    /// regex-match on the v4 shape).
+    #[test]
+    fn format_uuid_v4_forces_version_and_variant_nibbles() {
+        // All-zero input: version nibble forced to 4, variant forced
+        // to 8/9/a/b per the RFC.
+        let zeros = format_uuid_v4([0u8; 16]);
+        assert_eq!(zeros, "00000000-0000-4000-8000-000000000000");
+        // All-ones input: same forced nibbles, rest are `f`.
+        let ones = format_uuid_v4([0xffu8; 16]);
+        assert_eq!(ones, "ffffffff-ffff-4fff-bfff-ffffffffffff");
+    }
+
+    /// v0.35 SEC-07 — session IDs from `new_session_id` carry 122 bits
+    /// of entropy via the OS CSPRNG, so over a large batch the
+    /// distribution is overwhelmingly unique (collisions are
+    /// statistically impossible). Pre-fix the timestamp-mixer produced
+    /// ids that were predictable from the server's wall-clock; the
+    /// post-fix test pins both the v4 shape AND zero collisions across
+    /// 10k consecutive calls.
+    #[test]
+    fn session_ids_are_well_distributed_across_many_calls() {
+        let n = 10_000;
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for _ in 0..n {
+            let id = new_session_id();
+            // RFC 4122 v4 shape: index 14 is `4`, index 19 ∈ {8,9,a,b}.
+            assert_eq!(id.as_bytes()[14], b'4', "version nibble must be `4`: {id}");
+            let variant_nibble = id.as_bytes()[19];
+            assert!(
+                matches!(variant_nibble, b'8' | b'9' | b'a' | b'b'),
+                "variant nibble must be 8/9/a/b per RFC 4122 §4.4: {id}"
+            );
+            assert!(
+                seen.insert(id.clone()),
+                "session IDs must be unique across {n} calls — collision on {id}"
+            );
+        }
+        assert_eq!(seen.len(), n, "all {n} session IDs must be distinct");
     }
 
     /// v0.30 audit #B5 — Content-Type allowlist accepts `application/json`
@@ -1037,7 +1102,7 @@ mod tests {
         for i in 0..(SSE_REPLAY_BUFFER_SIZE + 10) {
             hub.publish(serde_json::json!({ "i": i }));
         }
-        let buf = hub.buffer.lock().unwrap();
+        let buf = hub.buffer.lock();
         assert_eq!(buf.len(), SSE_REPLAY_BUFFER_SIZE, "ring must be capped");
         let ids: Vec<u64> = buf.iter().map(|(id, _)| *id).collect();
         // IDs are strictly increasing.

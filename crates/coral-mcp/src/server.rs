@@ -17,9 +17,10 @@ use crate::prompts::PromptCatalog;
 use crate::resources::ResourceProvider;
 use crate::tools::{ToolCatalog, ToolKind};
 use serde::{Deserialize, Serialize};
+use parking_lot::Mutex;
 use std::collections::HashSet;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
 
 /// MCP protocol version. Coral pins to the 2025-11-25 spec freeze;
 /// future bumps are coordinated via the spec's negotiation flow.
@@ -242,7 +243,7 @@ impl McpHandler {
 
     /// Wire a notification channel so push notifications can reach the transport.
     pub fn set_notification_sender(&self, tx: std::sync::mpsc::Sender<serde_json::Value>) {
-        *self.notification_tx.lock().unwrap() = Some(tx);
+        *self.notification_tx.lock() = Some(tx);
     }
 
     /// Run the stdio loop. Reads one JSON-RPC message per line until
@@ -533,7 +534,7 @@ impl McpHandler {
         let uri = params.get("uri").and_then(|v| v.as_str()).ok_or_else(|| {
             HandlerError::InvalidParams("missing required parameter `uri`".to_string())
         })?;
-        self.subscriptions.lock().unwrap().insert(uri.to_string());
+        self.subscriptions.lock().insert(uri.to_string());
         Ok(serde_json::json!({}))
     }
 
@@ -544,7 +545,7 @@ impl McpHandler {
         let uri = params.get("uri").and_then(|v| v.as_str()).ok_or_else(|| {
             HandlerError::InvalidParams("missing required parameter `uri`".to_string())
         })?;
-        self.subscriptions.lock().unwrap().remove(uri);
+        self.subscriptions.lock().remove(uri);
         Ok(serde_json::json!({}))
     }
 
@@ -576,7 +577,7 @@ impl McpHandler {
             name: name.to_string(),
             description: description.to_string(),
         };
-        self.tasks.lock().unwrap().push(task);
+        self.tasks.lock().push(task);
 
         Ok(serde_json::json!({ "task_id": task_id }))
     }
@@ -590,7 +591,7 @@ impl McpHandler {
                 "unknown method: tasks/list (enable with allow_experimental_tasks)".to_string(),
             ));
         }
-        let tasks = self.tasks.lock().unwrap();
+        let tasks = self.tasks.lock();
         let tasks_json: Vec<serde_json::Value> = tasks
             .iter()
             .map(|t| {
@@ -608,7 +609,7 @@ impl McpHandler {
     /// Called externally when the wiki changes (e.g., after ingest/bootstrap).
     /// Only sends if the URI is in the subscription set.
     pub fn notify_resource_updated(&self, uri: &str) {
-        let subscribed = self.subscriptions.lock().unwrap().contains(uri);
+        let subscribed = self.subscriptions.lock().contains(uri);
         if !subscribed {
             return;
         }
@@ -617,7 +618,7 @@ impl McpHandler {
             "method": "notifications/resources/updated",
             "params": { "uri": uri }
         });
-        if let Some(tx) = self.notification_tx.lock().unwrap().as_ref() {
+        if let Some(tx) = self.notification_tx.lock().as_ref() {
             let _ = tx.send(notification);
         }
     }
@@ -629,7 +630,7 @@ impl McpHandler {
             "jsonrpc": "2.0",
             "method": "notifications/resources/list_changed"
         });
-        if let Some(tx) = self.notification_tx.lock().unwrap().as_ref() {
+        if let Some(tx) = self.notification_tx.lock().as_ref() {
             let _ = tx.send(notification);
         }
     }

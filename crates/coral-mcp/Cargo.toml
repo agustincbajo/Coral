@@ -17,6 +17,22 @@ tracing = { workspace = true }
 chrono = { workspace = true }
 toml = { workspace = true }
 tiny_http = { workspace = true }
+# v0.35 Q-C1: replace `std::sync::Mutex` in `server.rs` +
+# `transport::http_sse` so a panic in one handler thread can't poison
+# the session table / subscription set / notification ring for every
+# subsequent request. Combined with SEC-01 (unauthenticated HTTP
+# endpoint) the std-mutex poisoning was a pre-auth DoS vector — a
+# malformed payload that tripped a handler `.unwrap()` would kill
+# every request after it. parking_lot also drops the `.expect("…
+# mutex")` noise that masked the actual lock site in backtraces.
+parking_lot = { workspace = true }
+# v0.35 SEC-07: CSPRNG-backed `Mcp-Session-Id` minting. Replaces a
+# `timestamp_nanos * 0xdeadbeef + counter` mixer that was predictable
+# from the server's wall-clock — an attacker who knew when a session
+# initialized could enumerate adjacent ids deterministically. Now
+# `rand::random::<[u8; 16]>()` is the source, formatted as a v4
+# UUID-shaped string for client-side regex compatibility.
+rand = { workspace = true }
 coral-core = { workspace = true }
 coral-stats = { workspace = true }
 
