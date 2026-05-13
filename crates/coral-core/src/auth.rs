@@ -90,6 +90,38 @@ pub fn verify_bearer(
     }
 }
 
+/// Mint a 256-bit hex-encoded bearer token from the OS CSPRNG.
+///
+/// Returns 64 lower-case hex chars (32 random bytes = 256 bits of
+/// entropy). `rand::random` routes to `OsRng` on every supported
+/// platform — `getrandom(2)` on Linux, `BCryptGenRandom` on Windows,
+/// `SecRandomCopyBytes` on macOS — so the token is unguessable even
+/// to an attacker who can observe the server's wall-clock to the
+/// nanosecond.
+///
+/// v0.35 Phase C: hoisted from byte-for-byte duplicates in
+/// `coral-cli/src/commands/mcp.rs` (CP-3) and
+/// `coral-cli/src/commands/ui.rs` (CP-4). Both surfaces now share one
+/// definition + one set of tests, so a future entropy bump (e.g. 384
+/// bits if a downstream auditor asks) only has to be made here.
+///
+/// # Panics
+///
+/// Never panics under normal operation. The internal hex formatter
+/// uses `write!` to a `String`, which can only fail on OOM — by which
+/// point the process is already going down.
+pub fn mint_bearer_token() -> String {
+    let bytes: [u8; 32] = rand::random();
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        use std::fmt::Write as _;
+        // `write!` to a String only fails on OOM, which would already
+        // have killed the process — `expect` is appropriate.
+        write!(&mut s, "{b:02x}").expect("hex format must not fail");
+    }
+    s
+}
+
 /// Failure modes for [`verify_bearer`]. The three variants let callers
 /// surface different error messages without re-implementing the check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -191,6 +223,44 @@ mod tests {
             verify_bearer(Some("Bearer short"), b"a-much-longer-secret"),
             Err(BearerAuthError::TokenMismatch)
         );
+    }
+
+    /// v0.35 Phase C — minted tokens are 64 lower-case hex chars
+    /// (256 bits of entropy) and consecutive mints differ. Mirrors
+    /// the CP-3 / CP-4 tests that used to live separately in coral-cli;
+    /// pinning the shape here means both callsites share one contract.
+    #[test]
+    fn mint_bearer_token_shape_and_uniqueness() {
+        let a = mint_bearer_token();
+        let b = mint_bearer_token();
+        assert_eq!(a.len(), 64, "expected 256 bits = 64 hex chars: {a}");
+        assert_eq!(b.len(), 64, "expected 256 bits = 64 hex chars: {b}");
+        assert!(
+            a.bytes()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+            "token must be lower-case hex only: {a}"
+        );
+        assert!(
+            b.bytes()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+            "token must be lower-case hex only: {b}"
+        );
+        assert_ne!(a, b, "two consecutive mints collided");
+    }
+
+    /// v0.35 Phase C — distribution check: 1024 consecutive mints
+    /// must all be unique (collision probability for 256-bit tokens is
+    /// astronomically low — a collision here means rand is broken).
+    #[test]
+    fn mint_bearer_token_distribution_is_unique_across_many_calls() {
+        let n = 1024;
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::with_capacity(n);
+        for _ in 0..n {
+            let t = mint_bearer_token();
+            assert_eq!(t.len(), 64, "non-64-char mint: {t}");
+            assert!(seen.insert(t), "collision in {n} 256-bit mints — rand is broken");
+        }
+        assert_eq!(seen.len(), n);
     }
 
     #[test]

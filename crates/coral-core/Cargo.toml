@@ -33,6 +33,11 @@ bincode = { workspace = true }
 # comment ("SHA-256 of all page bodies …") matches the implementation
 # and the cache-validity gate gets cryptographic collision resistance.
 sha2 = "0.10"
+# v0.35 Phase C: `auth::mint_bearer_token` (hoisted from coral-cli) wraps
+# `rand::random::<[u8; 32]>()` so both the MCP HTTP transport mint path
+# and the WebUI auto-token path share one CSPRNG-backed helper. Same
+# workspace pin coral-cli + coral-mcp already use — no new transitives.
+rand = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

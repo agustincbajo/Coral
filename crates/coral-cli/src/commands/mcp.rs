@@ -14,7 +14,7 @@
 
 use anyhow::Result;
 use clap::{Args, Subcommand};
-use coral_core::{search, walk};
+use coral_core::{auth::mint_bearer_token, search, walk};
 use coral_mcp::{
     McpHandler, PromptCatalog, ResourceProvider, ServerConfig, ToolCallResult, ToolCatalog,
     ToolDispatcher, Transport, WikiResourceProvider, server_card,
@@ -473,24 +473,10 @@ enum TokenSource {
     Absent,
 }
 
-/// v0.35 SEC-01: mint a 256-bit hex-encoded bearer token from the OS
-/// CSPRNG. 64 hex chars (32 random bytes) gives 256 bits of entropy
-/// — same shape `coral ui serve` uses when it auto-mints. Routed
-/// through `rand::random` which uses `OsRng` on every supported
-/// platform (`getrandom(2)` on Linux, `BCryptGenRandom` on Windows,
-/// `SecRandomCopyBytes` on macOS), so the token is unguessable even
-/// if an attacker knows the wall-clock to the nanosecond.
-fn mint_bearer_token() -> String {
-    let bytes: [u8; 32] = rand::random();
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        use std::fmt::Write as _;
-        // `write!` to a String only fails on OOM, which would already
-        // have killed the process — `expect` is appropriate.
-        write!(&mut s, "{b:02x}").expect("hex format must not fail");
-    }
-    s
-}
+// v0.35 SEC-01 / Phase C: `mint_bearer_token` lives in
+// `coral_core::auth` so this surface and `coral ui serve` share one
+// definition + test. The local helper was removed; callers above
+// invoke the imported function directly.
 
 /// v0.30.0 audit B1: register SIGINT/SIGTERM so the serve loops can
 /// shut down gracefully instead of being killed mid-request. The flag
@@ -773,22 +759,15 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
-    /// v0.35 SEC-01: minted tokens are 64 hex chars (256 bits of
-    /// entropy), unique across consecutive calls, and contain only
-    /// `[0-9a-f]` so they survive header-value transport without
-    /// escaping.
+    /// v0.35 SEC-01 / Phase C: the shape/uniqueness check moved to
+    /// `coral_core::auth::tests::mint_bearer_token_shape_and_uniqueness`
+    /// — one copy across both surfaces. We keep a one-call smoke check
+    /// here so a `pub use` regression in coral-core is caught on this
+    /// crate's test run too.
     #[test]
-    fn mint_bearer_token_is_64_hex_chars_and_unique() {
-        let a = mint_bearer_token();
-        let b = mint_bearer_token();
-        assert_eq!(a.len(), 64, "expected 256 bits = 64 hex chars: {a}");
-        assert_eq!(b.len(), 64, "expected 256 bits = 64 hex chars: {b}");
-        assert!(
-            a.bytes()
-                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
-            "token must be lower-case hex only: {a}"
-        );
-        assert_ne!(a, b, "two consecutive mints collided");
+    fn mint_bearer_token_is_reachable_from_cli_mcp_surface() {
+        let t = mint_bearer_token();
+        assert_eq!(t.len(), 64, "expected 64 hex chars: {t}");
     }
 
     fn make_project(dir: &Path) {

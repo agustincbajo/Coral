@@ -26,6 +26,7 @@ use std::process::ExitCode;
 
 use anyhow::{Result, bail};
 use clap::{Args, Subcommand};
+use coral_core::auth::mint_bearer_token;
 
 #[derive(Args, Debug)]
 pub struct UiArgs {
@@ -236,60 +237,25 @@ fn validate_token_entropy(tok: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// v0.35 SEC-02: mint a 256-bit hex-encoded bearer token from the OS
-/// CSPRNG. 64 hex chars (32 random bytes) gives 256 bits of entropy
-/// — same shape `coral mcp serve` uses post-CP-3. Routed through
-/// `rand::random` which uses `OsRng` on every supported platform
-/// (`getrandom(2)` on Linux, `BCryptGenRandom` on Windows,
-/// `SecRandomCopyBytes` on macOS), so the token is unguessable even
-/// if an attacker knows the wall-clock to the nanosecond.
-///
-/// We keep this as a private helper here (rather than pulling it from
-/// `coral-core::auth`) to stay inside the CP-4 scope boundary —
-/// CP-3 already shipped an equivalent helper in `commands/mcp.rs`;
-/// a follow-up cleanup task can hoist both into `coral-core` once
-/// the parallel-Phase work has all landed.
-fn mint_bearer_token() -> String {
-    let bytes: [u8; 32] = rand::random();
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        use std::fmt::Write as _;
-        // `write!` to a String only fails on OOM, which would already
-        // have killed the process — `expect` is appropriate.
-        write!(&mut s, "{b:02x}").expect("hex format must not fail");
-    }
-    s
-}
+// v0.35 SEC-02 / Phase C: `mint_bearer_token` lives in
+// `coral_core::auth` so this surface and `coral mcp serve` share one
+// definition + test. The local helper was removed; the `use` at the
+// top of the file resolves the call above.
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// v0.35 SEC-02 — minted tokens are 64 hex chars (256 bits of
-    /// entropy), unique across consecutive calls, and contain only
-    /// `[0-9a-f]` so they survive header-value transport without
-    /// escaping. Mirrors the test CP-3 added in `commands/mcp.rs`.
-    #[test]
-    fn mint_bearer_token_is_64_hex_chars_and_unique() {
-        let a = mint_bearer_token();
-        let b = mint_bearer_token();
-        assert_eq!(a.len(), 64, "expected 256 bits = 64 hex chars: {a}");
-        assert_eq!(b.len(), 64, "expected 256 bits = 64 hex chars: {b}");
-        assert!(
-            a.bytes()
-                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
-            "token must be lower-case hex only: {a}"
-        );
-        assert_ne!(a, b, "two consecutive mints collided");
-    }
-
-    /// v0.35 SEC-02 — minted tokens trivially clear the entropy floor.
-    /// Defense-in-depth: if a future refactor changes either the
-    /// floor or the mint width, this catches the mismatch immediately.
+    /// v0.35 SEC-02 / Phase C — the shape/uniqueness check now lives
+    /// in `coral_core::auth::tests`. We keep the entropy-floor check
+    /// here because it covers the *interaction* between the (shared)
+    /// minter and the local `validate_token_entropy` floor — that's
+    /// the contract specific to this surface.
     #[test]
     fn mint_bearer_token_clears_entropy_floor() {
         for _ in 0..16 {
             let t = mint_bearer_token();
+            assert_eq!(t.len(), 64, "expected 64 hex chars: {t}");
             assert!(
                 validate_token_entropy(&t).is_ok(),
                 "minted token rejected by entropy floor: {t}"
