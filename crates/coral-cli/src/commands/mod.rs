@@ -9,6 +9,7 @@ pub mod env_resolve;
 pub mod export;
 pub mod export_agents;
 pub mod export_skill;
+pub mod feedback;
 pub mod filters;
 pub mod guarantee;
 pub mod history;

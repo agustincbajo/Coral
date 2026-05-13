@@ -152,6 +152,15 @@ enum Cmd {
     /// when calling `/api/v1/query` (which spends LLM tokens).
     #[cfg(feature = "ui")]
     Ui(commands::ui::UiArgs),
+    /// **v0.38.0** (PRD §11 decision #3): opt-in calibration
+    /// feedback. `coral feedback submit` reads `.wiki/.bootstrap-
+    /// state.json` + `.coral/config.toml` and emits a sanitized JSON
+    /// envelope to stdout (predicted vs actual cost + wallclock,
+    /// platform, provider label, repo LOC + extension counts + page
+    /// count). The CLI does NOT auto-send anything — operator pastes
+    /// the JSON manually into the discussion thread the message
+    /// points at. AF-1 compliant (zero phone-home).
+    Feedback(commands::feedback::FeedbackArgs),
     /// **v0.24 M2.3**: Watch `.wiki/` for changes to Interface-typed
     /// pages and emit structured notifications. Daemon command for
     /// real-time interface contract drift detection.
@@ -337,6 +346,7 @@ fn main() -> ExitCode {
         Cmd::Wiki(args) => commands::wiki::run(args, cli.wiki_root.as_deref()),
         #[cfg(feature = "ui")]
         Cmd::Ui(args) => commands::ui::run(args, cli.wiki_root.as_deref()),
+        Cmd::Feedback(args) => commands::feedback::run(args, cli.wiki_root.as_deref()),
         Cmd::Interface(args) => commands::interface::run(args, cli.wiki_root.as_deref()),
         Cmd::MigrateConsumers(args) => commands::migrate::run(args, cli.wiki_root.as_deref()),
         Cmd::Scaffold(args) => commands::scaffold::run(args, cli.wiki_root.as_deref()),
