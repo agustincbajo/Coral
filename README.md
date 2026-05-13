@@ -5,7 +5,7 @@
 [![CI](https://github.com/agustincbajo/Coral/actions/workflows/ci.yml/badge.svg)](https://github.com/agustincbajo/Coral/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/agustincbajo/Coral?display_name=tag)](https://github.com/agustincbajo/Coral/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Rust](https://img.shields.io/badge/rust-1.85%2B-orange?logo=rust)](rust-toolchain.toml)
+[![Rust](https://img.shields.io/badge/rust-1.89%2B-orange?logo=rust)](rust-toolchain.toml)
 [![MCP](https://img.shields.io/badge/MCP-2025--11--25-blue?logo=anthropic)](https://modelcontextprotocol.io/)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/agustincbajo/Coral/badge)](https://scorecard.dev/viewer/?uri=github.com/agustincbajo/Coral)
 
