@@ -11,9 +11,19 @@ use coral_core::index::{IndexEntry, WikiIndex};
 use coral_core::log::WikiLog;
 use coral_core::symbols::{self, Symbol, SymbolKind};
 use coral_runner::{Prompt, Runner, RunnerError};
+use rayon::prelude::*;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+
+/// v0.35.0 CP-1: maximum number of in-flight per-page LLM calls during
+/// \`coral bootstrap --apply\`. Picked to fit comfortably under
+/// Anthropic Sonnet's typical tier-1 cap (50 requests/minute) — with
+/// 4 workers and Sonnet's median ~5s per page-body response, we land
+/// at ≈48 RPM peak, leaving headroom for the plan-call that fires
+/// once at the top of the run. Bump in a follow-up if/when we have
+/// telemetry from real runs.
+const BOOTSTRAP_MAX_PARALLEL: usize = 4;
 
 use super::plan::{Action, Plan, PlanEntry, build_page, page_type_subdir};
 
@@ -275,18 +285,37 @@ fn apply_pages(
     let mut skipped: Vec<String> = Vec::new();
     let mut partial = false;
 
-    // Iterate by index so we can update state.pages[i] in-place.
+    // v0.35.0 CP-1 (CON-04, P-C1, ARCH-C1): two-phase apply.
+    //
+    // Phase A (this loop, sequential): classify every plan entry into
+    //   (a) skip-completed (resume),
+    //   (b) unsupported-action (mark Failed in-place),
+    //   (c) inline-body (no runner call, write inline),
+    //   (d) needs-runner (queue for the parallel phase).
+    // Inline-body entries are processed inline because their cost is
+    // zero and serialising them keeps deterministic ordering of
+    // \`index.md\` upserts cheap. The mid-flight \`--max-cost\` gate
+    // does not apply here (the inline path is free).
+    //
+    // Phase B (rayon par-iter, capped at BOOTSTRAP_MAX_PARALLEL):
+    // call \`render_page_body\` for every (d)-classified entry from a
+    // dedicated 4-thread pool. Each worker is pure — it never touches
+    // \`state\`. Results are collected and applied in plan order in
+    // phase C so the cost-gate / index upsert / state mutation stays
+    // race-free.
+    //
+    // Phase C (sequential): walk results in plan order, applying the
+    // mid-flight \`--max-cost\` gate. Pages past the gate stay
+    // \`Pending\` so \`--resume\` can pick them up.
     let plan_len = state.plan.len();
+    let mut to_render: Vec<usize> = Vec::new();
+
     for i in 0..plan_len {
-        // Skip pages already completed (resume).
         if matches!(state.pages[i].status, PageStatus::Completed) {
             tracing::debug!(idx = i, slug = %state.pages[i].slug, "page: skip (already completed)");
             continue;
         }
         let entry = state.plan[i].clone();
-
-        // Per-page span — every event below is grouped under `page{slug=…}`
-        // so the dashboard can collapse one page's lifecycle into one row.
         let _page_span = tracing::info_span!(
             "page",
             idx = i,
@@ -311,8 +340,111 @@ fn apply_pages(
             continue;
         }
 
-        // FR-ONB-29 mid-flight gate. Projected cost for THIS page
-        // uses the heuristic; if we've already exceeded, halt.
+        if entry.body.is_some() {
+            // Inline body — write it now. No runner call, no cost.
+            apply_inline_body(
+                &mut state,
+                &mut index,
+                root,
+                &head,
+                i,
+                &entry,
+                cost_provider,
+                &mut created,
+                &mut skipped,
+            )?;
+            continue;
+        }
+
+        // Needs a runner call — queue for the parallel phase.
+        to_render.push(i);
+    }
+
+    // ---- Phase B: parallel per-page runner calls -------------------------
+    let render_results: Vec<(usize, Result<(String, Option<coral_runner::TokenUsage>), RunnerError>)> =
+        if to_render.is_empty() {
+            Vec::new()
+        } else {
+            // Build a dedicated 4-thread pool so we never starve the
+            // global rayon pool (used by lints + symbol extraction).
+            // The pool is dropped at end of scope; build errors bubble
+            // up as anyhow so the caller surfaces "thread pool
+            // exhausted" instead of panicking.
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(BOOTSTRAP_MAX_PARALLEL)
+                .thread_name(|i| format!("bootstrap-worker-{i}"))
+                .build()
+                .context("building bootstrap rayon thread pool")?;
+            tracing::info!(
+                workers = BOOTSTRAP_MAX_PARALLEL,
+                queued = to_render.len(),
+                "bootstrap: starting parallel page render"
+            );
+            // \`runner\` is \`&dyn Runner\` (Send + Sync per trait bound);
+            // \`cwd\` is a path. Both safely captured by reference.
+            let indices = to_render.clone();
+            pool.install(|| {
+                indices
+                    .par_iter()
+                    .map(|&i| {
+                        let entry = &state.plan[i];
+                        let _span = tracing::info_span!(
+                            "page.render",
+                            idx = i,
+                            slug = %entry.slug,
+                        )
+                        .entered();
+                        tracing::info!(slug = %entry.slug, "page: rendering (parallel)");
+                        let res = render_page_body(runner, entry, cwd);
+                        match &res {
+                            Ok((body, usage)) => tracing::info!(
+                                slug = %entry.slug,
+                                body_bytes = body.len(),
+                                has_usage = usage.is_some(),
+                                "page: runner returned"
+                            ),
+                            Err(e) => tracing::error!(
+                                slug = %entry.slug,
+                                error = %e,
+                                "page: runner failed"
+                            ),
+                        }
+                        (i, res)
+                    })
+                    .collect()
+            })
+        };
+
+    // ---- Phase C: apply results in plan order ----------------------------
+    for (i, result) in render_results {
+        let entry = state.plan[i].clone();
+        let _page_span = tracing::info_span!(
+            "page.apply",
+            idx = i,
+            slug = %entry.slug,
+        )
+        .entered();
+
+        let (body, real_usage) = match result {
+            Ok(pair) => pair,
+            Err(e) => {
+                eprintln!("warn: per-page runner failed for `{}`: {e}", entry.slug);
+                state.pages[i].status = PageStatus::Failed;
+                state.pages[i].error = Some(format!("{e}"));
+                state.save_atomic(root)?;
+                skipped.push(entry.slug.clone());
+                if matches!(e, RunnerError::AuthFailed(_) | RunnerError::NotFound) {
+                    return Err(anyhow::anyhow!("runner failed: {e}"));
+                }
+                continue;
+            }
+        };
+
+        // FR-ONB-29 mid-flight gate (post-parallel apply). We may have
+        // already paid for in-flight pages — that overspend is bounded
+        // by BOOTSTRAP_MAX_PARALLEL pages and is the documented
+        // tradeoff of par-iter + collect (vs. per-worker cost-check
+        // with shared mutex, which P-H4 will revisit in v0.36).
         let projected_page_cost = project_page_cost(&entry, cost_provider);
         if let Some(cap) = max_cost {
             if state.cost_spent_usd + projected_page_cost > cap {
@@ -333,50 +465,9 @@ fn apply_pages(
             }
         }
 
-        // ---- Mark InProgress + checkpoint --------------------------------
-        state.pages[i].status = PageStatus::InProgress;
-        state.save_atomic(root)?;
-        tracing::info!(slug = %entry.slug, "page: rendering");
-
-        // ---- Generate body if absent -------------------------------------
         let mut entry_with_body = entry.clone();
-        let mut real_usage: Option<coral_runner::TokenUsage> = None;
-        if entry.body.is_none() {
-            // One runner call per page (FR-ONB-30). Extracted so the
-            // parallel apply path can call the same pure helper without
-            // touching shared state.
-            match render_page_body(runner, &entry, cwd) {
-                Ok((body, usage)) => {
-                    tracing::info!(
-                        slug = %entry.slug,
-                        body_bytes = body.len(),
-                        has_usage = usage.is_some(),
-                        "page: runner returned"
-                    );
-                    entry_with_body.body = Some(body);
-                    real_usage = usage;
-                }
-                Err(e) => {
-                    tracing::error!(
-                        slug = %entry.slug,
-                        error = %e,
-                        "page: runner failed"
-                    );
-                    eprintln!("warn: per-page runner failed for `{}`: {e}", entry.slug);
-                    state.pages[i].status = PageStatus::Failed;
-                    state.pages[i].error = Some(format!("{e}"));
-                    state.save_atomic(root)?;
-                    skipped.push(entry.slug.clone());
-                    // Auth/not-found failures are terminal — surface them.
-                    if matches!(e, RunnerError::AuthFailed(_) | RunnerError::NotFound) {
-                        return Err(anyhow::anyhow!("runner failed: {e}"));
-                    }
-                    continue;
-                }
-            }
-        }
+        entry_with_body.body = Some(body);
 
-        // ---- Write page + update index -----------------------------------
         let page = match build_page(&entry_with_body, &head, root) {
             Ok(p) => p,
             Err(e) => {
@@ -399,27 +490,12 @@ fn apply_pages(
             last_updated_commit: page.frontmatter.last_updated_commit.clone(),
         });
 
-        // ---- Record cost + mark Completed --------------------------------
-        //
-        // Week 2 validator nit#2: the previous comment combined both
-        // sub-branches into a single sentence and read inverted versus
-        // the actual logic. Split + aligned with the conditional so
-        // future readers don't second-guess which branch is which.
         let (input, output, cost_usd) = if let Some(u) = real_usage {
-            // The runner produced usage. Use the real token counts.
             let est = estimate_cost_from_tokens(u.input_tokens, u.output_tokens, cost_provider);
             (u.input_tokens, u.output_tokens, est.usd_estimate)
-        } else if entry.body.is_some() {
-            // Inline body present in the plan → we never called the
-            // runner for this page (see the `if entry.body.is_none()`
-            // guard above). Zero cost. This is the path every v0.33
-            // test fixture exercises.
-            (0, 0, 0.0)
         } else {
-            // Runner WAS called but returned no `TokenUsage` (e.g. a
-            // mock runner, or a real runner that didn't surface usage
-            // for this prompt). Fall back to the heuristic estimate
-            // for the same entry so cost_spent stays meaningful.
+            // Runner returned no \`TokenUsage\` (mock or real-runner
+            // that didn't surface usage). Fall back to heuristic.
             let est = plan_cost_estimate(std::slice::from_ref(&entry), cost_provider);
             (est.input_tokens, est.output_tokens, est.usd_estimate)
         };
@@ -559,6 +635,61 @@ fn render_page_body(
     let page_prompt = build_page_prompt(entry, cwd);
     let out = runner.run(&page_prompt)?;
     Ok((out.stdout, out.usage))
+}
+
+/// Inline-body path: the plan entry already carries a body, so no
+/// runner call is needed. Mirrors the post-parallel apply block but
+/// runs synchronously in plan order. Extracted so phase A and phase C
+/// don't drift apart in subtle ways (cost-recording, index upsert,
+/// state mutation must stay equivalent for inline and parallel
+/// entries).
+#[allow(clippy::too_many_arguments)]
+fn apply_inline_body(
+    state: &mut BootstrapState,
+    index: &mut WikiIndex,
+    root: &Path,
+    head: &str,
+    i: usize,
+    entry: &PlanEntry,
+    cost_provider: Provider,
+    created: &mut usize,
+    skipped: &mut Vec<String>,
+) -> Result<()> {
+    state.pages[i].status = PageStatus::InProgress;
+    state.save_atomic(root)?;
+    let page = match build_page(entry, head, root) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("warn: skipping `{}`: {e}", entry.slug);
+            state.pages[i].status = PageStatus::Failed;
+            state.pages[i].error = Some(format!("{e}"));
+            state.save_atomic(root)?;
+            skipped.push(entry.slug.clone());
+            return Ok(());
+        }
+    };
+    page.write()?;
+    let rel_path = page_relative_path(root, page.frontmatter.page_type, &page.frontmatter.slug);
+    index.upsert(IndexEntry {
+        slug: page.frontmatter.slug.clone(),
+        page_type: page.frontmatter.page_type,
+        path: rel_path,
+        confidence: page.frontmatter.confidence,
+        status: page.frontmatter.status,
+        last_updated_commit: page.frontmatter.last_updated_commit.clone(),
+    });
+    // Inline bodies never paid for a runner call; cost = 0.
+    let _ = cost_provider; // reserved for future inline-cost accounting
+    state.pages[i].input_tokens = 0;
+    state.pages[i].output_tokens = 0;
+    state.pages[i].cost_usd = 0.0;
+    state.pages[i].status = PageStatus::Completed;
+    state.pages[i].completed_at = Some(Utc::now());
+    state.pages[i].error = None;
+    state.save_atomic(root)?;
+    *created += 1;
+    tracing::info!(slug = %entry.slug, "page: completed (inline)");
+    Ok(())
 }
 
 /// Cheap pre-page cost projection for the mid-flight gate. Uses the
