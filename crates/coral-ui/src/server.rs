@@ -472,9 +472,16 @@ fn respond_static(request: Request, r: static_assets::StaticResponse) {
         let ce = Header::from_bytes(b"Content-Encoding" as &[u8], enc.as_bytes())
             .expect("valid content-encoding");
         resp = resp.with_header(ce);
-        // Per RFC 9110 §15.5.4 / §8.4: caches keyed on Vary:
-        // Accept-Encoding so a brotli response doesn't poison a
-        // gzip-only client's intermediate cache.
+    }
+    // v0.36 hardening: emit `Vary: Accept-Encoding` for EVERY response
+    // on a content-negotiated path, not only the compressed branch.
+    // Previously a raw response for a path that *had* a sibling
+    // shipped without Vary; an intermediate cache keyed on URL alone
+    // would happily serve those raw bytes back to a brotli-capable
+    // client on the next request. Per RFC 9110 §15.5.4 / §8.4, Vary
+    // must reflect every request header that influenced response
+    // selection.
+    if r.vary_accept_encoding {
         let vary =
             Header::from_bytes(b"Vary" as &[u8], b"Accept-Encoding" as &[u8]).expect("valid vary");
         resp = resp.with_header(vary);

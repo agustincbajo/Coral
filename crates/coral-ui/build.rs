@@ -33,6 +33,25 @@ const COMPRESS_EXTENSIONS: &[&str] = &["js", "css", "svg", "json"];
 const MIN_BYTES_TO_COMPRESS: u64 = 1024;
 const INDEX_HTML: &str = "index.html";
 
+// v0.36 hardening: when a raw asset is at least this size AND both
+// `.gz` + `.br` siblings exist, drop the raw file from the on-disk
+// `assets/dist` tree before `include_dir!` bakes it in. The static-
+// asset handler decompresses on the fly for the rare client that
+// advertises `Accept-Encoding: identity` (or omits the header) and
+// asks for a path whose raw bundle was dropped.
+//
+// 100 KiB is the v0.35 SPA's heavy-asset cutoff: index.js (~535 KiB),
+// sigma.js (~172 KiB), and markdown.js (~167 KiB) clear it; lighter
+// css/svg/json fall below and stay embedded uncompressed. Saves
+// ~300-500 KiB of binary bloat without affecting the >99% of clients
+// that send `Accept-Encoding: br, gzip`.
+const DROP_RAW_THRESHOLD_BYTES: u64 = 100 * 1024;
+
+// Honour `CORAL_UI_KEEP_RAW=1` for one-off debugging builds where you
+// want the raw siblings on disk (e.g. `cargo expand`-style inspection
+// or `strings target/.../coral.exe | grep window.__CORAL`).
+const KEEP_RAW_ENV: &str = "CORAL_UI_KEEP_RAW";
+
 fn main() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
     let dist_dir = manifest_dir.join("assets").join("dist");
@@ -122,6 +141,36 @@ fn maybe_compress(path: &Path) -> std::io::Result<()> {
     } else {
         write_brotli(&br_path, &source)?;
     }
+
+    // v0.36 hardening: drop the raw asset from `assets/dist` when both
+    // siblings landed AND the file is large enough that the savings
+    // beat the on-the-fly decompress cost in the rare identity-only
+    // client path. The sibling-resolver in static_assets.rs handles
+    // both "sibling present" and "sibling absent" — when the raw is
+    // dropped, the resolver still finds `.br` / `.gz` first, falls
+    // back to decompressing the smaller sibling for legacy clients.
+    let keep_raw_override = env::var(KEEP_RAW_ENV)
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    if !keep_raw_override
+        && meta.len() >= DROP_RAW_THRESHOLD_BYTES
+        && gz_path.exists()
+        && br_path.exists()
+    {
+        if let Err(e) = fs::remove_file(path) {
+            println!(
+                "cargo:warning=could not drop raw asset {}: {e}",
+                path.display()
+            );
+        } else {
+            println!(
+                "cargo:warning=dropped raw asset {} ({} bytes) — serving via .br/.gz siblings",
+                path.display(),
+                meta.len()
+            );
+        }
+    }
+
     Ok(())
 }
 

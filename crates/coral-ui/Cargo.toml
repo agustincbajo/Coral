@@ -23,13 +23,20 @@ signal-hook = { workspace = true }
 mime_guess = { workspace = true }
 coral-core = { workspace = true }
 coral-runner = { workspace = true }
+# v0.36 hardening: runtime decompression for the rare client that
+# advertises `Accept-Encoding: identity` after build.rs dropped the
+# heavy raw bundle (>=100 KiB) from `include_dir!`. Without these the
+# static-asset handler would 404 such requests instead of serving the
+# decoded bytes. flate2 has no system-zlib dependency by default
+# (uses miniz_oxide pure-Rust backend), so the single-binary
+# distribution invariant holds.
+flate2 = "1"
+brotli = "8"
 
 [build-dependencies]
 # v0.35 Phase C (P-H1): pre-compress the embedded SPA bundle so the
 # static-asset handler can serve `.gz` / `.br` siblings when the
-# client advertises support. flate2 + brotli are build-only — they
-# do NOT ship in the final binary. The compressed bytes get baked
-# in via `include_dir!`.
+# client advertises support.
 flate2 = "1"
 brotli = "8"
 
