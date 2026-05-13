@@ -4,7 +4,7 @@
 //! invocation (once per page), so even sub-millisecond regressions
 //! compound across a 200-page wiki.
 
-use coral_core::wikilinks::extract;
+use coral_core::wikilinks_extract as extract;
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 
 /// Builds a body of ~200 chars of prose interleaved with 50 unique wikilinks

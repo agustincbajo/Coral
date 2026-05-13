@@ -18,11 +18,10 @@
 //! does NOT hold.
 
 use coral_core::atomic::{atomic_write_string, with_exclusive_lock};
-use coral_core::embeddings::EmbeddingsIndex;
 use coral_core::frontmatter::{Confidence, Frontmatter, PageType, Status};
-use coral_core::index::{IndexEntry, WikiIndex};
 use coral_core::log::WikiLog;
 use coral_core::page::Page;
+use coral_core::{EmbeddingsIndex, IndexEntry, WikiIndex};
 use std::collections::BTreeMap;
 use std::fs;
 use std::sync::Mutex;

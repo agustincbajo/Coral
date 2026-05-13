@@ -15,10 +15,9 @@
 
 use anyhow::{Context, Result};
 use clap::Args;
-use coral_core::narrative;
 use coral_core::page::Page;
 use coral_core::walk;
-use coral_core::wikilinks;
+use coral_core::{PageDiff, diff_wiki_states, generate_narrative, wikilinks_extract};
 use coral_runner::{Prompt, Runner};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -180,17 +179,17 @@ fn run_narrative(wiki_root: &Path, base: &str, head: &str, format: &str) -> Resu
     let pages_before = read_pages_at_ref(wiki_root, base)?;
     let pages_after = read_pages_at_ref(wiki_root, head)?;
 
-    let diffs = narrative::diff_wiki_states(&pages_before, &pages_after);
+    let diffs = diff_wiki_states(&pages_before, &pages_after);
     let output = match format {
         "json" => serde_json::to_string_pretty(&narrative_to_json(&diffs))?,
-        _ => narrative::generate_narrative(&diffs),
+        _ => generate_narrative(&diffs),
     };
     println!("{output}");
     Ok(ExitCode::SUCCESS)
 }
 
 /// Build a JSON value from the narrative diffs for `--format json`.
-fn narrative_to_json(diffs: &[narrative::PageDiff]) -> serde_json::Value {
+fn narrative_to_json(diffs: &[PageDiff]) -> serde_json::Value {
     let items: Vec<serde_json::Value> = diffs
         .iter()
         .map(|d| {
@@ -578,8 +577,8 @@ fn section(
 pub(crate) fn compute_diff(a: &Page, b: &Page) -> DiffReport {
     let sources_a: BTreeSet<String> = a.frontmatter.sources.iter().cloned().collect();
     let sources_b: BTreeSet<String> = b.frontmatter.sources.iter().cloned().collect();
-    let wikis_a: BTreeSet<String> = wikilinks::extract(&a.body).into_iter().collect();
-    let wikis_b: BTreeSet<String> = wikilinks::extract(&b.body).into_iter().collect();
+    let wikis_a: BTreeSet<String> = wikilinks_extract(&a.body).into_iter().collect();
+    let wikis_b: BTreeSet<String> = wikilinks_extract(&b.body).into_iter().collect();
 
     DiffReport {
         slug_a: a.frontmatter.slug.clone(),

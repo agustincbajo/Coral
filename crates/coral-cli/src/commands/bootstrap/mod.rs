@@ -7,9 +7,8 @@ use coral_core::cost::{
 };
 use coral_core::frontmatter::PageType;
 use coral_core::gitdiff;
-use coral_core::index::{IndexEntry, WikiIndex};
 use coral_core::log::WikiLog;
-use coral_core::symbols::{self, Symbol, SymbolKind};
+use coral_core::{IndexEntry, Symbol, SymbolKind, WikiIndex, extract_from_dir};
 use coral_runner::{Prompt, Runner, RunnerError};
 use rayon::prelude::*;
 use std::collections::BTreeMap;
@@ -786,7 +785,7 @@ pub fn run_from_symbols(args: BootstrapArgs, wiki_root: Option<&Path>) -> Result
         .clone()
         .unwrap_or_else(|| std::env::current_dir().expect("cwd"));
 
-    let all_symbols = symbols::extract_from_dir(&scan_dir, SYMBOL_EXTENSIONS);
+    let all_symbols = extract_from_dir(&scan_dir, SYMBOL_EXTENSIONS);
     if all_symbols.is_empty() {
         eprintln!(
             "No symbols found under {}. Nothing to bootstrap.",

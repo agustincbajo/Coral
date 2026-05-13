@@ -115,7 +115,7 @@ pub fn run_with_runner(
         }
         "llms-txt" => {
             let project_name = detect_project_name(&root);
-            coral_core::llms_txt::generate(&pages, &project_name)
+            coral_core::llms_txt_generate(&pages, &project_name)
         }
         other => anyhow::bail!(
             "unknown format: {other}. Choose: markdown-bundle | json | notion-json | html | jsonl | llms-txt"

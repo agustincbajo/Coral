@@ -20,7 +20,7 @@
 //!    well-shaped vectors and a non-zero query) returns
 //!    `min(N, M)` results.
 
-use coral_core::embeddings::EmbeddingsIndex;
+use coral_core::EmbeddingsIndex;
 use proptest::prelude::*;
 use std::collections::HashSet;
 use tempfile::TempDir;

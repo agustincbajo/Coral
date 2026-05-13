@@ -9,8 +9,8 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
 use clap::Args;
-use coral_core::git_remote::{SyncOutcome, sync_repo};
 use coral_core::project::{Lockfile, RepoLockEntry};
+use coral_core::{SyncOutcome, sync_repo};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use std::path::Path;
 use std::process::ExitCode;

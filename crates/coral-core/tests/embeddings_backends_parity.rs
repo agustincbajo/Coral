@@ -4,8 +4,7 @@
 //! `CORAL_EMBEDDINGS_BACKEND` env var — flipping the toggle must not change
 //! ranking, only storage.
 
-use coral_core::embeddings::EmbeddingsIndex;
-use coral_core::embeddings_sqlite::SqliteEmbeddingsIndex;
+use coral_core::{EmbeddingsIndex, SqliteEmbeddingsIndex};
 
 fn fixture_vectors() -> Vec<(&'static str, Vec<f32>)> {
     // Hand-picked, deterministic 4-d vectors with very different cosine

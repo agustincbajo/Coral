@@ -18,7 +18,7 @@
 
 use chrono::{Duration, TimeZone, Utc};
 use coral_core::frontmatter::{Confidence, PageType, Status};
-use coral_core::index::{IndexEntry, WikiIndex};
+use coral_core::{IndexEntry, WikiIndex};
 use proptest::prelude::*;
 use std::collections::BTreeSet;
 

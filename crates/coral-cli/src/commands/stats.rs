@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use clap::Args;
-use coral_core::symbols::{self, SymbolKind};
 use coral_core::walk;
+use coral_core::{SymbolKind, extract_from_dir, find_symbols_for_slug};
 use coral_stats::StatsReport;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -42,7 +42,7 @@ pub fn run(args: StatsArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
         // Scan the project root (parent of .wiki) for source symbols.
         let project_root = root.parent().unwrap_or_else(|| Path::new("."));
         let extensions = &["rs", "ts", "tsx", "py", "go"];
-        let syms = symbols::extract_from_dir(project_root, extensions);
+        let syms = extract_from_dir(project_root, extensions);
 
         // v0.30.x audit #007: BTreeMap (not HashMap) so JSON / Markdown
         // emission is byte-deterministic across runs. HashMap's
@@ -78,7 +78,7 @@ pub fn run(args: StatsArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
 
         let mut linkage_candidates: Vec<(&str, usize)> = Vec::new();
         for slug in &page_slugs {
-            let matches = symbols::find_symbols_for_slug(&syms, slug);
+            let matches = find_symbols_for_slug(&syms, slug);
             if !matches.is_empty() {
                 linkage_candidates.push((slug.as_str(), matches.len()));
             }

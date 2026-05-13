@@ -12,7 +12,7 @@
 //! project.
 
 use crate::error::{CoralError, Result};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 /// Outcome of a single repo's sync operation. Returned by `sync_repo`
@@ -326,19 +326,9 @@ fn tail(stderr: &str) -> String {
 }
 
 /// Returns `true` when `path` is a git working tree (has a `.git` entry).
-pub fn is_git_repo(path: &Path) -> bool {
+#[cfg(test)]
+pub(crate) fn is_git_repo(path: &Path) -> bool {
     path.join(".git").exists()
-}
-
-/// Public for tests + `coral project doctor`.
-pub fn classify_failure_for_test(stderr: &str) -> &'static str {
-    if classify_auth_failure(stderr) {
-        "auth"
-    } else if classify_branch_not_found(stderr) {
-        "branch_not_found"
-    } else {
-        "other"
-    }
 }
 
 /// Helper for tests that want to seed a path with a fixed `.git`
@@ -346,11 +336,6 @@ pub fn classify_failure_for_test(stderr: &str) -> &'static str {
 #[cfg(test)]
 fn _mark_as_git_repo(path: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(path.join(".git"))
-}
-
-/// Re-export for callers that want PathBuf-typed paths.
-pub fn make_path(s: &str) -> PathBuf {
-    PathBuf::from(s)
 }
 
 #[cfg(test)]

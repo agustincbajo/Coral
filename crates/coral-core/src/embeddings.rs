@@ -35,13 +35,6 @@ pub struct IndexedVector {
     pub vector: Vec<f32>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct EmbedResult {
-    pub slug: String,
-    pub score: f32,
-    pub snippet: String,
-}
-
 impl EmbeddingsIndex {
     pub const FILENAME: &'static str = ".coral-embeddings.json";
     pub const SCHEMA_VERSION: u32 = 1;

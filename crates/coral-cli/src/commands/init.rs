@@ -1,8 +1,8 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
 use clap::Args;
+use coral_core::WikiIndex;
 use coral_core::gitdiff;
-use coral_core::index::WikiIndex;
 use coral_core::log::WikiLog;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;

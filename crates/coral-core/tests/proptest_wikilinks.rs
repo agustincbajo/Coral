@@ -20,7 +20,7 @@
 //! 7. `extract_skips_escaped` — `\[[X]]` (with a leading backslash) is
 //!    not extracted.
 
-use coral_core::wikilinks::extract;
+use coral_core::wikilinks_extract as extract;
 use proptest::prelude::*;
 
 /// A small slug-shaped string strategy. 1-12 chars, lowercase

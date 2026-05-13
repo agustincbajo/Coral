@@ -86,18 +86,18 @@ pub fn run(args: SearchArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
 }
 
 fn run_eval(pages: &[coral_core::page::Page], args: &SearchArgs) -> Result<ExitCode> {
-    use coral_core::eval;
+    use coral_core::{eval_render_markdown, evaluate, load_goldset};
 
     let goldset_path = args
         .goldset
         .as_ref()
         .context("--goldset <file> is required when --eval is set")?;
     let path = PathBuf::from(goldset_path);
-    let goldset = eval::load_goldset(&path).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let goldset = load_goldset(&path).map_err(|e| anyhow::anyhow!("{e}"))?;
 
     let k = args.limit;
     let algorithm = args.algorithm.clone();
-    let report = eval::evaluate(&goldset, k, |query| {
+    let report = evaluate(&goldset, k, |query| {
         let results = match algorithm.as_str() {
             "bm25" => search::search_bm25(pages, query, k),
             "hybrid" => search::search_hybrid(pages, query, k),
@@ -112,7 +112,7 @@ fn run_eval(pages: &[coral_core::page::Page], args: &SearchArgs) -> Result<ExitC
             serde_json::to_string_pretty(&report).context("serializing eval report")?
         );
     } else {
-        print!("{}", eval::render_markdown(&report));
+        print!("{}", eval_render_markdown(&report));
     }
 
     Ok(ExitCode::SUCCESS)
@@ -179,7 +179,7 @@ fn run_tfidf(
 ) -> Result<ExitCode> {
     let results = match args.algorithm.as_str() {
         "tfidf" => search::search(pages, &args.query, args.limit),
-        "bm25" => coral_core::search_index::search_with_index(
+        "bm25" => coral_core::search_with_index(
             pages,
             &args.query,
             args.limit,
@@ -263,8 +263,7 @@ fn run_embeddings_json(
     wiki_root: &Path,
     provider: &dyn EmbeddingsProvider,
 ) -> Result<ExitCode> {
-    use coral_core::cache::WalkCache;
-    use coral_core::embeddings::EmbeddingsIndex;
+    use coral_core::{EmbeddingsIndex, WalkCache};
 
     let model = provider.name();
 
@@ -324,8 +323,7 @@ fn run_embeddings_sqlite(
     wiki_root: &Path,
     provider: &dyn EmbeddingsProvider,
 ) -> Result<ExitCode> {
-    use coral_core::cache::WalkCache;
-    use coral_core::embeddings_sqlite::SqliteEmbeddingsIndex;
+    use coral_core::{SQLITE_FILENAME, SqliteEmbeddingsIndex, WalkCache};
 
     let model = provider.name();
 
@@ -335,7 +333,7 @@ fn run_embeddings_sqlite(
     // mixed with the new ones.
     let mut index = SqliteEmbeddingsIndex::open(wiki_root)?;
     if index.dim == 0 || index.provider != model {
-        let path = wiki_root.join(coral_core::embeddings_sqlite::SQLITE_FILENAME);
+        let path = wiki_root.join(SQLITE_FILENAME);
         // Pre-v0.19.4 this was `let _ = std::fs::remove_file(&path)`. If
         // the file was locked (parallel `coral search`), read-only (CI
         // mounted volume), or under any permission failure, the stale

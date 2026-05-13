@@ -12,17 +12,6 @@ pub struct GoldsetEntry {
     pub expected_slugs: Vec<String>,
 }
 
-/// Evaluation results for a single query.
-#[derive(Debug, Clone)]
-pub struct QueryEval {
-    pub query: String,
-    pub precision_at_k: f64,
-    pub recall_at_k: f64,
-    pub reciprocal_rank: f64,
-    pub retrieved: Vec<String>,
-    pub expected: Vec<String>,
-}
-
 /// Aggregated evaluation metrics.
 #[derive(Debug, Clone, Serialize)]
 pub struct EvalReport {

@@ -123,11 +123,11 @@ fn run_gc(args: &ConsolidateArgs, wiki_root: Option<&Path>) -> Result<ExitCode> 
     let pages = walk::read_pages(&root)
         .with_context(|| format!("reading pages from {}", root.display()))?;
 
-    let report = coral_core::gc::analyze(&pages);
+    let report = coral_core::gc_analyze(&pages);
 
     match args.format {
-        GcFormat::Markdown => print!("{}", coral_core::gc::render_markdown(&report)),
-        GcFormat::Json => println!("{}", coral_core::gc::render_json(&report)),
+        GcFormat::Markdown => print!("{}", coral_core::gc_render_markdown(&report)),
+        GcFormat::Json => println!("{}", coral_core::gc_render_json(&report)),
     }
 
     if report.is_clean() {

@@ -17,7 +17,7 @@
 
 use anyhow::{Context, Result};
 use clap::Args;
-use coral_core::index::WikiIndex;
+use coral_core::WikiIndex;
 use coral_core::log::WikiLog;
 use coral_core::path::repo_root_from_wiki_root;
 use coral_core::walk;

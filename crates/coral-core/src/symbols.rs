@@ -7,6 +7,7 @@
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -134,7 +135,8 @@ pub fn extract_from_dir(root: &Path, extensions: &[&str]) -> Vec<Symbol> {
 // ─── Indexing ───────────────────────────────────────────────────────────────
 
 /// Build a lookup index from symbol name -> list of symbols with that name.
-pub fn build_symbol_index(symbols: &[Symbol]) -> HashMap<String, Vec<&Symbol>> {
+#[cfg(test)]
+pub(crate) fn build_symbol_index(symbols: &[Symbol]) -> HashMap<String, Vec<&Symbol>> {
     let mut index: HashMap<String, Vec<&Symbol>> = HashMap::new();
     for sym in symbols {
         index.entry(sym.name.to_lowercase()).or_default().push(sym);
@@ -192,7 +194,8 @@ fn normalize_slug(s: &str) -> String {
 // ─── Rendering ──────────────────────────────────────────────────────────────
 
 /// Render a markdown summary table of extracted symbols.
-pub fn render_markdown(symbols: &[Symbol]) -> String {
+#[cfg(test)]
+pub(crate) fn render_markdown(symbols: &[Symbol]) -> String {
     if symbols.is_empty() {
         return String::from("_No symbols found._\n");
     }
@@ -213,7 +216,8 @@ pub fn render_markdown(symbols: &[Symbol]) -> String {
 }
 
 /// Render symbols as a JSON array.
-pub fn render_json(symbols: &[Symbol]) -> serde_json::Value {
+#[cfg(test)]
+pub(crate) fn render_json(symbols: &[Symbol]) -> serde_json::Value {
     serde_json::to_value(symbols).unwrap_or(serde_json::Value::Array(vec![]))
 }
 
