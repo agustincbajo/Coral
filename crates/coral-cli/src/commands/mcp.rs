@@ -19,7 +19,7 @@ use coral_mcp::{
     McpHandler, PromptCatalog, ResourceProvider, ServerConfig, ToolCallResult, ToolCatalog,
     ToolDispatcher, Transport, WikiResourceProvider, server_card,
     state::shared_state,
-    transport::HttpSseTransport,
+    transport::{AuthConfig, HttpSseTransport},
     watcher::{WatcherConfig, start_watcher_with_state},
 };
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -108,6 +108,19 @@ pub struct ServeArgs {
     /// Enabled by default; use `--no-watch` to disable.
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     pub watch: bool,
+
+    /// v0.35 SEC-01: bearer token enforced on every `/mcp` request
+    /// under `--transport http`. When omitted on a non-loopback bind
+    /// (`--bind 0.0.0.0`, LAN IP, etc.) the CLI auto-mints a 256-bit
+    /// CSPRNG token, prints it to stdout, and uses it for the
+    /// lifetime of the process — operators copy the printed line into
+    /// their MCP client's `Authorization: Bearer <token>` header.
+    ///
+    /// On a loopback bind without `--token`, auth is disabled (the
+    /// "frictionless local dev" path matching `coral ui serve`).
+    /// Falls back to the `CORAL_MCP_TOKEN` env var.
+    #[arg(long)]
+    pub token: Option<String>,
 }
 
 #[derive(clap::ValueEnum, Clone, Debug)]
@@ -350,6 +363,8 @@ fn serve(args: ServeArgs) -> Result<ExitCode> {
             let bind_ip = bind_addr.unwrap_or(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)));
             let port = port.unwrap_or(DEFAULT_HTTP_PORT);
             let socket = SocketAddr::new(bind_ip, port);
+            let bind_label = bind_ip.to_string();
+            let is_loopback_bind = coral_core::auth::is_loopback(&bind_label);
             // v0.21.1 acceptance criterion: --bind 0.0.0.0 must emit a
             // stderr warning banner. The MCP spec's DNS-rebinding
             // mitigation only protects browsers, so 0.0.0.0 + a
@@ -366,16 +381,70 @@ fn serve(args: ServeArgs) -> Result<ExitCode> {
                 );
                 eprintln!(
                     "WARNING: coral mcp serve bound to {bind_ip}:{port} — reachable from \
-                     every network interface. Origin validation defends browser clients but \
-                     not native ones; consider --bind 127.0.0.1."
+                     every network interface. Bearer auth (SEC-01) is now enforced on every \
+                     /mcp request, but consider --bind 127.0.0.1 unless you actually need LAN \
+                     access."
                 );
             }
+
+            // v0.35 SEC-01: resolve the bearer token. Precedence:
+            //   1. explicit `--token <hex>`
+            //   2. `CORAL_MCP_TOKEN` env var
+            //   3. auto-mint a 256-bit CSPRNG hex token (only on
+            //      non-loopback binds — loopback without --token stays
+            //      unauthenticated for frictionless local dev, matching
+            //      the coral-ui `--token` pattern).
+            let env_token = std::env::var("CORAL_MCP_TOKEN").ok().filter(|s| !s.is_empty());
+            // Record where the token came from BEFORE we move it
+            // into the resolved option — the banner message needs the
+            // source even though the variant has consumed `args.token`.
+            let token_source = if args.token.is_some() {
+                TokenSource::Cli
+            } else if env_token.is_some() {
+                TokenSource::Env
+            } else {
+                TokenSource::Absent
+            };
+            let (resolved_token, token_was_minted) = match args.token.or(env_token) {
+                Some(t) => (Some(t), false),
+                None if is_loopback_bind => (None, false),
+                None => (Some(mint_bearer_token()), true),
+            };
+            if let Some(tok) = resolved_token.as_deref() {
+                if token_was_minted {
+                    // Print the minted token to stdout so the operator
+                    // can copy it into their MCP client. Matches the
+                    // `coral ui serve` pattern.
+                    println!(
+                        "coral mcp serve — auto-minted bearer token (pass to clients via \
+                         `Authorization: Bearer <token>`):"
+                    );
+                    println!("  {tok}");
+                    println!(
+                        "  Persist this in your MCP client config; the server forgets it on exit."
+                    );
+                } else {
+                    eprintln!(
+                        "coral mcp serve — bearer auth enabled (token via {})",
+                        match token_source {
+                            TokenSource::Cli => "--token",
+                            TokenSource::Env => "CORAL_MCP_TOKEN env",
+                            TokenSource::Absent => "auto-mint", // unreachable here
+                        }
+                    );
+                }
+            }
+            let auth = AuthConfig {
+                expected_token: resolved_token,
+                bind_label: bind_label.clone(),
+            };
+
             // Bind FIRST, then print the resolved address — when the
             // user passes `--port 0` the OS picks a free port and the
             // banner needs to show the actual port (so smoke tests
             // and humans both know where to connect). The blocking
             // serve loop runs after the banner.
-            let transport = HttpSseTransport::bind(socket, Arc::clone(&handler))
+            let transport = HttpSseTransport::bind_with_auth(socket, Arc::clone(&handler), auth)
                 .map_err(|e| anyhow::anyhow!("MCP HTTP/SSE bind failed: {e}"))?;
             let resolved = transport
                 .local_addr()
@@ -391,6 +460,35 @@ fn serve(args: ServeArgs) -> Result<ExitCode> {
 
 #[allow(dead_code)]
 fn _ensure_tool_call_result_used(_t: ToolCallResult) {}
+
+/// v0.35 SEC-01: where the resolved bearer token came from. Used
+/// only for the startup banner text — the auth check itself doesn't
+/// care about provenance.
+#[derive(Debug, Clone, Copy)]
+enum TokenSource {
+    Cli,
+    Env,
+    Absent,
+}
+
+/// v0.35 SEC-01: mint a 256-bit hex-encoded bearer token from the OS
+/// CSPRNG. 64 hex chars (32 random bytes) gives 256 bits of entropy
+/// — same shape `coral ui serve` uses when it auto-mints. Routed
+/// through `rand::random` which uses `OsRng` on every supported
+/// platform (`getrandom(2)` on Linux, `BCryptGenRandom` on Windows,
+/// `SecRandomCopyBytes` on macOS), so the token is unguessable even
+/// if an attacker knows the wall-clock to the nanosecond.
+fn mint_bearer_token() -> String {
+    let bytes: [u8; 32] = rand::random();
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        use std::fmt::Write as _;
+        // `write!` to a String only fails on OOM, which would already
+        // have killed the process — `expect` is appropriate.
+        write!(&mut s, "{b:02x}").expect("hex format must not fail");
+    }
+    s
+}
 
 /// v0.30.0 audit B1: register SIGINT/SIGTERM so the serve loops can
 /// shut down gracefully instead of being killed mid-request. The flag
@@ -672,6 +770,23 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::TempDir;
+
+    /// v0.35 SEC-01: minted tokens are 64 hex chars (256 bits of
+    /// entropy), unique across consecutive calls, and contain only
+    /// `[0-9a-f]` so they survive header-value transport without
+    /// escaping.
+    #[test]
+    fn mint_bearer_token_is_64_hex_chars_and_unique() {
+        let a = mint_bearer_token();
+        let b = mint_bearer_token();
+        assert_eq!(a.len(), 64, "expected 256 bits = 64 hex chars: {a}");
+        assert_eq!(b.len(), 64, "expected 256 bits = 64 hex chars: {b}");
+        assert!(
+            a.bytes().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+            "token must be lower-case hex only: {a}"
+        );
+        assert_ne!(a, b, "two consecutive mints collided");
+    }
 
     fn make_project(dir: &Path) {
         fs::create_dir_all(dir.join(".wiki/modules")).unwrap();

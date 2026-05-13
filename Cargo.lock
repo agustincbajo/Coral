@@ -385,6 +385,7 @@ dependencies = [
  "mimalloc",
  "predicates",
  "pulldown-cmark",
+ "rand",
  "rayon",
  "regex",
  "schemars",

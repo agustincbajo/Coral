@@ -37,6 +37,11 @@ rayon = { workspace = true }
 # workspace dep (used by coral-core::atomic); promoting consumes
 # zero extra dependencies.
 fs4 = { workspace = true }
+# v0.35 SEC-01: auto-mint a 256-bit CSPRNG bearer token when the
+# operator runs `coral mcp serve --transport http` on a non-loopback
+# bind without `--token`. Pulls the same `rand` workspace pin
+# coral-mcp already uses for SEC-07 session ids — no new crates.
+rand = { workspace = true }
 # v0.34.0 onboarding (FR-ONB-30): SHA-256 fingerprint of the bootstrap
 # plan persisted in the checkpoint. Lets --resume detect when the
 # plan changed between runs and refuse to silently overwrite.
