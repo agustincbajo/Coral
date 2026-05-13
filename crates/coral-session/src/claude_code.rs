@@ -480,15 +480,19 @@ this is not json
         let proj_dir = home.path().join(".claude").join("projects").join("p1");
         std::fs::create_dir_all(&proj_dir).unwrap();
         let target_cwd = TempDir::new().unwrap();
-        let target_cwd_str = target_cwd.path().display().to_string();
+        // Use serde_json to escape the path string into a valid JSON
+        // literal. On Windows the raw `\` separators would otherwise
+        // be invalid `\` escapes in the JSON document and the entire
+        // record would fail to deserialize.
+        let target_cwd_json = serde_json::to_string(&target_cwd.path().display().to_string())
+            .expect("cwd path must serialize to JSON");
 
         // Two transcripts: one for the target cwd, one for a different one.
         let match_path = proj_dir.join("match.jsonl");
         std::fs::write(
             &match_path,
             format!(
-                r#"{{"type":"user","sessionId":"s1","cwd":"{target_cwd_str}","message":{{"content":"x"}}}}
-"#
+                "{{\"type\":\"user\",\"sessionId\":\"s1\",\"cwd\":{target_cwd_json},\"message\":{{\"content\":\"x\"}}}}\n"
             ),
         )
         .unwrap();
