@@ -333,6 +333,16 @@ fn run_embeddings_sqlite(
     // mixed with the new ones.
     let mut index = SqliteEmbeddingsIndex::open(wiki_root)?;
     if index.dim == 0 || index.provider != model {
+        // Windows fix (v0.37 prep): drop the open SQLite connection
+        // BEFORE attempting to delete the file. On Windows, the OS
+        // refuses `remove_file` on a file with an open handle (sharing
+        // mode), so `Connection::open()` followed by `remove_file()`
+        // would fail with os error 32 ("file in use") even on a single
+        // thread. POSIX silently allows the unlink so the prior code
+        // worked; Windows surfaces the conflict. The drop is forced
+        // via `std::mem::drop` before the unlink and the rebinding
+        // immediately after restores the original variable's role.
+        std::mem::drop(index);
         let path = wiki_root.join(SQLITE_FILENAME);
         // Pre-v0.19.4 this was `let _ = std::fs::remove_file(&path)`. If
         // the file was locked (parallel `coral search`), read-only (CI
