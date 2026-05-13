@@ -7,8 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-This window covers the v0.38.0 sprint-prep batch. Items land on `main`;
-the orchestrator handles the actual release tag.
+_No unreleased changes yet — v0.38.0 was just cut. Add new entries
+under this header as they land on `main`._
+
+## [0.38.0] - 2026-05-13
+
+**Breaking SemVer-minor (pre-1.0): `coral wiki serve` removed.** Two
+release trains past its v0.34.1 deprecation banner, the legacy
+HTML/Mermaid wiki browser is now gone — use `coral ui serve` for the
+modern SPA. Sprint-prep batch closed five autonomous-resolvable
+items: deprecation removal, CHANGELOG backfill, INSTALL.md v0.37
+refresh, opt-in `coral feedback submit` for crowd-sourced calibration
+data, and MSRV badge sync (1.85 → 1.89).
 
 ### Added
 
