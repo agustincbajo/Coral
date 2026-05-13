@@ -356,11 +356,17 @@ jobs:
     # v0.39.0 (BACKLOG #5 step 2/4): bumped 55 → 60. Measured workspace
     # line coverage at the time of the bump was 83.81% on commit
     # `2e06caa` (84121 LoC instrumented, 13616 missed), so 60% clears
-    # with +23.81% margin. The next step (v0.40.0) bumps to 65% once
-    # `coral-cli::commands::doctor` wizard paths get end-to-end
-    # coverage (currently 39.22%).
+    # with +23.81% margin.
+    #
+    # v0.40.0 (BACKLOG #5 step 3/4): bumped 60 → 65 after `coral-cli::
+    # commands::doctor` wizard paths got end-to-end coverage via the
+    # `Prompter` abstraction landed in commit `a1bff16`. Measured
+    # workspace line coverage on that commit was 84.04% (84436 LoC
+    # instrumented, 13479 missed); doctor.rs specifically went 39.22%
+    # → 84.39%. The 65% floor clears with +19.04% margin. Next step
+    # (v0.41.0): reach the PRD 70% KPI.
     env:
-      CORAL_COV_MIN_LINES: "60"
+      CORAL_COV_MIN_LINES: "65"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

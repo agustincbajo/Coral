@@ -155,29 +155,37 @@ on actual Actions runners.
 
 ### 5. Formal `llvm-cov` ≥ 70% threshold enforcement
 
-**Status v0.39.0:** PARTIALLY LANDED. The Coverage job in
+**Status v0.40.0:** PARTIALLY LANDED. The Coverage job in
 `.github/workflows/ci.yml` enforces a line-coverage floor via
 `cargo llvm-cov report --fail-under-lines $CORAL_COV_MIN_LINES`. The
-floor is currently set to **60%** (env `CORAL_COV_MIN_LINES` in the
-job definition) — bumped from 55% in v0.39.0 after the v0.38.0 CI
-measurement showed the workspace at **83.81%** lines on commit
-`2e06caa` (84121 LoC instrumented, 13616 missed). The 60% floor
-clears with +23.81% margin. The PRD KPI target of **70%** remains
-the destination.
+floor is currently set to **65%** (env `CORAL_COV_MIN_LINES` in the
+job definition) — bumped from 60% in v0.40.0 after the
+`coral-cli::commands::doctor` wizard paths gained end-to-end coverage
+(commit `a1bff16`, BACKLOG #5 step 3/4). Measured workspace line
+coverage on that commit: **84.04%** lines (84436 LoC instrumented,
+13479 missed); doctor.rs specifically jumped 39.22% → 84.39%. The
+65% floor clears with +19.04% margin. The PRD KPI target of **70%**
+remains the destination.
 
 **Escalation plan** (bump the env var, no code changes needed):
 - v0.34.x  — floor at 55% (historical baseline).
-- v0.39.0  — floor at 60% (current; cleared with 23.81% margin per
-  the v0.38.0 CI measurement). Original v0.35.0 plan called for
-  `coral-runner::http` golden tests + SSE-push exercise to enable
-  this bump — turned out to be preemptive, accumulated test growth
-  across v0.35..v0.38 already cleared 60% comfortably.
-- v0.40.0  — bump to 65% after `coral-cli::commands::doctor` wizard
-  paths get end-to-end coverage (currently 39.22% per the v0.38.0 CI
-  measurement — the lowest non-trivial file remaining after the
-  0.00% lib-glue files like `coral-env/src/lib.rs`).
-- v0.41.0  — reach the PRD 70% KPI; revisit only if coverage
-  measurably regresses on a refactor.
+- v0.39.0  — floor at 60% (cleared with +23.81% margin per the v0.38.0
+  CI measurement). Original v0.35.0 plan called for `coral-runner::http`
+  golden tests + SSE-push exercise to enable this bump — turned out to
+  be preemptive, accumulated test growth across v0.35..v0.38 already
+  cleared 60% comfortably.
+- v0.40.0  — floor at 65% (DONE; cleared with +19.04% margin). The
+  enabler was a `Prompter` trait abstraction in `coral-cli::commands::
+  doctor` that decouples the wizard's 5 interactive branches from
+  `dialoguer`'s real-stdin requirement. 20 new tests under the in-file
+  `#[cfg(test)] mod tests` block + 5 binary-spawning integration tests
+  in `crates/coral-cli/tests/doctor_e2e.rs`.
+- v0.41.0  — reach the PRD 70% KPI. The path: pick the next-lowest-
+  covered files from the v0.40.0 measurement — `coral-cli/src/commands/
+  up.rs` (~13%), `coral-ui/src/routes/query.rs` (~28%), `coral-cli/src/
+  commands/down.rs` (~32%), `coral-cli/src/commands/test.rs` (~35%) —
+  and add focused integration tests. Revisit only if coverage measurably
+  regresses on a refactor.
 
 Each bump should land in its own PR with a brief CHANGELOG entry;
 never *lower* the floor without a written justification.

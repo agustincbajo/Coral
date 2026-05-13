@@ -7,8 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_No unreleased changes yet — v0.39.0 was just cut. Add new entries
-under this header as they land on `main`._
+### Changed
+
+- **Coverage floor bumped 60% → 65%** in the `Coverage` CI job
+  (`CORAL_COV_MIN_LINES`, BACKLOG #5 step 3/4). The enabler was a
+  `Prompter` trait abstraction added to `coral-cli::commands::doctor`
+  that decouples the `coral doctor --wizard` 5 interactive branches
+  from `dialoguer`'s real-stdin requirement, plus 20 new in-file unit
+  tests and 5 binary-spawning integration tests in
+  `crates/coral-cli/tests/doctor_e2e.rs`. Measured workspace line
+  coverage on commit `a1bff16` (the test-additions commit): 84.04%
+  lines (84436 instrumented, 13479 missed); doctor.rs specifically
+  went 39.22% → 84.39%. The 65% floor clears with +19.04% margin.
+  Next step (v0.41.0): reach the PRD 70% KPI.
 
 ## [0.39.0] - 2026-05-13
 
