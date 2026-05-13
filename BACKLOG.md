@@ -5,16 +5,15 @@ production. None block users today; all are polish, infrastructure, or
 GTM follow-ups. Listed by category, not priority — the maintainer
 picks the order.
 
-Last updated: 2026-05-12, **post v0.34.1 patch**. The M1 onboarding
-stack shipped as v0.34.0 (weeks 1–6 + tag + post-release smoke matrix
-verde across Linux/macOS/Windows) plus a same-day patch v0.34.1
-closing three post-release tech-debt items (GITHUB_TOKEN auth in
-self-upgrade, Windows hook latency rewrite, Ollama config bridge).
-None of the 10 backlog entries below was within scope of M1; they
-remain open against v0.35.0+ unless re-prioritised. M1's own
-follow-up list lives in the PRD §15 timeline rather than here; the
-3 items that closed in the v0.34.1 patch are documented at the
-bottom of this file under "v0.34.0 sprint status (shipped)".
+Last updated: 2026-05-13, **post v0.38.0 release**. The M1 onboarding
+stack shipped as v0.34.0 plus a same-day patch v0.34.1; v0.35 →
+v0.38 followed with the Phase C ratchet (panic-risk → 0 warnings),
+cross-platform mimalloc baseline, SPA sibling-gen hardening, and
+finally the `coral wiki serve` breaking removal in v0.38.0. Items
+closed in those release trains are noted inline below ("✅ CLOSED"
+markers). Item #9 closed v0.38.0; item #10 also landed via the
+v0.38 INSTALL.md refresh. The 9 remaining open entries are sequel
+work, not unfinished business — none block users today.
 
 ---
 
@@ -320,23 +319,13 @@ both retired (tiny_http remains a workspace dep — `coral-ui` and
 
 ---
 
-### 10. SLSA provenance verification doc
+### 10. SLSA provenance verification doc — DONE (v0.38.0)
 
-`actions/attest-build-provenance@v2` writes Sigstore-signed in-toto
-attestations to every release artifact. Nothing in `docs/INSTALL.md`
-or the README tells users how to verify them.
-
-One-liner:
-
-```bash
-gh attestation verify coral-v0.33.0-x86_64-unknown-linux-gnu.tar.gz \
-  --repo agustincbajo/Coral
-```
-
-Acceptance: a "Verifying release provenance" subsection in
-`docs/INSTALL.md` with the command + expected output snippet.
-
-Cost: 15 minutes.
+`docs/INSTALL.md` now has a "Verifying release provenance (SLSA /
+Sigstore)" subsection (lines 178-190) with the `gh attestation
+verify` one-liner against the current release tag and a pointer to
+`docs/SLSA-VERIFICATION.md` for the full cosign-based flow. Landed
+in the v0.38 prep INSTALL.md refresh (commit `caa59a8`).
 
 ---
 
@@ -356,14 +345,18 @@ These were considered and rejected (matches PRD §13 anti-features):
 
 ## Closing notes
 
-Coral v0.33.0 is in production with:
+Coral v0.38.0 is in production with:
 - ✅ All M1 + M2 + M3 features from the PRD
-- ✅ CI 100% green (first time in repo history)
+- ✅ CI 100% green; clippy panic-risk hard gate at 0 warnings
 - ✅ Sigstore-signed SLSA-shaped provenance on every release artifact
-- ✅ Single-binary distribution preserved (~12 MB stripped Linux x86_64)
-- ✅ Backward-compat sacred across v0.32.x and v0.33.0
+- ✅ Single-binary distribution preserved (~14 MiB stripped Windows; ~6.3 MiB stripped Linux)
+- ✅ Backward-compat sacred across v0.32.x → v0.38.0 (with the one
+  documented `coral wiki serve` breaking removal at v0.38.0 after a
+  3-version deprecation window)
+- ✅ Plugin marketplace self-hosted live; opt-in `coral feedback submit`
+  for crowd-sourced calibration data (AF-1 compliant zero-phone-home)
 
-The seven open items above are sequel work, not unfinished business.
+The remaining open items above are sequel work, not unfinished business.
 
 ---
 
