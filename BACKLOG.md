@@ -395,3 +395,120 @@ provenance + smoke matrix verified across Linux/macOS/Windows.
 - Gemini + Anthropic provider config bridge (extends the v0.34.1 Ollama bridge to the other two providers — in flight as of the v0.34.1-post quick-wins batch)
 
 These outstanding items are scheduled v0.35 work, NOT regressions.
+
+### v0.35 Phase C deferrals (ARCH-C1 follow-up)
+
+Phase C audit demoted 6 zero-external-callers `pub mod` declarations
+in `crates/coral-core/src/lib.rs` to `pub(crate)` (storage, vocab,
+late_chunking, reranker, tantivy_backend, pgvector). That's 18% of
+the 33 modules — below the ≥30% goal but the only safe set without
+deeper refactors.
+
+The remaining candidates that COULD be demoted but would require
+re-export refactors:
+
+- **`index`** — 4 external callers, all use only `IndexEntry` +
+  `WikiIndex`. Could replace `pub mod index` with `pub use
+  index::{IndexEntry, WikiIndex};` at crate root. Effort: 4 import
+  rewrites in `coral-cli`. Risk: SemVer-fenced public surface change
+  for the type aliases.
+- **`cache`** — 2 external uses, both `WalkCache`. Same shape:
+  `pub use cache::WalkCache;` would let `cache` go crate-private.
+- **`embeddings`** — 1 external use, `EmbeddingsIndex`. Same shape.
+- **`embeddings_sqlite`** — 2 external uses,
+  `SqliteEmbeddingsIndex` + `SQLITE_FILENAME`. Same shape.
+- **`eval`, `narrative`, `llms_txt`** — 1 external use each. Same
+  shape.
+- **`gc`** — 3 external uses, all from `commands/consolidate.rs`
+  (`gc::analyze`, `gc::render_markdown`, `gc::render_json`). Same
+  shape.
+- **`symbols`** — 2 external uses. Both call sites use
+  `symbols::{self, Symbol, SymbolKind}`; converting needs re-export
+  of three names instead of one.
+- **`git_remote`** — 2 external uses,
+  `{SyncOutcome, sync_repo}`. Same shape.
+- **`search_index`** — 2 external uses, `search_with_index` only.
+  Same shape.
+- **`wikilinks`** — 3 external uses. Same shape.
+
+If all 10 are demoted via the `pub use` shim, the public mod surface
+drops 16/33 = 48%. Scheduled for v0.36 as one focused commit
+("refactor(core): tighten public-mod surface via curated re-exports")
+— each shim is mechanical and reversible.
+
+### v0.35 Phase C deferrals (ARCH-C2 — test_script_lock)
+
+`pub fn coral_runner::test_script_lock` exists because integration
+tests in `coral-cli` need a process-wide mutex to coordinate the
+fork-exec ETXTBSY race. Phase C kept the function `pub` with
+heavy doc-comment + `#[doc(hidden)]` (option (c) in the spec) —
+moving it to a `coral-test-utils` dev-dep crate (option (b)) was
+considered but rejected as net-negative churn for v0.35: the
+function is one line, the doc comment is the contract, and a
+separate crate would add a workspace member for ~10 LoC.
+
+Revisit only if the helper grows to 3+ functions or accidentally
+becomes a runtime-relevant API.
+
+### v0.35 Phase C deferrals (workspace clippy lints)
+
+Phase C added `[workspace.lints.clippy]` with `unwrap_used = "warn"`,
+`expect_used = "warn"`, `panic = "warn"`. Initial count: **104
+warnings** in libs + bins (production code, not tests):
+
+| crate          | warnings |
+|----------------|----------|
+| coral-core     | 34       |
+| coral-runner   | 25       |
+| coral-cli      | 12       |
+| coral-mcp      | 12       |
+| coral-env      | 9        |
+| coral-test     | 5        |
+| coral-ui       | 4        |
+| coral-stats    | 1        |
+| coral-lint     | 1        |
+| coral-session  | 1        |
+
+Ratchet plan: aim for < 50 by v0.36, < 20 by v0.37, < 5 + per-site
+`#[allow(...)]` justifications by v1.0 (when promoting `warn` →
+`deny` is safe). Track in this file, not in individual issue tracker
+entries.
+
+### v0.35 Phase C deferrals (mimalloc baseline benchmark)
+
+ADR-0012 keeps `mimalloc` as `#[global_allocator]` but flags the
+"10-20% throughput" claim in `Cargo.toml` as unverified. Three
+v0.35.x workloads to benchmark before any v0.36 work touches the
+relevant hot paths:
+
+1. `coral lint --kind structural` on a 5000-page wiki (TF-IDF +
+   wikilink graph; CPU + small-string allocation heavy).
+2. `coral test --kind property-based` on a 50-route OpenAPI spec
+   (`serde_json::Value` generation heavy).
+3. `coral mcp serve --transport http` under 100 RPS POST for 60 s
+   (concurrency + small-string allocation).
+
+Outcome paths:
+- ≥10% win on at least 2 workloads → freeze the claim in
+  `docs/PERF.md` with numbers, update Cargo.toml comment to cite
+  the benchmark artifact.
+- <5% win across all three → drop mimalloc, supersede ADR-0012.
+
+### v0.35 Phase C deferrals (gzip+brotli sibling generation hardening)
+
+The build.rs in `coral-ui` generates `.gz` and `.br` siblings for
+the SPA bundle. Two follow-ups for v0.36:
+
+1. **Skip raw bundle from `include_dir!` when both siblings exist
+   AND the file is >100 KiB.** Current behavior bakes all three
+   encodings; raw bundle is dead weight for clients that always
+   send `Accept-Encoding: br, gzip`. Risk: a CLI client without
+   compression support would 404. Mitigation: detect missing-
+   sibling case in serve_static and 406 instead of 404 (preserves
+   the contract). Net binary savings: ~500 KB.
+2. **Add `Vary: Accept-Encoding` to the raw branch too** when the
+   path has a sibling but the client didn't advertise support.
+   Currently we only set Vary when serving a compressed sibling;
+   intermediate caches keyed on URL alone could mis-serve raw
+   bytes to a brotli-capable client. Low-risk fix, gated on the
+   above #1 being decided first.
