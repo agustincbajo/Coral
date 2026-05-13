@@ -1022,9 +1022,23 @@ fn format_uuid_v4(mut bytes: [u8; 16]) -> String {
 /// request so the table stays bounded without a dedicated reaper
 /// thread.
 fn reap_expired_sessions(sessions: &Arc<Mutex<HashMap<String, Instant>>>) {
+    reap_expired_sessions_with_ttl(sessions, SESSION_TTL);
+}
+
+/// Inner helper with explicit TTL for unit testability. The outer
+/// `reap_expired_sessions` always passes [`SESSION_TTL`]; tests pin a
+/// tight TTL + `thread::sleep` to assert reap behavior without leaning
+/// on `Instant::now().checked_sub(LARGE_DURATION)` (which can panic on
+/// a freshly-launched process when nextest runs many test binaries in
+/// parallel — the flake originally enumerated as Cat D in the v0.36
+/// Windows nextest handoff).
+fn reap_expired_sessions_with_ttl(
+    sessions: &Arc<Mutex<HashMap<String, Instant>>>,
+    ttl: Duration,
+) {
     let now = Instant::now();
     let mut guard = sessions.lock();
-    guard.retain(|_, last_seen| now.saturating_duration_since(*last_seen) < SESSION_TTL);
+    guard.retain(|_, last_seen| now.saturating_duration_since(*last_seen) < ttl);
 }
 
 #[cfg(test)]
@@ -1098,21 +1112,34 @@ mod tests {
 
     /// #5 — Session table reap: entries older than the TTL are dropped
     /// on the next reap pass.
+    ///
+    /// Process-relative timing: we insert the "expired" entry, sleep
+    /// past the test TTL, then insert the "fresh" entry and reap. This
+    /// avoids `Instant::now().checked_sub(LARGE_DURATION)` which can
+    /// panic on a freshly-launched process (the Cat D nextest flake
+    /// originally enumerated in HANDOFF-7-WINDOWS-NEXTEST-2026-05-13.md
+    /// when 1900+ tests spawn many binaries in parallel).
     #[test]
     fn session_table_reap_drops_expired_entries() {
         let sessions: Arc<Mutex<HashMap<String, Instant>>> = Arc::new(Mutex::new(HashMap::new()));
-        // Insert a session with a clearly-expired timestamp.
         let expired_id = new_session_id();
         let fresh_id = new_session_id();
-        let stale = Instant::now()
-            .checked_sub(SESSION_TTL + Duration::from_secs(60))
-            .expect("clock supports sub");
+
+        // Insert the "stale" entry first; its Instant::now() is t0.
         {
             let mut guard = sessions.lock();
-            guard.insert(expired_id.clone(), stale);
+            guard.insert(expired_id.clone(), Instant::now());
+        }
+        // Sleep past the test TTL so t0 ages out.
+        let test_ttl = Duration::from_millis(50);
+        std::thread::sleep(Duration::from_millis(80));
+        // Insert the "fresh" entry; its Instant::now() is t1, well after t0.
+        {
+            let mut guard = sessions.lock();
             guard.insert(fresh_id.clone(), Instant::now());
         }
-        reap_expired_sessions(&sessions);
+        // Reap with the tight TTL — stale (>80ms old) drops, fresh (<test_ttl) survives.
+        reap_expired_sessions_with_ttl(&sessions, test_ttl);
         let guard = sessions.lock();
         assert!(
             !guard.contains_key(&expired_id),
