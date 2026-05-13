@@ -12,12 +12,25 @@
 //! streaming `/api/v1/query` route takes ownership and writes raw bytes
 //! itself; every other route returns a `(status, body)` pair that we
 //! wrap in `Response::from_data`.
+//!
+//! v0.35 CP-2: the recv loop dispatches every request onto a freshly
+//! spawned thread, capped at [`MAX_CONCURRENT_HANDLERS`] in-flight via an
+//! `Arc<AtomicUsize>` semaphore. Pre-fix `coral ui serve` was a single-
+//! threaded recv loop, so a long-running `/api/v1/query` stream (the
+//! Claude subprocess can take 10+s) blocked `/health`, `/api/v1/pages`,
+//! and the SPA static assets — the browser tab visibly stalled. The
+//! pattern is a direct port of `coral-mcp::transport::http_sse`
+//! (`MAX_CONCURRENT_HANDLERS = 32`, RAII guard on the in-flight counter,
+//! 503 JSON envelope when the cap is hit). We deliberately keep the
+//! 250 ms `recv_timeout` shutdown poll already in place — the std-thread
+//! + atomics pattern is intentionally tokio-free, matching the validated
+//! CP-1 architecture decision.
 
 use std::io::Read;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use coral_runner::{ClaudeRunner, Runner};
@@ -28,6 +41,34 @@ use crate::routes;
 use crate::state::AppState;
 pub use crate::state::ServeConfig;
 use crate::static_assets;
+
+/// Maximum concurrent request handlers. A request that would push the
+/// in-flight count past this cap is answered `503 Service Unavailable`
+/// immediately, with the same JSON envelope shape the rest of the API
+/// uses. Matches `coral_mcp::transport::http_sse::MAX_CONCURRENT_HANDLERS`
+/// (32 — keeps the FD budget sane on macOS's 256 default ulimit while
+/// remaining several orders of magnitude over any realistic browser
+/// concurrency).
+pub const MAX_CONCURRENT_HANDLERS: usize = 32;
+
+/// Graceful-drain deadline on shutdown. After the recv loop exits we
+/// wait up to this long for in-flight handler threads to finish before
+/// returning from [`serve`] (and letting the process exit). Five seconds
+/// is the same drain budget `coral wiki serve` uses; CP-2 reused it
+/// verbatim for parity. A pathologically stuck handler past the budget
+/// is abandoned — the OS reaps the threads when the process exits.
+const SHUTDOWN_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Poll interval used while waiting for the in-flight counter to drain.
+/// 50 ms balances responsiveness against busy-spin — a typical handler
+/// returns within a few ms, so 1-2 iterations is the common case.
+const SHUTDOWN_DRAIN_POLL: Duration = Duration::from_millis(50);
+
+/// 503 envelope returned when the concurrent-handler cap is hit. The
+/// shape mirrors [`crate::error::ApiError`] so the frontend can deserialize
+/// it through the same `{ "error": ... }` reader it already uses for
+/// every other 4xx/5xx response.
+const BUSY_BODY: &str = r#"{"error":"server busy: too many concurrent requests"}"#;
 
 /// Boot the WebUI server. Blocks until SIGINT/SIGTERM is received.
 pub fn serve(config: ServeConfig) -> Result<()> {
@@ -98,18 +139,100 @@ pub fn serve(config: ServeConfig) -> Result<()> {
     let shutdown = Arc::new(AtomicBool::new(false));
     install_shutdown_handler(shutdown.clone())?;
 
+    // v0.35 CP-2: in-flight handler counter. We pre-increment + check
+    // against the cap before spawning, and decrement via the RAII
+    // [`ActiveGuard`] when the handler returns (success, panic, or
+    // network error). This keeps the head-of-line block out of the
+    // recv loop — `/health` no longer waits for a slow streaming
+    // `/api/v1/query` to drain.
+    let active = Arc::new(AtomicUsize::new(0));
+
     loop {
         if shutdown.load(Ordering::Relaxed) {
             eprintln!("\ncoral ui serve: shutting down...");
             break;
         }
         match server.recv_timeout(Duration::from_millis(250)) {
-            Ok(Some(req)) => handle(&state, req),
+            Ok(Some(req)) => {
+                // Reserve a slot atomically. If the post-increment value
+                // exceeds the cap, the request gets an immediate 503 and
+                // the slot is released — no thread is spawned.
+                let inflight = active.fetch_add(1, Ordering::SeqCst) + 1;
+                if inflight > MAX_CONCURRENT_HANDLERS {
+                    active.fetch_sub(1, Ordering::SeqCst);
+                    let _ = respond_busy(req);
+                    continue;
+                }
+                let state_clone = Arc::clone(&state);
+                let active_for_guard = Arc::clone(&active);
+                let spawn_result = std::thread::Builder::new()
+                    .name("coral-ui-http".to_string())
+                    .spawn(move || {
+                        let _guard = ActiveGuard(active_for_guard);
+                        handle(&state_clone, req);
+                    });
+                if let Err(e) = spawn_result {
+                    // Thread::spawn can only really fail when the OS
+                    // refuses a new thread (FD / pthread limit). Release
+                    // the slot we reserved and surface a 503 — the
+                    // caller will retry. We don't have the request
+                    // anymore (it was moved into the closure on the
+                    // happy path), so just log and continue; the recv
+                    // loop will service the next request immediately.
+                    active.fetch_sub(1, Ordering::SeqCst);
+                    tracing::warn!(error = %e, "coral ui: could not spawn handler thread");
+                }
+            }
             Ok(None) => continue,
             Err(_) => continue,
         }
     }
+
+    // v0.35 CP-2: graceful drain. Give in-flight handlers up to
+    // [`SHUTDOWN_DRAIN_TIMEOUT`] to finish before we return from
+    // `serve` (and the process exits). The recv loop has already
+    // stopped accepting new requests at this point, so the counter
+    // is monotonically non-increasing. We poll every
+    // [`SHUTDOWN_DRAIN_POLL`] rather than parking on a condvar — the
+    // common case is "no in-flight requests" which exits in the first
+    // iteration without paying for the synchronization primitive.
+    let drain_start = Instant::now();
+    loop {
+        let inflight = active.load(Ordering::Acquire);
+        if inflight == 0 {
+            break;
+        }
+        if drain_start.elapsed() >= SHUTDOWN_DRAIN_TIMEOUT {
+            tracing::warn!(
+                inflight,
+                "coral ui serve: shutdown drain timeout exceeded; abandoning in-flight handlers"
+            );
+            break;
+        }
+        std::thread::sleep(SHUTDOWN_DRAIN_POLL);
+    }
     Ok(())
+}
+
+/// RAII helper — decrement the in-flight counter when the handler
+/// thread returns (success, panic, or I/O error). Mirrors the same
+/// pattern in `coral_mcp::transport::http_sse::ActiveGuard`.
+struct ActiveGuard(Arc<AtomicUsize>);
+
+impl Drop for ActiveGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Emit the canonical busy-response (`503 Service Unavailable` with a
+/// JSON envelope). Factored out so the recv loop's overflow branch and
+/// the integration tests stay in sync on the wire shape.
+fn respond_busy(request: Request) -> std::io::Result<()> {
+    let resp = Response::from_string(BUSY_BODY)
+        .with_status_code(503)
+        .with_header(json_header());
+    request.respond(resp)
 }
 
 fn handle(state: &Arc<AppState>, mut request: Request) {
