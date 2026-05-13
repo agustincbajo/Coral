@@ -1,3 +1,9 @@
+// v0.35 ARCH-C1: demoted to pub(crate); v0.25 stub with no
+// internal callers. The `from_env` constructor + `VoyageReranker`
+// struct stay around as scaffolding for the eventual real
+// integration — see BACKLOG.md.
+#![allow(dead_code)]
+
 //! Reranker module for post-retrieval result reranking.
 //!
 //! v0.25 stub: provides a `VoyageReranker` that performs a no-op passthrough

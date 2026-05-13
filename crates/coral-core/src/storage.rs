@@ -1,3 +1,10 @@
+// v0.35 ARCH-C1: module demoted to pub(crate). The trait + impls
+// here are scaffolding for future backends; the only intra-crate
+// consumer is the feature-gated `pgvector` module. dead_code is
+// allowed crate-wide for THIS file because clippy can't see the
+// future caller — when a backend lands, drop this allow.
+#![allow(dead_code)]
+
 //! Storage abstraction traits for wiki pages and embeddings.
 //!
 //! v0.25 (M1.11): defines the trait boundary so future backends

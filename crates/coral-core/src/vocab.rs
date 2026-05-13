@@ -1,3 +1,7 @@
+// v0.35 ARCH-C1: demoted to pub(crate); scaffolding for the
+// retrieval-relevance work. No callers in v0.35 — see BACKLOG.md.
+#![allow(dead_code)]
+
 //! Interned vocabulary with `Arc<str>` for memory-efficient token storage (M3.2).
 //!
 //! Maps string tokens to compact `TokenId` values (`u32`), enabling search

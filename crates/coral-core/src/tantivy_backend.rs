@@ -1,3 +1,8 @@
+// v0.35 ARCH-C1: feature-gated stub demoted to pub(crate). The
+// stub items are scaffolding for a future BM25 backend swap; until
+// that lands, dead_code is intentional.
+#![allow(dead_code)]
+
 //! Tantivy BM25 search backend stub.
 //!
 //! Gated behind `#[cfg(feature = "tantivy")]`. This module provides the

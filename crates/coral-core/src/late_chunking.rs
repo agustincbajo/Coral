@@ -1,3 +1,7 @@
+// v0.35 ARCH-C1: demoted to pub(crate); scaffolding for the
+// retrieval-relevance work. No callers in v0.35 — see BACKLOG.md.
+#![allow(dead_code)]
+
 //! Late Chunking for embeddings with surrounding context.
 //!
 //! Traditional chunking splits text into fixed-size windows and embeds each

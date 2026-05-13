@@ -56,8 +56,39 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - name: cargo clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+      # v0.35 Phase C added workspace clippy lints (unwrap_used,
+      # expect_used, panic = "warn"). They surface ~100 panic-risk
+      # sites in production + thousands more in tests. The strict
+      # `-D warnings` gate that catches actual regressions therefore
+      # has to allow these three lints (otherwise CI fails on day 1
+      # of the new lint with no realistic path to zero). The second
+      # job below ('Clippy (panic-risk informational)') prints the
+      # production-only count so the ratchet plan in BACKLOG.md has
+      # a CI artifact to track.
+      - name: cargo clippy (strict, except the new panic-risk lints)
+        run: |
+          cargo clippy --workspace --all-targets -- -D warnings \
+            -A clippy::unwrap_used \
+            -A clippy::expect_used \
+            -A clippy::panic
+
+  clippy-panic-risk:
+    # v0.35 Phase C — informational job. Counts the new workspace
+    # clippy lints on lib + bins (production code, not tests). The
+    # count is logged but does NOT fail the build — the strict job
+    # above is the gate. BACKLOG.md tracks the ratchet plan; this
+    # job is the CI-side telemetry.
+    name: Clippy (panic-risk informational)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo clippy --lib --bins (warn-only)
+        run: cargo clippy --workspace --lib --bins --no-deps
 
   test:
     name: Test (stable)

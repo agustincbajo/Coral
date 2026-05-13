@@ -1,3 +1,8 @@
+// v0.35 ARCH-C1: feature-gated stub demoted to pub(crate). The
+// real wiring requires a concrete PostgreSQL integration that
+// hasn't landed yet; dead_code stays allowed until it does.
+#![allow(dead_code)]
+
 //! pgvector-backed embeddings storage (opt-in, feature-gated).
 //!
 //! This module provides a `PgvectorEmbeddingsStorage` struct that implements
