@@ -110,11 +110,37 @@ Three forces argue for keeping mimalloc through v0.35:
   freeze the claim" fires on every workload. ADR-0012 stays accepted;
   the v0.35 audit's P-X1 finding is closed.
 
+- **Cross-platform baseline workflow (v0.37-prep, 2026-05-13).** The
+  Windows numbers above are emphatic enough that they alone vindicate
+  the decision; nonetheless, ADR-0012 now ships with a CI job
+  (`.github/workflows/bench-allocator.yml`) that re-runs the same
+  harness on `ubuntu-latest` and `macos-latest` on demand
+  (`workflow_dispatch`) and on a weekly cron (Mon 04:30 UTC). Results
+  land in `docs/bench/MIMALLOC-BASELINE-2026-05-13.md` under the
+  "Linux + macOS baselines" section.
+
+  **Linux baseline (ubuntu-latest, glibc ptmalloc2):** _pending first
+  `workflow_dispatch` run; predicted +10–25% based on prior published
+  mimalloc benchmarks on similar small-allocation workloads._
+
+  **macOS baseline (macos-latest, libsystem nano-allocator):** _pending
+  first `workflow_dispatch` run; predicted +10–25% same shape._
+
+  Decision rule: if either platform comes in below +5% on all three
+  workloads, the verdict becomes platform-specific (mimalloc on Windows
+  only) and the workspace allocator wiring in `coral-cli/src/main.rs`
+  should grow a `cfg(target_os = "windows")` guard. If both platforms
+  clear the +10% bar, the cross-platform decision is unconditional and
+  no code change is needed. Either way, the workflow's weekly cron
+  keeps the artefact fresh so future Cargo bumps or upstream mimalloc
+  releases that flip the verdict are caught within 7 days.
+
 - **Re-evaluation triggers:** revisit only if (a) a future workload
   shows < 5% win and we have evidence that workload is the new hot
-  path, or (b) a supply-chain concern emerges (e.g. mimalloc upstream
-  becomes unmaintained — currently still actively maintained by
-  Microsoft Research).
+  path, (b) the cross-platform CI baseline crosses the +5% line on
+  Linux or macOS (see above), or (c) a supply-chain concern emerges
+  (e.g. mimalloc upstream becomes unmaintained — currently still
+  actively maintained by Microsoft Research).
 
 ## References
 
