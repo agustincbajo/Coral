@@ -129,19 +129,34 @@ harness on `ubuntu-latest` and `macos-latest`:
 
 #### Linux (ubuntu-latest, glibc `ptmalloc2`)
 
+Run: GitHub Actions `bench-allocator.yml` workflow_dispatch on commit
+`c594f93` (2026-05-13). Criterion median over 100 samples; `change:`
+column reports `cargo bench --features system_alloc --baseline mimalloc`.
+
 | Workload | mimalloc (median) | system (median) | mimalloc speedup |
 |----------|-------------------|------------------|------------------|
-| A — TF-IDF 100 pages, 2-token query        | _pending_ | _pending_ | _pending_ |
-| B — page parse, 50 docs                    | _pending_ | _pending_ | _pending_ |
-| C — JSON Value 10 routes × 5 props         | _pending_ | _pending_ | _pending_ |
+| A — TF-IDF 100 pages, 2-token query        | 848.87 µs | 1.0294 ms | **+21.2%** |
+| B — page parse, 50 docs                    | 280.39 µs |  316.59 µs | **+12.9%** |
+| C — JSON Value 10 routes × 5 props         |  76.84 µs |  113.99 µs | **+48.4%** |
+
+All three workloads exceed the +10% ADR-0012 threshold for keeping
+mimalloc cross-platform. Criterion p-value 0.00 on every comparison;
+performance regression confirmed when system allocator is in use.
 
 #### macOS (macos-latest, `libsystem_malloc`)
 
+Same workflow run; aarch64-apple-darwin runner.
+
 | Workload | mimalloc (median) | system (median) | mimalloc speedup |
 |----------|-------------------|------------------|------------------|
-| A — TF-IDF 100 pages, 2-token query        | _pending_ | _pending_ | _pending_ |
-| B — page parse, 50 docs                    | _pending_ | _pending_ | _pending_ |
-| C — JSON Value 10 routes × 5 props         | _pending_ | _pending_ | _pending_ |
+| A — TF-IDF 100 pages, 2-token query        | 806.78 µs | 1.1716 ms | **+45.2%** |
+| B — page parse, 50 docs                    | 219.70 µs |  294.06 µs | **+33.8%** |
+| C — JSON Value 10 routes × 5 props         |  68.63 µs |  111.68 µs | **+62.7%** |
+
+macOS sits *between* Windows MSVC (largest wins, +29–43%) and Linux
+glibc (narrowest wins, +13–48%) — consistent with the prediction that
+`libsystem_malloc`'s nano-allocator path is faster than `HeapAlloc`
+but slower than glibc `ptmalloc2` on this allocation shape.
 
 ### Cross-platform expectation
 

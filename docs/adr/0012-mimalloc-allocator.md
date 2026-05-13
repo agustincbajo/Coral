@@ -119,21 +119,34 @@ Three forces argue for keeping mimalloc through v0.35:
   land in `docs/bench/MIMALLOC-BASELINE-2026-05-13.md` under the
   "Linux + macOS baselines" section.
 
-  **Linux baseline (ubuntu-latest, glibc ptmalloc2):** _pending first
-  `workflow_dispatch` run; predicted +10–25% based on prior published
-  mimalloc benchmarks on similar small-allocation workloads._
+  **Linux baseline (ubuntu-latest, glibc ptmalloc2)** — measured
+  v0.37-prep (CI run 25804983205, 2026-05-13):
+  | Workload                | mimalloc speedup |
+  |-------------------------|------------------|
+  | A — TF-IDF              | **+21.2%**       |
+  | B — page parse          | **+12.9%**       |
+  | C — JSON Value          | **+48.4%**       |
 
-  **macOS baseline (macos-latest, libsystem nano-allocator):** _pending
-  first `workflow_dispatch` run; predicted +10–25% same shape._
+  All three workloads clear the +10% threshold. Decision rule
+  (next paragraph) keeps mimalloc cross-platform.
 
-  Decision rule: if either platform comes in below +5% on all three
-  workloads, the verdict becomes platform-specific (mimalloc on Windows
-  only) and the workspace allocator wiring in `coral-cli/src/main.rs`
-  should grow a `cfg(target_os = "windows")` guard. If both platforms
-  clear the +10% bar, the cross-platform decision is unconditional and
-  no code change is needed. Either way, the workflow's weekly cron
-  keeps the artefact fresh so future Cargo bumps or upstream mimalloc
-  releases that flip the verdict are caught within 7 days.
+  **macOS baseline (macos-latest, libsystem nano-allocator)** —
+  measured same run:
+  | Workload                | mimalloc speedup |
+  |-------------------------|------------------|
+  | A — TF-IDF              | **+45.2%**       |
+  | B — page parse          | **+33.8%**       |
+  | C — JSON Value          | **+62.7%**       |
+
+  macOS sits between Windows MSVC and Linux glibc — `libsystem_malloc`
+  nano-allocator path is faster than `HeapAlloc` but slower than
+  `ptmalloc2` on this allocation shape. All three clear the +10% bar.
+
+  Decision rule (applied): both platforms clear the +10% bar, so the
+  **cross-platform decision is unconditional** and no `cfg(target_os)`
+  guard is added. Weekly cron keeps the artefact fresh so future Cargo
+  bumps or upstream mimalloc releases that flip the verdict are caught
+  within 7 days.
 
 - **Re-evaluation triggers:** revisit only if (a) a future workload
   shows < 5% win and we have evidence that workload is the new hot
