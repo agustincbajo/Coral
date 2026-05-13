@@ -69,8 +69,7 @@ pub fn serve_static(
     // index.html is excluded — it needs runtime config injection,
     // which requires the raw bytes.
     if !is_index_html {
-        if let Some((sibling_bytes, encoding)) =
-            try_compressed_sibling(normalized, accept_encoding)
+        if let Some((sibling_bytes, encoding)) = try_compressed_sibling(normalized, accept_encoding)
         {
             let cache = "public, max-age=31536000, immutable";
             return Some(StaticResponse {
@@ -179,8 +178,7 @@ mod tests {
 
     #[test]
     fn root_returns_index() {
-        let r = serve_static("/", r#"{"foo":"bar"}"#, "")
-            .expect("placeholder index exists");
+        let r = serve_static("/", r#"{"foo":"bar"}"#, "").expect("placeholder index exists");
         assert_eq!(r.status, 200);
         assert_eq!(r.cache, "no-cache");
         assert_eq!(r.content_encoding, None, "index.html is never compressed");

@@ -41,9 +41,7 @@ fn main() {
     // populates it). Bail without error so `cargo check` on a clean
     // worktree still succeeds.
     if !dist_dir.is_dir() {
-        println!(
-            "cargo:warning=coral-ui/assets/dist not found — skipping pre-compression"
-        );
+        println!("cargo:warning=coral-ui/assets/dist not found — skipping pre-compression");
         return;
     }
 
@@ -70,10 +68,7 @@ fn walk_and_compress(root: &Path) {
             continue;
         }
         if let Err(e) = maybe_compress(&path) {
-            println!(
-                "cargo:warning=compress({}): {e}",
-                path.display()
-            );
+            println!("cargo:warning=compress({}): {e}", path.display());
         }
     }
 }
@@ -175,9 +170,7 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     // killed mid-write.
     let tmp = path.with_extension(format!(
         "{}.tmp",
-        path.extension()
-            .and_then(|s| s.to_str())
-            .unwrap_or("bin")
+        path.extension().and_then(|s| s.to_str()).unwrap_or("bin")
     ));
     fs::write(&tmp, bytes)?;
     fs::rename(&tmp, path)?;

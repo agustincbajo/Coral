@@ -477,8 +477,8 @@ fn respond_static(request: Request, r: static_assets::StaticResponse) {
         // Per RFC 9110 §15.5.4 / §8.4: caches keyed on Vary:
         // Accept-Encoding so a brotli response doesn't poison a
         // gzip-only client's intermediate cache.
-        let vary = Header::from_bytes(b"Vary" as &[u8], b"Accept-Encoding" as &[u8])
-            .expect("valid vary");
+        let vary =
+            Header::from_bytes(b"Vary" as &[u8], b"Accept-Encoding" as &[u8]).expect("valid vary");
         resp = resp.with_header(vary);
     }
     let _ = request.respond(resp);

@@ -254,11 +254,15 @@ mod tests {
     #[test]
     fn mint_bearer_token_distribution_is_unique_across_many_calls() {
         let n = 1024;
-        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::with_capacity(n);
+        let mut seen: std::collections::HashSet<String> =
+            std::collections::HashSet::with_capacity(n);
         for _ in 0..n {
             let t = mint_bearer_token();
             assert_eq!(t.len(), 64, "non-64-char mint: {t}");
-            assert!(seen.insert(t), "collision in {n} 256-bit mints — rand is broken");
+            assert!(
+                seen.insert(t),
+                "collision in {n} 256-bit mints — rand is broken"
+            );
         }
         assert_eq!(seen.len(), n);
     }
