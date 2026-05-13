@@ -1,6 +1,6 @@
 {
   "name": "coral",
-  "description": "Coral wiki + multi-repo manifest + MCP server for Claude Code. Bundles four skills (bootstrap, query, onboard, ui) and registers the `coral mcp serve` MCP server so Claude can read your repo's wiki, manifest, lockfile, and test results. v0.32.0 ships a modern WebUI (`coral ui serve`) with a force-directed graph + bi-temporal slider.",
+  "description": "Karpathy-style LLM wiki maintainer + multi-repo manifest + MCP server for Claude Code. Bundles five auto-invoked skills (bootstrap, query, onboard, ui, doctor), two slash commands (/coral:coral-bootstrap, /coral:coral-doctor), a SessionStart hook for zero-friction onboarding, and registers the `coral mcp serve` MCP server so Claude can read your repo's wiki, manifest, lockfile, and test results. Includes a modern WebUI (`coral ui serve`) with a force-directed graph + bi-temporal slider, and a 4-path provider mini-wizard (Anthropic API key / Gemini / Ollama / claude CLI).",
   "version": "0.37.0",
   "author": {
     "name": "Agustin Bajo",
