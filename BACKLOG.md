@@ -5,15 +5,29 @@ production. None block users today; all are polish, infrastructure, or
 GTM follow-ups. Listed by category, not priority — the maintainer
 picks the order.
 
-Last updated: 2026-05-13, **post v0.38.0 release**. The M1 onboarding
+Last updated: 2026-05-13, **post v0.40.0 release**. The M1 onboarding
 stack shipped as v0.34.0 plus a same-day patch v0.34.1; v0.35 →
-v0.38 followed with the Phase C ratchet (panic-risk → 0 warnings),
-cross-platform mimalloc baseline, SPA sibling-gen hardening, and
-finally the `coral wiki serve` breaking removal in v0.38.0. Items
-closed in those release trains are noted inline below ("✅ CLOSED"
-markers). Item #9 closed v0.38.0; item #10 also landed via the
-v0.38 INSTALL.md refresh. The 9 remaining open entries are sequel
-work, not unfinished business — none block users today.
+v0.40 followed with the Phase C ratchet (panic-risk → 0 warnings),
+cross-platform mimalloc baseline, SPA sibling-gen hardening, the
+`coral wiki serve` breaking removal in v0.38.0, the bincode →
+postcard migration in v0.39.0 (RUSTSEC-2025-0141 cleared), and the
+`coral doctor --wizard` E2E coverage + `Prompter` abstraction in
+v0.40.0. Items closed in those release trains are noted inline
+below ("✅ CLOSED" / "DONE" markers).
+
+Closed since 2026-05-12:
+- Item #9 closed v0.38.0 (`coral wiki serve` removed)
+- Item #10 closed v0.38.0 (SLSA verification doc in INSTALL.md)
+- Item #7 closed v0.39.0 (postcard migration; `cargo deny` clean)
+- Item #5 progressed v0.39.0 step 2/4 (cov 55→60%) and v0.40.0
+  step 3/4 (cov 60→65%; doctor.rs 39.22→84.39%)
+- Item #2 partially advanced: GTM **drafts** now ready in
+  [`docs/GTM-DRAFTS.md`](GTM-DRAFTS.md) (6 channels × 2 tones); the
+  publish decision (tone, channel order, schedule) remains the
+  maintainer's call.
+
+The remaining open entries are sequel work, not unfinished business —
+none block users today.
 
 ---
 
@@ -47,25 +61,60 @@ done
 Cost: ~15 min including auth-gated tools (needs `--token` to populate
 the Tools view non-empty).
 
+**2026-05-13 attempt note:** the recipe above was attempted in an
+autonomous session on Windows 11 with both Chrome and Edge available
+locally. **Both browsers refused to run headless** because the user
+had active interactive sessions of each browser open — `chrome.exe`
+and `msedge.exe` detected the existing user-data-dir and exited
+immediately to defer to the running instance, even with explicit
+`--user-data-dir=<fresh-temp-profile>` and `--no-sandbox` flags. The
+UI server (`coral ui serve --port 38400`) confirmed `HTTP 200`
+responses for `/interfaces` `/drift` `/affected` `/tools`
+`/guarantee`; the capture step is the blocker, not the routes.
+**Workarounds (any of these unblocks the recipe):**
+
+1. Close all Chrome and Edge windows on the host before running.
+2. Run from a fresh Windows user account (sidesteps the shared
+   user-data-dir hijack).
+3. Run from Linux or macOS where the existing-session collision
+   isn't a Windows-specific issue.
+4. Use a portable Chromium build (e.g. Playwright's bundled
+   chromium under `crates/coral-ui/assets/.playwright/`) instead of
+   the user's installed browser.
+
+The recipe itself is correct — the BACKLOG #1 acceptance is "5 PNGs
+under `docs/assets/` referenced from `docs/UI.md`" and any of the
+4 workarounds gets there in ~15 min.
+
 ---
 
-### 2. GTM communication for v0.33.0
+### 2. GTM communication for the v0.32.x → v0.40.0 release train
 
-The v0.33.0 release was published with full Sigstore provenance but
-there's been zero communication: no tweet, no blog post, no message in
-the Claude Code marketplace, no Discord/HN.
+The v0.33.0 → v0.40.0 releases all shipped with full Sigstore
+provenance but communication has been zero: no tweet, no blog post,
+no Claude Code marketplace push (Anthropic curated marketplace
+submission still pending — draft ready in
+[`docs/SUBMISSION-DRAFT.md`](SUBMISSION-DRAFT.md)), no Discord/HN.
 
-Decision blocker: tone is the maintainer's call. Once decided, drafts
-of the technical content are largely ready in `CHANGELOG.md` and the
-PRD §17 post-mortem.
+**Status v0.40.0:** PUBLISH-READY DRAFTS LANDED, decision deferred.
+[`docs/GTM-DRAFTS.md`](GTM-DRAFTS.md) carries publish-ready text for
+6 channels (HackerNews Show HN, X/Twitter thread, Reddit r/rust,
+Reddit r/programming, Discord builders channel, LinkedIn) with two
+tone variants each (technical-restrained vs builder-narrative), a
+fact-scaffolding section (every number measured or auditable), a
+"what's unique vs LightRAG / GraphRAG / Cursor / SaaS RAG" deltas
+table, an image-asset inventory mapped to BACKLOG #1 (the 5 missing
+M2/M3 PNGs flagged as the only blocker for visual channels), and an
+anti-patterns checklist (no fake "production-ready", no unbaselined
+benchmark numbers, etc.).
 
-Suggested channels:
-- Twitter / Mastodon thread highlighting the bi-temporal slider as the
-  unique-vs-LightRAG feature.
-- README badge update with new install line (already at v0.32.0 in
-  the install snippets; bump to v0.33.0 for users copy-pasting).
-- `/plugin marketplace` push for Claude Code (`.claude-plugin/plugin.json`
-  is at v0.32.3; bump and re-publish).
+**The remaining decision** is the maintainer's: which channel first,
+what tone, what schedule. The file exists precisely so "no draft
+text" doesn't sit as a blocker on a slow-news day.
+
+Image-asset blocker shared with #1: the visual channels (X/Twitter,
+LinkedIn, Reddit visual posts) want the 5 missing M2/M3 PNGs.
+HackerNews + Reddit text-first posts can ship today.
 
 ---
 
@@ -352,18 +401,33 @@ These were considered and rejected (matches PRD §13 anti-features):
 
 ## Closing notes
 
-Coral v0.38.0 is in production with:
+Coral v0.40.0 is in production with:
 - ✅ All M1 + M2 + M3 features from the PRD
 - ✅ CI 100% green; clippy panic-risk hard gate at 0 warnings
+- ✅ `cargo deny check advisories` clean with **zero** suppressed
+  advisories (since v0.39.0, RUSTSEC-2025-0141 cleared via the
+  bincode → postcard migration)
+- ✅ Workspace line coverage measured at **84.04%** (v0.40.0 floor
+  at 65%, +19.04% margin); PRD KPI of 70% in scope for v0.41.0
 - ✅ Sigstore-signed SLSA-shaped provenance on every release artifact
-- ✅ Single-binary distribution preserved (~14 MiB stripped Windows; ~6.3 MiB stripped Linux)
-- ✅ Backward-compat sacred across v0.32.x → v0.38.0 (with the one
+- ✅ Single-binary distribution preserved (~14 MiB stripped Windows;
+  ~6.3 MiB stripped Linux)
+- ✅ Backward-compat sacred across v0.32.x → v0.40.0 (with the one
   documented `coral wiki serve` breaking removal at v0.38.0 after a
   3-version deprecation window)
 - ✅ Plugin marketplace self-hosted live; opt-in `coral feedback submit`
   for crowd-sourced calibration data (AF-1 compliant zero-phone-home)
+- ✅ Cross-platform post-release smoke matrix (Ubuntu / macOS /
+  Windows) auto-fires on every tagged release via `workflow_run`
+  trigger; 3/3 green on v0.38.0 / v0.39.0 / v0.40.0
 
-The remaining open items above are sequel work, not unfinished business.
+The remaining open items above are sequel work, not unfinished
+business. **Autonomous-resolvable items remaining:** BACKLOG #5
+step 4/4 (cov 65% → 70%, focused tests for `up.rs` + `query.rs` +
+`down.rs` + `test.rs`); other open items need either hardware
+(#3 VM smoke), a CI-iteration feature branch (#4 Playwright), a
+Linux dev box (#6 ingest test flake), a closed-browser host (#1
+screenshots), or a maintainer decision (#2 GTM publish, #11 domain).
 
 ---
 
