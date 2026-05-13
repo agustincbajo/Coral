@@ -175,6 +175,20 @@ coral-test = { path = "crates/coral-test", version = "0.34.1" }
 coral-mcp = { path = "crates/coral-mcp", version = "0.34.1" }
 coral-ui = { path = "crates/coral-ui", version = "0.34.1" }
 
+# v0.35 Phase C — workspace-wide clippy lints. Surfaces the ~70 unwrap /
+# 51 expect call sites the Q audit flagged as latent panic risk, without
+# breaking CI. Each crate opts in via `[lints] workspace = true`.
+#
+# The level is `warn`, not `deny`: the goal is a ratcheted reduction
+# tracked in BACKLOG.md, not a hard wall in front of new feature work.
+# Promote to `deny` once the count is < 10 and the surviving sites have
+# a `#[allow(clippy::xxx, reason = "…")]` annotation explaining why
+# they're justified.
+[workspace.lints.clippy]
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

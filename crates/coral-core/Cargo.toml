@@ -59,3 +59,8 @@ harness = false
 [[bench]]
 name = "walk_bench"
 harness = false
+
+# v0.35 Phase C — inherit workspace clippy lints (unwrap/expect/panic
+# = warn). Surfaces panic-risk sites without breaking CI.
+[lints]
+workspace = true

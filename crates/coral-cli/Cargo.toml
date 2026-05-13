@@ -116,3 +116,8 @@ zip = { workspace = true }
 # cfg-gated to windows targets so other platforms don't pay for it.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true }
+
+# v0.35 Phase C — inherit workspace clippy lints (unwrap/expect/panic
+# = warn). Surfaces panic-risk sites without breaking CI.
+[lints]
+workspace = true

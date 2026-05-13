@@ -31,3 +31,8 @@ claude_code = []
 
 [dev-dependencies]
 tempfile = { workspace = true }
+
+# v0.35 Phase C — inherit workspace clippy lints (unwrap/expect/panic
+# = warn). Surfaces panic-risk sites without breaking CI.
+[lints]
+workspace = true

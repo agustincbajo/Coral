@@ -25,3 +25,8 @@ rayon = { workspace = true }
 wiremock = "0.6"
 tokio = { version = "1", features = ["macros", "rt"] }
 tempfile = { workspace = true }
+
+# v0.35 Phase C — inherit workspace clippy lints (unwrap/expect/panic
+# = warn). Surfaces panic-risk sites without breaking CI.
+[lints]
+workspace = true
