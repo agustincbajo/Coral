@@ -922,15 +922,20 @@ mod tests {
     #[test]
     fn stats_schema_matches_committed_file() {
         // Schema in lib must equal the checked-in docs/schemas/stats.schema.json,
-        // byte-for-byte (modulo the trailing newline `println!` adds).
+        // byte-for-byte (modulo the trailing newline `println!` adds, and
+        // modulo the line-ending normalization git's `core.autocrlf` may
+        // apply on Windows checkouts).
         let live = StatsReport::json_schema();
         let on_disk = std::fs::read_to_string(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("../../docs/schemas/stats.schema.json"),
         )
         .expect("schema file readable");
-        // The committed file has a trailing newline (from println!); strip it.
-        let on_disk_trimmed = on_disk.trim_end_matches('\n');
+        // Normalize CRLF -> LF so a Windows checkout (autocrlf=true) does
+        // not flag drift. The committed file has a trailing newline (from
+        // println!); strip it after normalizing.
+        let on_disk_normalized = on_disk.replace("\r\n", "\n");
+        let on_disk_trimmed = on_disk_normalized.trim_end_matches('\n');
         assert_eq!(
             live.trim_end_matches('\n'),
             on_disk_trimmed,
