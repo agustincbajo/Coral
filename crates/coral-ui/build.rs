@@ -53,6 +53,13 @@ const DROP_RAW_THRESHOLD_BYTES: u64 = 100 * 1024;
 const KEEP_RAW_ENV: &str = "CORAL_UI_KEEP_RAW";
 
 fn main() {
+    // `CARGO_MANIFEST_DIR` is always set when cargo invokes the build
+    // script — its absence indicates a broken cargo invocation, not a
+    // runtime error path.
+    #[allow(
+        clippy::expect_used,
+        reason = "CARGO_MANIFEST_DIR is guaranteed by cargo build-script contract"
+    )]
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
     let dist_dir = manifest_dir.join("assets").join("dist");
 

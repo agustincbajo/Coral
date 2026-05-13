@@ -453,6 +453,14 @@ fn read_body(request: &mut Request) -> Result<Vec<u8>, ApiError> {
     Ok(buf)
 }
 
+#[allow(
+    clippy::expect_used,
+    reason = "Header::from_bytes called with static ASCII header names and \
+              tightly-controlled values minted by static_assets (MIME type \
+              from a curated table, cache directive `&'static str`, \
+              content-encoding `\"br\"`/`\"gzip\"`). A failure would be a \
+              compile-time typo, not a runtime condition."
+)]
 fn respond_static(request: Request, r: static_assets::StaticResponse) {
     let ct = Header::from_bytes(b"Content-Type" as &[u8], r.content_type.as_bytes())
         .expect("valid content-type");
@@ -490,6 +498,11 @@ fn respond_static(request: Request, r: static_assets::StaticResponse) {
 }
 
 fn json_header() -> Header {
+    // Static ASCII header name + value.
+    #[allow(
+        clippy::expect_used,
+        reason = "static ASCII Content-Type header"
+    )]
     Header::from_bytes(b"Content-Type" as &[u8], b"application/json" as &[u8])
         .expect("valid header")
 }
