@@ -23,9 +23,10 @@ the orchestrator handles the actual release tag.
   user names — only LOC totals, file-extension counts, page counts,
   predicted vs actual cost, and predicted vs actual wallclock.
   Strictly AF-1 compliant (zero phone-home): the operator copies the
-  JSON manually into a discussion comment. `--copy` flag attempts
-  clipboard via `arboard` (best-effort; gracefully degrades to manual
-  paste with `--copy` informing the user).
+  JSON manually into a discussion comment. `--copy` flag prints a
+  platform-aware pipe hint (`pbcopy` on macOS, `clip` on Windows,
+  `xclip -selection clipboard` on Linux) so no clipboard library is
+  pulled into the binary.
 - **CHANGELOG.md backfilled** for the v0.34.0 → v0.37.0 release train
   (this commit). The repo had drifted: only v0.32.x and v0.33.0 had
   entries, so five missing release sections are reconstructed from

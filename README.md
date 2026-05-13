@@ -125,7 +125,7 @@ Prereq: you still need the `coral` binary on `$PATH` first — install it via th
 
 ## What you get
 
-A single `coral` binary (~6.3 MB stripped, statically linked, MSRV 1.85, ad-hoc-codesigned on macOS) with **42 leaf subcommands** (29 top-level commands, six of which group sub-subcommands) across six layers:
+A single `coral` binary (~6.3 MB stripped, statically linked, MSRV 1.89, ad-hoc-codesigned on macOS) with **42 leaf subcommands** (29 top-level commands, six of which group sub-subcommands) across six layers:
 
 | Layer | Commands | Since |
 |---|---|---|
@@ -260,7 +260,7 @@ The combination — env bring-up + declarative TestCases + pre-flight contract g
 
 ### Prerequisites
 
-- **Rust** 1.85+ (stable). Install via [rustup](https://rustup.rs/).
+- **Rust** 1.89+ (stable). Install via [rustup](https://rustup.rs/).
 - **Git** 2.30+.
 - **`curl`** (universally available; used by the test runner for HTTP probes — no libcurl FFI dep).
 - **Optional:** `docker compose` v2.22+ (for `coral up` / `coral down` / `coral env *` and `coral verify`). `podman compose` and `docker-compose` v1 are also detected.
@@ -1751,7 +1751,7 @@ In addition to the lint, every command that interpolates a wiki body into an LLM
 
 ```yaml
 coral_lint:
-  image: rust:1.85
+  image: rust:1.89
   script:
     - cargo install --locked --git https://github.com/agustincbajo/Coral --tag v0.19.0 coral-cli
     - coral lint --all
@@ -1994,7 +1994,7 @@ CI (GitHub Actions, `.github/workflows/ci.yml`) gates on:
 - **Rustfmt** — `cargo fmt --all -- --check`
 - **Clippy** — `cargo clippy --workspace --all-targets -- -D warnings`
 - **Test (stable)** — `cargo test --workspace --all-features`
-- **Test (MSRV 1.85)** — `cargo build --workspace --locked`
+- **Test (MSRV 1.89)** — `cargo build --workspace --locked`
 - **Backward-compat** — `cargo test --test bc_regression -p coral-cli`
 - **Cross-platform smoke** (ubuntu-latest, macos-latest) — `cargo build --release && coral init` round-trip
 - **Licenses + duplicate versions** — `cargo deny --all-features check`
@@ -2040,7 +2040,7 @@ Check the spec: every operation has either no `requestBody` or `requestBody.requ
 
 ### `cargo install --locked` fails with "unable to find a matching version"
 
-Coral's MSRV is 1.85. Check `rustc --version`; if older, `rustup update stable`.
+Coral's MSRV is 1.89. Check `rustc --version`; if older, `rustup update stable`.
 
 ### Wiki query returns "I don't know" on something I'm sure is in the wiki
 
