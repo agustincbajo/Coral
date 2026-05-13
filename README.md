@@ -280,15 +280,15 @@ curl -fsSL https://raw.githubusercontent.com/agustincbajo/Coral/main/scripts/ins
 iwr -useb https://raw.githubusercontent.com/agustincbajo/Coral/main/scripts/install.ps1 | iex
 ```
 
-Pin a version with `bash -s -- --version v0.33.0` (Linux/macOS) or `... | iex; & coral --version` (Windows, after install). For a manual download with full control, see [Pre-built binaries](#pre-built-binaries) below.
+Pin a version with `bash -s -- --version v0.39.0` (Linux/macOS) or `... | iex; & coral --version` (Windows, after install). For a manual download with full control, see [Pre-built binaries](#pre-built-binaries) below.
 
 ### From a tagged release (recommended)
 
 ```bash
-cargo install --locked --git https://github.com/agustincbajo/Coral --tag v0.33.0 coral-cli
+cargo install --locked --git https://github.com/agustincbajo/Coral --tag v0.39.0 coral-cli
 ```
 
-(Replace `v0.33.0` with the latest tag from the [Releases page](https://github.com/agustincbajo/Coral/releases).)
+(Replace `v0.39.0` with the latest tag from the [Releases page](https://github.com/agustincbajo/Coral/releases).)
 
 ### From `main` (latest)
 
@@ -320,9 +320,9 @@ Each tagged release ships pre-built binaries for x86_64 Linux, x86_64 macOS, aar
 
 ```bash
 # Replace VERSION and TARGET with the values for the release you want; e.g.
-#   VERSION=v0.33.0
+#   VERSION=v0.39.0
 #   TARGET=aarch64-apple-darwin   # x86_64-apple-darwin, x86_64-unknown-linux-gnu, or x86_64-pc-windows-msvc
-VERSION=v0.33.0
+VERSION=v0.39.0
 TARGET=aarch64-apple-darwin
 curl -L -o coral.tar.gz "https://github.com/agustincbajo/Coral/releases/download/${VERSION}/coral-${VERSION}-${TARGET}.tar.gz"
 shasum -a 256 -c coral.tar.gz.sha256  # if you also downloaded the .sha256 sidecar
