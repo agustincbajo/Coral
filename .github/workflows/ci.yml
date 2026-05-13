@@ -27,7 +27,12 @@ env:
   # tests — helps PR debug speed without flooding healthy runs.
   RUST_BACKTRACE: 1
   # Coral's MSRV (matches `rust-version.workspace` in Cargo.toml).
-  CORAL_MSRV: "1.85"
+  # v0.35 Phase C bump: 1.85 -> 1.89. Picks up `let_chains` (stable
+  # 1.88) for ergonomic refactors and stays conservative against the
+  # current stable (cargo, rustc dropped support for older toolchains).
+  # Audit F + validator F confirmed no transitive blocks. ADR-002
+  # records the rationale.
+  CORAL_MSRV: "1.89"
 
 jobs:
   fmt:
@@ -88,7 +93,7 @@ jobs:
     # in `steps:`. v0.22.5 introduced this expression and the workflow
     # parser silently 422-ed *every push event for 100+ runs* until it
     # was fixed in v0.32.2 (commit history forensic).
-    name: Test (MSRV 1.85)
+    name: Test (MSRV 1.89)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
