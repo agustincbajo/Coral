@@ -87,25 +87,32 @@ mimalloc = { version = "0.1", default-features = false }
 # v0.25.0 M3.1: persisted BM25 search index. Sub-millisecond load vs
 # multi-ms rebuild on 5000+ page wikis.
 #
-# v0.34.x migration: 1.x → 2.x. bincode 1.x is unmaintained
-# (RUSTSEC-2025-0141). We use the `serde` integration (not the native
-# `bincode::Encode`/`Decode` derives) so the `SearchIndex` struct keeps
-# its single set of `Serialize`/`Deserialize` derives — same serde
-# attrs work for JSON, TOML, and the on-disk index. The serde
-# integration costs one extra adapter layer at encode/decode time
-# (microseconds, irrelevant next to disk I/O) and saves us from
-# maintaining two parallel sets of derives.
+# v0.39.0 migration: bincode 2.x → postcard 1.x (BACKLOG #7 closure).
+# bincode upstream stopped maintenance on 2025-12-16 (RUSTSEC-2025-0141
+# covers ALL bincode versions, 1.x and 2.x alike — the v0.34.x 1.x→2.x
+# bump didn't clear the advisory). postcard is the documented next-hop
+# the audit recommended: actively maintained, no_std-friendly, varint
+# wire format (similar size to bincode 2.x), serde-integrated so the
+# `SearchIndex` struct keeps its single set of `Serialize`/`Deserialize`
+# derives.
 #
-# On-disk format change: 2.x is NOT wire-compatible with 1.x. The
-# `load_index` codepath in `coral-core::search_index` catches a
-# DecodeError, logs the format mismatch, and lets `search_with_index`
-# rebuild the cache transparently on the next call — no user action
-# required. Old `.coral/search-index.bin` files are silently invalidated.
+# On-disk format change: postcard's wire format is NOT compatible with
+# bincode 2.x. The `load_index` codepath in `coral-core::search_index`
+# catches the decode error, logs the format mismatch via
+# `tracing::warn!`, and lets `search_with_index` rebuild the cache
+# transparently on the next call — same fallback path that already
+# absorbed the v0.34.x 1.x→2.x flip. Old `.coral/search-index.bin`
+# files are silently invalidated; no user action required.
 #
 # Single-purpose, pure-Rust, ~30 KB. `default-features = false` drops
-# the `derive` feature (we don't use the proc-macros) but keeps `std` +
-# `alloc` so `to_vec` / `from_slice` are available.
-bincode = { version = "2", default-features = false, features = ["std", "serde"] }
+# the `heapless-cas` default which transitively pulls
+# `atomic-polyfill` (RUSTSEC-2023-0089, unmaintained — see
+# https://github.com/embassy-rs/atomic-polyfill). The `alloc` feature
+# is the only one we need: it enables `to_allocvec` / heap-Vec
+# encoding (we encode in-memory then hand the buffer to
+# `atomic_write_bytes`). Decoding via `from_bytes` / `take_from_bytes`
+# works in the no_std default config too.
+postcard = { version = "1", default-features = false, features = ["alloc"] }
 # v0.32.0 webui: MIME-type detection for `coral-ui`'s embedded static
 # assets (CSS/JS/HTML/png/svg) served by the new `coral ui serve`
 # subcommand. Single-purpose, pure-Rust, ~30 KB; no new transitives

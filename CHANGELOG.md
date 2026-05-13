@@ -7,8 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_No unreleased changes yet — v0.38.0 was just cut. Add new entries
-under this header as they land on `main`._
+### Changed
+
+- **`coral-core::search_index` serialization swapped from bincode 2.x
+  to postcard 1.x** (BACKLOG #7 closure). Drops the RUSTSEC-2025-0141
+  ignore from `deny.toml` and the `cargo audit` step — bincode no
+  longer appears in the dependency graph. Postcard is actively
+  maintained, varint-based (similar on-disk size to bincode 2.x), and
+  uses the serde integration so `SearchIndex` keeps its single set of
+  `Serialize`/`Deserialize` derives. The on-disk format change is
+  transparent to users: pre-v0.39 `.coral/search-index.bin` files
+  trigger the existing `load_index` decode-failure path
+  (`tracing::warn!` + rebuild from in-memory corpus on next access) —
+  same fallback that already absorbed the v0.34.x bincode 1.x → 2.x
+  flip. `cargo deny check advisories` now passes clean with zero
+  suppressed advisories.
 
 ## [0.38.0] - 2026-05-13
 

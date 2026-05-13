@@ -31,7 +31,7 @@ tracing = { workspace = true }
 rusqlite = { version = "0.32", features = ["bundled"] }
 fs4 = { workspace = true, features = ["sync"] }
 toml = { workspace = true }
-bincode = { workspace = true }
+postcard = { workspace = true }
 # Cryptographic hash for the BM25 search-index `content_hash` cache key.
 # Replaces the previous 64-bit SipHash (`DefaultHasher`) so the doc
 # comment ("SHA-256 of all page bodies …") matches the implementation

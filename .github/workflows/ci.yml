@@ -320,12 +320,11 @@ jobs:
       - name: Install cargo-audit
         run: cargo install --locked cargo-audit
       - name: cargo audit
-        # RUSTSEC-2025-0141 (bincode unmaintained) covers ALL bincode
-        # versions (1.x AND 2.x). v0.34.x migrated coral-core to 2.x
-        # for the more recent API + fork but the advisory still
-        # applies. Informational, not a security vulnerability — see
-        # the inline justification in deny.toml.
-        run: cargo audit --deny warnings --ignore RUSTSEC-2025-0141
+        # v0.39.0: RUSTSEC-2025-0141 (bincode unmaintained) was the
+        # only ignore in this job. Dropped after `coral-core` migrated
+        # from bincode 2.x to postcard 1.x (BACKLOG #7); bincode no
+        # longer appears in the dependency graph at all.
+        run: cargo audit --deny warnings
 
   deny:
     name: Licenses + duplicate versions (cargo-deny)

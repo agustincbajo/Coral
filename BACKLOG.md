@@ -206,42 +206,34 @@ impact.
 
 ---
 
-### 7. `bincode` 1.x → 2.x migration
+### 7. `bincode` → `postcard` migration — DONE (v0.39.0)
 
-**Status v0.34.x:** PARTIALLY LANDED. `coral-core::search_index::{save_index,
-load_index}` migrated from bincode 1.x to 2.x via the serde integration
-(`bincode::serde::encode_to_vec` + `decode_from_slice`,
-`bincode::config::standard()`). On-disk format migration is automatic:
-legacy `.coral/search-index.bin` files written by v0.33.x silently fail
-to decode → `load_index` emits a single `tracing::warn!` and
-`search_with_index` rebuilds the cache from the in-memory corpus. No
-user action required.
+`coral-core::search_index::{save_index, load_index}` swapped from
+bincode 2.x (`bincode::serde::encode_to_vec` /
+`decode_from_slice`, `bincode::config::standard()`) to postcard 1.x
+(`postcard::to_allocvec` / `postcard::from_bytes`,
+`features = ["alloc"]`). bincode no longer appears in the dependency
+graph at all.
 
-Two new regression tests pin the contract:
-`bincode2_encode_decode_roundtrip` (round-trip equality) and
+**RUSTSEC-2025-0141 cleared.** The ignore was removed from both
+`deny.toml` (`ignore = []`) and the `cargo audit` step in
+`.github/workflows/ci.yml`. `cargo deny check advisories` now passes
+clean with zero suppressed advisories.
+
+On-disk format migration is automatic — same fallback path that
+already absorbed the v0.34.x bincode 1.x → 2.x flip: legacy
+`.coral/search-index.bin` files (bincode 1.x from pre-v0.34 or
+bincode 2.x from v0.34..v0.38) silently fail to decode →
+`load_index` emits a single `tracing::warn!` and `search_with_index`
+rebuilds the cache from the in-memory corpus. No user action
+required.
+
+Regression tests renamed accordingly:
+`postcard_encode_decode_roundtrip` (round-trip equality + buffer-
+fully-consumed via `take_from_bytes`) and
 `load_index_rebuilds_on_legacy_format_mismatch` (garbage-bytes →
-InvalidData → transparent rebuild).
-
-**RUSTSEC-2025-0141 still applies.** The advisory covers ALL bincode
-versions (the upstream team stopped maintenance 2025-12-16 — see
-https://git.sr.ht/~stygianentity/bincode). Migration to 2.x didn't
-clear the advisory; the ignore stays in `deny.toml` + `cargo audit`
-with the rationale that 2.x is on a more recently-maintained fork and
-the API we use is stable. Long-term swap to one of the suggested
-alternatives (postcard / bitcode / rkyv) is a follow-up item:
-
-- **postcard**: postcard 1.x is stable, no_std-friendly, similar size
-  to bincode. Best fit for the small, schema-stable `SearchIndex`
-  struct. Wire format is varint-based like bincode 2.x.
-- **bitcode**: optimised for compactness (~10% smaller than bincode
-  for typical structs), but the API requires bitcode-specific derive
-  macros — bigger blast radius.
-- **rkyv**: zero-copy deserialisation, much faster load. Overkill for
-  a 5 KB index file; would require switching off `serde::Deserialize`
-  and learning rkyv's `Archive` model.
-
-Recommended next swap: postcard, ~1 hour of work modelled on the
-bincode 2.x migration. Drop the RUSTSEC ignore in the same PR.
+InvalidData → transparent rebuild — covers truncated postcard
+payloads too).
 
 ---
 
