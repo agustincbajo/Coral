@@ -206,6 +206,9 @@ mod tests {
             BearerAuthError::MalformedHeader.label(),
             "Authorization header must start with 'Bearer '"
         );
-        assert_eq!(BearerAuthError::TokenMismatch.label(), "invalid bearer token");
+        assert_eq!(
+            BearerAuthError::TokenMismatch.label(),
+            "invalid bearer token"
+        );
     }
 }

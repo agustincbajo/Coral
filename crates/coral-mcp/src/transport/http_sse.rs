@@ -108,8 +108,8 @@ impl NotificationHub {
 
 /// v0.35 SEC-01 / CP-3: bearer-auth configuration for the HTTP
 /// transport. Pre-fix the HTTP transport had only an Origin allowlist
-/// + a 127.0.0.1 default bind; a user who followed the `--bind
-/// 0.0.0.0` warning exposed an unauthenticated tool-execution
+/// alongside a 127.0.0.1 default bind; a user who followed the
+/// `--bind 0.0.0.0` warning exposed an unauthenticated tool-execution
 /// endpoint on the LAN.
 ///
 /// `bind_label` records the bind address as a string so the auth
@@ -201,9 +201,7 @@ impl HttpSseTransport {
         handler: Arc<McpHandler>,
         auth: AuthConfig,
     ) -> io::Result<Self> {
-        if auth.expected_token.is_none()
-            && !coral_core::auth::is_loopback(&auth.bind_label)
-        {
+        if auth.expected_token.is_none() && !coral_core::auth::is_loopback(&auth.bind_label) {
             return Err(io::Error::other(format!(
                 "coral mcp serve: bind {bind} is non-loopback but no --token was \
                  configured. Pass --token <hex> (or set CORAL_MCP_TOKEN) before \
@@ -581,9 +579,7 @@ fn handle_post(
     let parsed_method = parse_jsonrpc_method(body_str);
     if parsed_method.as_deref() == Some("initialize") {
         let session_id = new_session_id();
-        sessions
-            .lock()
-            .insert(session_id.clone(), Instant::now());
+        sessions.lock().insert(session_id.clone(), Instant::now());
         response_headers.push(("Mcp-Session-Id".to_string(), session_id));
     } else {
         // Subsequent requests SHOULD include Mcp-Session-Id; we
@@ -986,11 +982,22 @@ fn format_uuid_v4(mut bytes: [u8; 16]) -> String {
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
     format!(
         "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-        bytes[0], bytes[1], bytes[2], bytes[3],
-        bytes[4], bytes[5],
-        bytes[6], bytes[7],
-        bytes[8], bytes[9],
-        bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15],
+        bytes[0],
+        bytes[1],
+        bytes[2],
+        bytes[3],
+        bytes[4],
+        bytes[5],
+        bytes[6],
+        bytes[7],
+        bytes[8],
+        bytes[9],
+        bytes[10],
+        bytes[11],
+        bytes[12],
+        bytes[13],
+        bytes[14],
+        bytes[15],
     )
 }
 

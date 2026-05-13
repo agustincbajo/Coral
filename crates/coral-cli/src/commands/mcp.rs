@@ -394,7 +394,9 @@ fn serve(args: ServeArgs) -> Result<ExitCode> {
             //      non-loopback binds — loopback without --token stays
             //      unauthenticated for frictionless local dev, matching
             //      the coral-ui `--token` pattern).
-            let env_token = std::env::var("CORAL_MCP_TOKEN").ok().filter(|s| !s.is_empty());
+            let env_token = std::env::var("CORAL_MCP_TOKEN")
+                .ok()
+                .filter(|s| !s.is_empty());
             // Record where the token came from BEFORE we move it
             // into the resolved option — the banner message needs the
             // source even though the variant has consumed `args.token`.
@@ -782,7 +784,8 @@ mod tests {
         assert_eq!(a.len(), 64, "expected 256 bits = 64 hex chars: {a}");
         assert_eq!(b.len(), 64, "expected 256 bits = 64 hex chars: {b}");
         assert!(
-            a.bytes().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+            a.bytes()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
             "token must be lower-case hex only: {a}"
         );
         assert_ne!(a, b, "two consecutive mints collided");

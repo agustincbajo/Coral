@@ -758,13 +758,17 @@ fn sec01_post_without_token_returns_401() {
     let req = build_post(addr, body, &[]);
     let (status, _, resp_body) = send_request(addr, &req);
     assert_eq!(
-        status, 401,
+        status,
+        401,
         "POST without bearer must be 401, got body={}",
         String::from_utf8_lossy(&resp_body)
     );
     let json: serde_json::Value = serde_json::from_slice(&resp_body).expect("valid JSON");
     assert!(
-        json["error"].as_str().unwrap_or("").contains("unauthorized"),
+        json["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("unauthorized"),
         "401 body should mention unauthorized: {json}"
     );
 }
@@ -863,7 +867,8 @@ fn sec01_well_known_card_stays_public_when_auth_enabled() {
     );
     let (status, _, body) = send_request(addr, req.as_bytes());
     assert_eq!(
-        status, 200,
+        status,
+        200,
         "well-known card must remain public; got body={}",
         String::from_utf8_lossy(&body)
     );
@@ -908,8 +913,7 @@ fn sec01_bind_with_auth_rejects_external_bind_without_token() {
         expected_token: None,
         bind_label: "0.0.0.0".to_string(),
     };
-    let result =
-        coral_mcp::transport::HttpSseTransport::bind_with_auth(addr, make_handler(), auth);
+    let result = coral_mcp::transport::HttpSseTransport::bind_with_auth(addr, make_handler(), auth);
     assert!(
         result.is_err(),
         "non-loopback bind without token must error at bind time"
