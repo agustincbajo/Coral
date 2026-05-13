@@ -12,6 +12,10 @@ description = "Coral core types: frontmatter, wikilinks, pages, index, log."
 default = []
 pgvector = []
 tantivy = []
+# v0.36 ADR-0012 baseline. Empty marker feature consumed only by the
+# `allocator` bench (cfg-gates the choice of #[global_allocator]).
+# No code outside `benches/allocator.rs` reads it.
+system_alloc = []
 
 [dependencies]
 serde = { workspace = true }
@@ -43,6 +47,12 @@ rand = { workspace = true }
 tempfile = { workspace = true }
 criterion = "0.5"
 proptest = { workspace = true }
+# v0.36 ADR-0012 baseline: criterion bench harness toggles between
+# mimalloc (the production allocator on `coral` since v0.24.0) and
+# the system allocator at compile time. The `system_alloc` feature
+# below flips it; without the feature, mimalloc is wired in via
+# `#[global_allocator]` at the top of `benches/allocator.rs`.
+mimalloc = { workspace = true }
 
 [[bench]]
 name = "search_bench"
@@ -58,6 +68,15 @@ harness = false
 
 [[bench]]
 name = "walk_bench"
+harness = false
+
+# v0.36 ADR-0012 baseline. Benches three representative workloads
+# (TF-IDF, wiki page parse, OpenAPI proptest gen) twice — once with
+# mimalloc (default), once with the system allocator (`cargo bench
+# --bench allocator --features system_alloc`). Results captured to
+# `docs/bench/MIMALLOC-BASELINE-2026-05-13.md`.
+[[bench]]
+name = "allocator"
 harness = false
 
 # v0.35 Phase C — inherit workspace clippy lints (unwrap/expect/panic

@@ -449,6 +449,7 @@ dependencies = [
  "chrono",
  "criterion",
  "fs4",
+ "mimalloc",
  "proptest",
  "rand",
  "rayon",

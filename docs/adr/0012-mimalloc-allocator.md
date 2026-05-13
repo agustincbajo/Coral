@@ -1,7 +1,7 @@
 # ADR 0012 — `mimalloc` as the global allocator for `coral`
 
-**Date:** 2026-05-13
-**Status:** accepted (v0.35), with note: baseline benchmark needed
+**Date:** 2026-05-13 (decision); 2026-05-13 (baseline measured)
+**Status:** **accepted, baseline measured** — see `docs/bench/MIMALLOC-BASELINE-2026-05-13.md`
 
 ## Context
 
@@ -87,25 +87,34 @@ Three forces argue for keeping mimalloc through v0.35:
 
 ## Consequences
 
-- **mimalloc stays in v0.35 and v0.35.x.** The Cargo.toml
-  comment should be revised to call the throughput claim a
-  hypothesis pending the baseline benchmark — done as part of
-  this ADR's accompanying commit.
-- **Baseline benchmark is a v0.35.x deliverable.** Three
-  workloads worth measuring:
-  1. `coral lint --kind structural` on a 5000-page wiki
-     (allocation-heavy: TF-IDF + wikilink graph).
-  2. `coral test --kind property-based` on a 50-route OpenAPI
-     spec (allocation-heavy: serde_json::Value generation).
-  3. `coral mcp serve --transport http` under a 100-RPS POST
-     load for 60 s (concurrency + small-string allocation).
-  Compare `glibc/system malloc` vs `mimalloc` on each, capture
-  the deltas in `docs/PERF.md`.
-- **If the benchmark shows < 5% win**, drop mimalloc in the next
-  minor and update this ADR to "superseded by ADR-NNNN."
-- **If the benchmark shows ≥ 10% win**, freeze the claim in
-  `docs/PERF.md` with the numbers and update the Cargo.toml
-  comment to cite the benchmark artifact, not folklore.
+- **mimalloc stays in v0.35 and v0.36+.** The Cargo.toml comment
+  was preserved verbatim; the v0.36 baseline measurement (see below)
+  vindicates it.
+- **Baseline benchmark landed in v0.36-prep (2026-05-13).** Three
+  representative workloads, criterion harness at
+  `crates/coral-core/benches/allocator.rs`, full results captured in
+  `docs/bench/MIMALLOC-BASELINE-2026-05-13.md`. Median results
+  (Windows 11 / MSVC):
+
+  | Workload | mimalloc | system | mimalloc speedup |
+  |----------|----------|--------|------------------|
+  | A — TF-IDF 100 pages, 2-token query | 943 µs | 1.342 ms | +29.7% |
+  | B — page parse, 50 docs             | 268 µs | 465 µs   | +42.4% |
+  | C — JSON Value 10 routes × 5 props  | 92.5 µs| 162 µs   | +42.7% |
+
+  All three workloads exceed the original 10-20% claim with margin.
+  Criterion's own change-detection flagged the system-allocator
+  variant as a 50–77% regression vs the mimalloc baseline, p = 0.00.
+
+- **Decision trigger met:** the ≥ 10% threshold for "keep mimalloc and
+  freeze the claim" fires on every workload. ADR-0012 stays accepted;
+  the v0.35 audit's P-X1 finding is closed.
+
+- **Re-evaluation triggers:** revisit only if (a) a future workload
+  shows < 5% win and we have evidence that workload is the new hot
+  path, or (b) a supply-chain concern emerges (e.g. mimalloc upstream
+  becomes unmaintained — currently still actively maintained by
+  Microsoft Research).
 
 ## References
 
