@@ -16,6 +16,15 @@
 //!   #6 release_sh_bump_execute_produces_clean_commit_no_coauthor
 //!   #7 release_sh_tag_rejects_wrong_head_subject
 //!   #8 release_gh_sh_dry_run_extracts_correct_section
+//!
+//! Platform: these tests shell out to bash and exercise the Linux/macOS
+//! release helpers (`scripts/release.sh`, `release-gh.sh`,
+//! `extract-changelog-section.sh`). They are not designed to run under
+//! Windows — path-separator semantics, `awk`/`sed` availability, and
+//! shell built-in differences make them flaky there. The release pipeline
+//! itself only runs on Linux CI, so Windows coverage is not required.
+//! See `docs/audits/HANDOFF-7-WINDOWS-NEXTEST-2026-05-13.md` (Cat A).
+#![cfg(unix)]
 
 use std::fs;
 use std::path::{Path, PathBuf};
