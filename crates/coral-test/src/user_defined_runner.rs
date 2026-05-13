@@ -258,16 +258,17 @@ impl UserDefinedRunner {
                     }
                     Err(StepFailure { reason, kind }) => {
                         last_err = Some(reason);
-                        let should_retry = retry
-                            .as_ref()
-                            .map(|r| matches_retry_condition(&r.on, kind))
-                            .unwrap_or(false);
-                        if !should_retry {
+                        // We only retry when `retry` is `Some` AND the
+                        // condition matches. Use `if let Some` so the
+                        // sleep below borrows `r` directly without an
+                        // unwrap.
+                        let Some(r) = retry.as_ref() else { break };
+                        if !matches_retry_condition(&r.on, kind) {
                             break;
                         }
                         attempt += 1;
                         if attempt < max_attempts {
-                            std::thread::sleep(retry_backoff(retry.as_ref().unwrap(), attempt));
+                            std::thread::sleep(retry_backoff(r, attempt));
                         }
                     }
                 }

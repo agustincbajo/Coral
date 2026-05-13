@@ -140,6 +140,10 @@ fn scrub_parse_error(message: &str) -> String {
     //    one regex is overkill. Inline copy is 8 lines.
     use std::sync::OnceLock;
     static RE: OnceLock<regex::Regex> = OnceLock::new();
+    #[allow(
+        clippy::expect_used,
+        reason = "static regex literal; validity guarded by unit tests"
+    )]
     let re = RE.get_or_init(|| {
         regex::Regex::new(
             r"(?i)(?:authorization|x-api-key|password|token|secret|api[-_]?key)\s*:\s*\S+|bearer\s+\S+|sk-[A-Za-z0-9_-]{8,}|gh[opsu]_[A-Za-z0-9]{16,}",

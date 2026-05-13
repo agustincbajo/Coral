@@ -158,7 +158,15 @@ impl LintReport {
     /// `docs/schemas/lint.schema.json` and is regenerated from this method.
     pub fn json_schema() -> String {
         let schema = schemars::schema_for!(LintReport);
-        serde_json::to_string_pretty(&schema).expect("LintReport schema serializes to JSON")
+        // schemars Schema is pure Serialize; to_string_pretty cannot
+        // fail in practice.
+        #[allow(
+            clippy::expect_used,
+            reason = "schemars::Schema is pure Serialize, no failure modes"
+        )]
+        let s =
+            serde_json::to_string_pretty(&schema).expect("LintReport schema serializes to JSON");
+        s
     }
 
     /// Renders the report as a Markdown document for human consumption.

@@ -219,6 +219,14 @@ struct CompiledPatterns {
 fn compiled() -> &'static CompiledPatterns {
     static CACHE: OnceLock<CompiledPatterns> = OnceLock::new();
     CACHE.get_or_init(|| {
+        // Every entry in `PATTERNS` is a `&'static str` literal; the
+        // unit tests in this module compile every pattern at test time,
+        // so the `expect` is a documentation sentinel — never reached
+        // in a release that has passed CI.
+        #[allow(
+            clippy::expect_used,
+            reason = "PATTERNS entries are static literals compiled by tests"
+        )]
         let regexes = PATTERNS
             .iter()
             .map(|(_, pat)| regex::Regex::new(pat).expect("scrub pattern compiles"))

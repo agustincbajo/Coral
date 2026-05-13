@@ -272,7 +272,16 @@ impl StatsReport {
     /// against the contract Coral emits.
     pub fn json_schema() -> String {
         let schema = schemars::schema_for!(StatsReport);
-        serde_json::to_string_pretty(&schema).expect("StatsReport schema is always serializable")
+        // `schemars::Schema` is a pure Serialize tree; the only failure
+        // mode of `to_string_pretty` would be a custom serializer, which
+        // schemars does not use.
+        #[allow(
+            clippy::expect_used,
+            reason = "schemars::Schema is pure Serialize, no failure modes"
+        )]
+        let s = serde_json::to_string_pretty(&schema)
+            .expect("StatsReport schema is always serializable");
+        s
     }
 }
 

@@ -90,7 +90,11 @@ pub fn save_baseline(project_root: &Path, baseline: &PerfBaseline) -> std::io::R
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let json = serde_json::to_string_pretty(baseline).unwrap();
+    // `PerfBaseline` is a plain `#[derive(Serialize)]` struct with no
+    // non-string map keys; `to_string_pretty` cannot fail in practice.
+    // We still bubble through the io::Result by mapping the (impossible)
+    // serde error to `io::Error::other` rather than panicking.
+    let json = serde_json::to_string_pretty(baseline).map_err(std::io::Error::other)?;
     std::fs::write(path, json)
 }
 
