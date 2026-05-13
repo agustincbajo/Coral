@@ -31,24 +31,40 @@ pub use multi_step::{
 pub use prompt::PromptBuilder;
 pub use runner::{ClaudeRunner, Prompt, RunOutput, Runner, RunnerError, RunnerResult, TokenUsage};
 
-/// Test-only serialiser for code that writes + fork-execs a small
-/// shell script. The Linux kernel `do_open_execat` ETXTBSY race
-/// (errno 26) fires when two parallel tests are in the
-/// write-then-exec window even when they target distinct tempfiles.
-/// Cargo runs the lib's `#[test]`s in one binary and each
-/// integration test in its own — having a `pub` lock here (rather
-/// than module-scoped) means all callers across both binaries can
-/// share the same Mutex *within a single binary*. The integration-
-/// test binary still gets its own static (Rust runs the lib's
-/// `lib.rs` for each binary separately), but every test inside
-/// that binary now coordinates through it.
+/// **TEST-ONLY** — do not call from production code.
+///
+/// Serialiser for code that writes + fork-execs a small shell script.
+/// The Linux kernel `do_open_execat` ETXTBSY race (errno 26) fires
+/// when two parallel tests are in the write-then-exec window even
+/// when they target distinct tempfiles. Cargo runs the lib's
+/// `#[test]`s in one binary and each integration test in its own —
+/// having a `pub` lock here (rather than module-scoped) means all
+/// callers across both binaries can share the same Mutex *within a
+/// single binary*. The integration-test binary still gets its own
+/// static (Rust runs the lib's `lib.rs` for each binary separately),
+/// but every test inside that binary now coordinates through it.
 ///
 /// Tests acquire via `let _lock = test_script_lock();` and hold
-/// through the spawn. Marked `pub` (not `pub(crate)`) so integration
-/// tests under `tests/` can reach it via `coral_runner::test_script_lock()`.
+/// through the spawn. Marked `pub` (not `pub(crate)`) ONLY because
+/// integration tests under `tests/` (separate `#[test]` binaries from
+/// the lib) need to import it as `coral_runner::test_script_lock()`.
+/// Rust's `#[cfg(test)]` doesn't cross the lib → integration-test
+/// crate boundary, so we can't gate the function with it.
+///
+/// **v0.35 ARCH-C2 decision**: kept `pub` + `#[doc(hidden)]` instead
+/// of moving to a `coral-test-utils` dev-dep crate. Option (c) from
+/// the Phase C spec — option (b) was rejected as net-negative churn
+/// for a single 6-line helper. The `#[doc(hidden)]` attribute hides
+/// it from `cargo doc` output so it doesn't pollute the API
+/// reference; the heavy comment block here is the documented
+/// contract. See `BACKLOG.md` for the revisit trigger (3+ helpers
+/// or runtime-relevant usage). Also flagged by ARCH-H4 in the v0.35
+/// architecture audit.
+///
 /// Effectively a no-op at runtime in release builds — `OnceLock`
 /// init is one-shot and `Mutex::lock` on uncontended access is
 /// a single atomic CAS.
+#[doc(hidden)]
 pub fn test_script_lock() -> std::sync::MutexGuard<'static, ()> {
     use std::sync::{Mutex, OnceLock};
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
