@@ -10,7 +10,7 @@
       "name": "coral",
       "source": "./",
       "description": "Coral wiki + multi-repo manifest + MCP server. Five auto-invoked skills (bootstrap, query, onboard, ui, doctor) and two deterministic slash commands. SessionStart hook reports repo state to Claude on every session open so the right next action is suggested without the user knowing skill names. Two-step install with --with-claude-config opt-in: `curl install.sh | bash` + open Claude Code in your repo. Requires the `coral` binary on PATH (see https://github.com/agustincbajo/Coral#getting-started-in-60-seconds).",
-      "version": "0.39.0",
+      "version": "0.40.0",
       "category": "developer-tools",
       "keywords": [
         "mcp",

@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+_No unreleased changes yet — v0.40.0 was just cut. Add new entries
+under this header as they land on `main`._
+
+## [0.40.0] - 2026-05-13
+
+**Test-coverage release: `coral doctor --wizard` E2E coverage +
+clippy-resistant `Prompter` abstraction enable the CI coverage floor
+bump 60% → 65%.** No public API or CLI flag changes. The new
+`Prompter` trait is `pub(crate)` and only matters to in-crate test
+authoring — production behaviour is identical.
+
+### Added
+
+- **`Prompter` trait in `coral-cli::commands::doctor`** (~60 LoC,
+  `pub(crate)` only) with `DialoguerPrompter` real impl and
+  `MockPrompter` test impl (gated under `#[cfg(test)] mod tests`).
+  Decouples the wizard's 5 interactive branches (Anthropic / Gemini
+  / Ollama / claude CLI / Skip) from `dialoguer`'s real-stdin
+  requirement so the branches are reachable under `cargo test`.
+- **5 binary-spawning E2E tests** in `crates/coral-cli/tests/
+  doctor_e2e.rs` (assert_cmd, fresh tempfile-isolated cwd per test)
+  + 15 new in-file unit tests in `doctor.rs` covering
+  `print_human_report`, `ping_anthropic` / `ping_gemini` error paths,
+  `toml_string` control-char + backslash escapes, and the `run()`
+  dispatcher for default + non-interactive modes.
+
 ### Changed
 
 - **Coverage floor bumped 60% → 65%** in the `Coverage` CI job
