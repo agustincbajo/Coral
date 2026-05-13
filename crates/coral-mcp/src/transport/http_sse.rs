@@ -788,6 +788,13 @@ fn handle_well_known_card(request: tiny_http::Request, handler: &McpHandler) -> 
 
 /// CORS preflight responder. Tight allowlist — no wildcard origin,
 /// only the methods the MCP transport actually accepts.
+///
+/// v0.36 clippy: every `parse::<tiny_http::Header>().unwrap()` here
+/// targets a `&'static str` (or a `format!()` whose template contains
+/// only ASCII control characters and a sanitised origin). tiny_http's
+/// header parser only fails on malformed token characters; these
+/// literals all parse — the panic branch is unreachable.
+#[allow(clippy::unwrap_used)]
 fn respond_options(request: tiny_http::Request) -> io::Result<()> {
     // Echo the request's Origin if it's allowed; otherwise reflect
     // a safe default. Origin reflection here is tighter than wildcard
@@ -824,6 +831,7 @@ fn respond_options(request: tiny_http::Request) -> io::Result<()> {
 }
 
 /// Final-form responder for plain text or JSON bodies.
+#[allow(clippy::unwrap_used)] // static header literal — see respond_options
 fn respond_simple(
     request: tiny_http::Request,
     status: u16,
@@ -843,6 +851,7 @@ fn respond_simple(
 /// Final-form responder for JSON `serde_json::Value` bodies, with
 /// optional extra headers (used to inject `Mcp-Session-Id` on
 /// initialize).
+#[allow(clippy::unwrap_used)] // static header literal — see respond_options
 fn respond_json(
     request: tiny_http::Request,
     status: u16,

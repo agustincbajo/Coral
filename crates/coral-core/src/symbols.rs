@@ -222,7 +222,25 @@ pub(crate) fn render_json(symbols: &[Symbol]) -> serde_json::Value {
 }
 
 // ─── Language-specific extractors ───────────────────────────────────────────
+//
+// v0.36 clippy: the four `extract_*` functions below all share the same
+// safe-by-construction pattern:
+//
+//   1. `Regex::new(STATIC_LITERAL).expect("valid regex")` — the regex is
+//      a `&'static str` literal that gets parsed at function entry. A
+//      compile-time `Regex::new` failure is a programmer error, not a
+//      runtime input error, so panic-at-startup is the correct contract.
+//
+//   2. `caps.get(N).unwrap()` is only reached inside a successful
+//      `re.captures(line).is_some()` arm AND every capture group in
+//      these regexes is mandatory (no `(...)?` optional groups). The
+//      Option is statically `Some`; refactoring to `if let Some(m) = …`
+//      would only hide the invariant and add noise.
+//
+// We document the invariant once and `#[allow]` per-function rather
+// than scattering inline `// SAFETY:` comments.
 
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 fn extract_rust(content: &str, path: &Path) -> Vec<Symbol> {
     let re = Regex::new(
         r"(?m)^[ \t]*pub\s+(?:(?:async|unsafe|const)\s+)*(?:(fn|struct|trait|enum|type|const|mod))\s+([A-Za-z_][A-Za-z0-9_]*)",
@@ -256,6 +274,7 @@ fn extract_rust(content: &str, path: &Path) -> Vec<Symbol> {
     symbols
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 fn extract_typescript(content: &str, path: &Path) -> Vec<Symbol> {
     let re = Regex::new(
         r"(?m)^[ \t]*export\s+(?:default\s+)?(?:declare\s+)?(?:abstract\s+)?(function|class|interface|type|const|enum)\s+([A-Za-z_$][A-Za-z0-9_$]*)",
@@ -288,6 +307,7 @@ fn extract_typescript(content: &str, path: &Path) -> Vec<Symbol> {
     symbols
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 fn extract_python(content: &str, path: &Path) -> Vec<Symbol> {
     let re_def = Regex::new(r"(?m)^(def|class)\s+([A-Za-z_][A-Za-z0-9_]*)").expect("valid regex");
     let re_const = Regex::new(r"(?m)^([A-Z][A-Z0-9_]*)\s*=").expect("valid regex");
@@ -323,6 +343,7 @@ fn extract_python(content: &str, path: &Path) -> Vec<Symbol> {
     symbols
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 fn extract_go(content: &str, path: &Path) -> Vec<Symbol> {
     let re_func =
         Regex::new(r"(?m)^func\s+(?:\([^)]*\)\s+)?([A-Za-z_][A-Za-z0-9_]*)").expect("valid regex");

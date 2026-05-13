@@ -1,4 +1,13 @@
 //! Mock runner for use in tests in this crate and downstream crates.
+//!
+//! v0.36 clippy: this module is a test fixture. The `.lock().unwrap()` /
+//! `.unwrap()` patterns below all sit on `std::sync::Mutex` guards
+//! exercised only by single-threaded test bodies — a poisoned mutex
+//! here always means a test panicked while holding the lock, which we
+//! WANT to surface, not paper over. Module-wide allow keeps the
+//! production ratchet (workspace-level `unwrap_used = "warn"`) from
+//! drowning real production warnings in test-fixture noise.
+#![allow(clippy::unwrap_used)]
 
 use std::collections::VecDeque;
 use std::sync::Mutex;

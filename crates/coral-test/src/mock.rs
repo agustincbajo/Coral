@@ -1,6 +1,9 @@
 //! `MockTestRunner` — scripted FIFO outputs + call recorder for tests.
 //!
 //! Same shape as `coral_runner::MockRunner` and `coral_env::MockBackend`.
+//!
+//! v0.36 clippy: see `coral_runner::mock` for the test-fixture allow.
+#![allow(clippy::unwrap_used)]
 
 use crate::error::TestResult;
 use crate::report::{TestReport, TestStatus};

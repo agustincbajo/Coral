@@ -4,6 +4,10 @@
 //! responses + a `calls()` recorder. Lets the CLI tests assert that
 //! `coral up` invokes `EnvBackend::up()` with the right plan, without
 //! needing Docker or any subprocess.
+//!
+//! v0.36 clippy: see `coral_runner::mock` for the test-fixture
+//! allow rationale.
+#![allow(clippy::unwrap_used)]
 
 use crate::{
     DownOptions, EnvBackend, EnvCapabilities, EnvError, EnvHandle, EnvPlan, EnvResult, EnvStatus,

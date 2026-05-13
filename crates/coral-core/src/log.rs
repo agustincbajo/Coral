@@ -22,6 +22,14 @@ pub struct WikiLog {
     pub entries: Vec<LogEntry>,
 }
 
+// v0.36 clippy: the regex literal is a `&'static str` parsed once
+// during `OnceLock::get_or_init`. A failure would be a programmer
+// error in the literal, not a runtime input error — panic-at-startup
+// is the right contract. The three `cap.get(N).expect(...)` calls in
+// `parse()` below are reached only inside `re.captures(line).is_some()`
+// AND every group is mandatory (no `(...)?`), so the Option is
+// statically Some.
+#[allow(clippy::expect_used)]
 fn log_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
@@ -65,6 +73,7 @@ impl WikiLog {
 
     /// Parses a log file content. Lines that don't match the format are skipped silently.
     /// Header `# Wiki operation log` and frontmatter are skipped.
+    #[allow(clippy::expect_used)] // mandatory regex groups, see `log_re`
     pub fn parse(content: &str) -> Result<Self> {
         let re = log_re();
         let mut entries = Vec::new();
@@ -109,6 +118,10 @@ impl WikiLog {
             summary: summary.into(),
         };
         self.entries.push(entry);
+        // `last()` is statically `Some` immediately after `push`; the
+        // expect message is the contract for any future refactor that
+        // moves the `push` away from this return.
+        #[allow(clippy::expect_used)]
         self.entries.last().expect("just pushed")
     }
 
