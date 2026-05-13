@@ -385,8 +385,7 @@ fn api_smoke_auto_minted_token_works_e2e() {
         return;
     };
     let wiki = make_wiki();
-    let (_guard, banner, _stdout) =
-        spawn_serve(&coral, &wiki, "0.0.0.0", &[]).expect("spawn");
+    let (_guard, banner, _stdout) = spawn_serve(&coral, &wiki, "0.0.0.0", &[]).expect("spawn");
     let token = banner
         .minted_token
         .as_deref()

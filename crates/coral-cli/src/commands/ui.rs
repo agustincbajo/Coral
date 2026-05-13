@@ -90,7 +90,9 @@ const MIN_TOKEN_LEN_CHARS: usize = 32;
 fn serve(args: UiServeArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
     // Resolve --token / CORAL_UI_TOKEN. We capture provenance so the
     // banner can tell the operator how the server authenticated itself.
-    let env_token = std::env::var("CORAL_UI_TOKEN").ok().filter(|s| !s.is_empty());
+    let env_token = std::env::var("CORAL_UI_TOKEN")
+        .ok()
+        .filter(|s| !s.is_empty());
     let provided_token = args.token.clone().or(env_token.clone());
     let token_source = if args.token.is_some() {
         TokenSource::Cli
@@ -141,7 +143,13 @@ fn serve(args: UiServeArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
     // operator sees the token without waiting for any background log
     // flush, and so smoke tests can read the banner off the spawned
     // child's stdout.
-    print_startup_banner(&args.bind, args.port, resolved_token.as_deref(), token_was_minted, token_source);
+    print_startup_banner(
+        &args.bind,
+        args.port,
+        resolved_token.as_deref(),
+        token_was_minted,
+        token_source,
+    );
 
     let cfg = coral_ui::ServeConfig {
         bind: args.bind,
@@ -172,9 +180,7 @@ fn print_startup_banner(
     println!("WebUI serving at http://{bind}:{port}");
     if let Some(tok) = token {
         println!("Bearer token: {tok}");
-        println!(
-            "Use: curl -H \"Authorization: Bearer {tok}\" http://{bind}:{port}/api/v1/pages"
-        );
+        println!("Use: curl -H \"Authorization: Bearer {tok}\" http://{bind}:{port}/api/v1/pages");
         if was_minted {
             println!(
                 "  (auto-minted 256-bit CSPRNG token; the server forgets it on exit. \
@@ -270,7 +276,8 @@ mod tests {
         assert_eq!(a.len(), 64, "expected 256 bits = 64 hex chars: {a}");
         assert_eq!(b.len(), 64, "expected 256 bits = 64 hex chars: {b}");
         assert!(
-            a.bytes().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+            a.bytes()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
             "token must be lower-case hex only: {a}"
         );
         assert_ne!(a, b, "two consecutive mints collided");
