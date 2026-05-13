@@ -615,61 +615,97 @@ fn map_repo(raw: RawRepo) -> RepoEntry {
     }
 }
 
+/// Escape a string for inclusion inside a TOML basic-string (`"..."`).
+/// Handles backslash, double-quote, and the control characters defined
+/// by the TOML 1.0 spec (`\b`, `\t`, `\n`, `\f`, `\r`). Anything else
+/// non-printable is unlikely in our domain (paths, URLs, slugs) but is
+/// passed through; if it ever shows up we'll surface it via the parser
+/// round-trip.
+///
+/// v0.37 prep: this fix unbreaks Windows where `coral project add --url
+/// C:\Users\...` previously wrote a raw backslash that TOML parsed as
+/// `\U` (invalid unicode escape).
+fn toml_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str(r"\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\u{08}' => out.push_str("\\b"),
+            '\u{0c}' => out.push_str("\\f"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 /// Serialize a `Project` back to canonical TOML. Used by `coral project new`
 /// and `coral project add`. Output is human-curated-friendly: blank lines
 /// between sections, no comments (those would be lost on round-trip).
 pub fn render_toml(project: &Project) -> String {
     let mut out = String::new();
-    out.push_str(&format!("apiVersion = \"{}\"\n\n", project.api_version));
+    out.push_str(&format!(
+        "apiVersion = \"{}\"\n\n",
+        toml_escape(&project.api_version)
+    ));
     out.push_str("[project]\n");
-    out.push_str(&format!("name = \"{}\"\n", project.name));
+    out.push_str(&format!("name = \"{}\"\n", toml_escape(&project.name)));
     if !matches!(project.wiki_layout, WikiLayout::Aggregated) {
         // Reserved for future layouts; never emitted today.
     }
     if let Some(coral) = &project.toolchain.coral {
         out.push_str("\n[project.toolchain]\n");
-        out.push_str(&format!("coral = \"{}\"\n", coral));
+        out.push_str(&format!("coral = \"{}\"\n", toml_escape(coral)));
     }
     if project.defaults != ProjectDefaults::default() {
         out.push_str("\n[project.defaults]\n");
         if project.defaults.r#ref != DEFAULT_REF {
-            out.push_str(&format!("ref = \"{}\"\n", project.defaults.r#ref));
+            out.push_str(&format!(
+                "ref = \"{}\"\n",
+                toml_escape(&project.defaults.r#ref)
+            ));
         }
         if let Some(remote) = &project.defaults.remote {
-            out.push_str(&format!("remote = \"{}\"\n", remote));
+            out.push_str(&format!("remote = \"{}\"\n", toml_escape(remote)));
         }
         if project.defaults.path_template != DEFAULT_PATH_TEMPLATE {
             out.push_str(&format!(
                 "path_template = \"{}\"\n",
-                project.defaults.path_template
+                toml_escape(&project.defaults.path_template)
             ));
         }
     }
     for (name, spec) in &project.remotes {
         out.push_str(&format!("\n[remotes.{}]\n", name));
-        out.push_str(&format!("fetch = \"{}\"\n", spec.fetch));
+        out.push_str(&format!("fetch = \"{}\"\n", toml_escape(&spec.fetch)));
     }
     for repo in &project.repos {
         out.push_str("\n[[repos]]\n");
-        out.push_str(&format!("name = \"{}\"\n", repo.name));
+        out.push_str(&format!("name = \"{}\"\n", toml_escape(&repo.name)));
         if let Some(url) = &repo.url {
-            out.push_str(&format!("url = \"{}\"\n", url));
+            out.push_str(&format!("url = \"{}\"\n", toml_escape(url)));
         }
         if let Some(remote) = &repo.remote {
-            out.push_str(&format!("remote = \"{}\"\n", remote));
+            out.push_str(&format!("remote = \"{}\"\n", toml_escape(remote)));
         }
         if let Some(r) = &repo.r#ref {
-            out.push_str(&format!("ref = \"{}\"\n", r));
+            out.push_str(&format!("ref = \"{}\"\n", toml_escape(r)));
         }
         if let Some(path) = &repo.path {
-            out.push_str(&format!("path = \"{}\"\n", path.display()));
+            out.push_str(&format!(
+                "path = \"{}\"\n",
+                toml_escape(&path.display().to_string())
+            ));
         }
         if !repo.tags.is_empty() {
             out.push_str(&format!(
                 "tags = [{}]\n",
                 repo.tags
                     .iter()
-                    .map(|t| format!("\"{}\"", t))
+                    .map(|t| format!("\"{}\"", toml_escape(t)))
                     .collect::<Vec<_>>()
                     .join(", ")
             ));
@@ -679,7 +715,7 @@ pub fn render_toml(project: &Project) -> String {
                 "depends_on = [{}]\n",
                 repo.depends_on
                     .iter()
-                    .map(|d| format!("\"{}\"", d))
+                    .map(|d| format!("\"{}\"", toml_escape(d)))
                     .collect::<Vec<_>>()
                     .join(", ")
             ));
@@ -689,7 +725,7 @@ pub fn render_toml(project: &Project) -> String {
                 "include = [{}]\n",
                 repo.include
                     .iter()
-                    .map(|d| format!("\"{}\"", d))
+                    .map(|d| format!("\"{}\"", toml_escape(d)))
                     .collect::<Vec<_>>()
                     .join(", ")
             ));
@@ -699,7 +735,7 @@ pub fn render_toml(project: &Project) -> String {
                 "exclude = [{}]\n",
                 repo.exclude
                     .iter()
-                    .map(|d| format!("\"{}\"", d))
+                    .map(|d| format!("\"{}\"", toml_escape(d)))
                     .collect::<Vec<_>>()
                     .join(", ")
             ));
@@ -737,9 +773,9 @@ pub fn render_toml(project: &Project) -> String {
 fn render_tier(label: &str, spec: &TierSpecManifest) -> String {
     let mut out = String::new();
     out.push_str(&format!("\n[runner.tiered.{label}]\n"));
-    out.push_str(&format!("provider = \"{}\"\n", spec.provider));
+    out.push_str(&format!("provider = \"{}\"\n", toml_escape(&spec.provider)));
     if let Some(m) = &spec.model {
-        out.push_str(&format!("model = \"{}\"\n", m));
+        out.push_str(&format!("model = \"{}\"\n", toml_escape(m)));
     }
     out
 }
@@ -1020,6 +1056,72 @@ name = "api"
         let p = parse_toml(raw, Path::new("/tmp/coral.toml")).unwrap();
         let err = p.validate().unwrap_err();
         assert!(format!("{}", err).contains("cannot resolve git URL"));
+    }
+
+    /// v0.37 prep: Windows backslashes in repo URLs / paths must be
+    /// escaped on render so the round-trip parses cleanly. The bug it
+    /// guards against: `coral project add --url C:\\Users\\...` would
+    /// previously emit a raw backslash, and on re-parse TOML would
+    /// reject `\U` as an invalid 8-digit unicode escape, breaking the
+    /// `project_sync_clones_a_local_bare_repo_end_to_end` test under
+    /// Windows nextest.
+    #[test]
+    fn render_escapes_backslashes_in_url_and_path() {
+        let mut p = make_project_with_repos(&[]);
+        p.repos.push(RepoEntry {
+            name: "demo".into(),
+            url: Some(r"C:\Users\agust\AppData\Local\Temp\origin.git".into()),
+            remote: None,
+            r#ref: None,
+            path: Some(PathBuf::from(r"C:\Users\agust\repos\demo")),
+            tags: Vec::new(),
+            depends_on: Vec::new(),
+            include: Vec::new(),
+            exclude: Vec::new(),
+            enabled: true,
+        });
+        let rendered = render_toml(&p);
+        // Each lone backslash from the input must appear escaped as `\\`
+        // in the rendered TOML. Spot-checking a substring is enough — a
+        // parse round-trip below is the load-bearing assertion.
+        assert!(
+            rendered.contains(r"C:\\Users\\agust"),
+            "render must escape backslashes: {rendered}"
+        );
+        // Round-trip: re-parse without panic and check the URL came
+        // back identical to the input.
+        let p2 = parse_toml(&rendered, Path::new("/tmp/coral.toml"))
+            .expect("rendered TOML must parse back");
+        assert_eq!(
+            p2.repos[0].url.as_deref(),
+            Some(r"C:\Users\agust\AppData\Local\Temp\origin.git")
+        );
+        assert_eq!(
+            p2.repos[0].path.as_deref(),
+            Some(Path::new(r"C:\Users\agust\repos\demo"))
+        );
+    }
+
+    #[test]
+    fn render_escapes_double_quote_in_string_fields() {
+        // Double-quotes in a tag must not bust the quoted-string scope.
+        let mut p = make_project_with_repos(&[]);
+        p.repos.push(RepoEntry {
+            name: "api".into(),
+            url: Some("git@example.com/api.git".into()),
+            remote: None,
+            r#ref: None,
+            path: None,
+            tags: vec![r#"weird"tag"#.into()],
+            depends_on: Vec::new(),
+            include: Vec::new(),
+            exclude: Vec::new(),
+            enabled: true,
+        });
+        let rendered = render_toml(&p);
+        let p2 = parse_toml(&rendered, Path::new("/tmp/coral.toml"))
+            .expect("rendered TOML with escaped quote must parse back");
+        assert_eq!(p2.repos[0].tags, vec![r#"weird"tag"#.to_string()]);
     }
 
     #[test]
