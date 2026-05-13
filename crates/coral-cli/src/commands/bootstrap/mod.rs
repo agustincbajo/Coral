@@ -234,6 +234,16 @@ pub(crate) fn run_with_runner_inner(
 /// back to the heuristic when `None`. `--max-cost` gates before
 /// every page; an exceeded budget marks the state `partial=true`
 /// and exits 2 with a resume hint.
+#[tracing::instrument(
+    name = "bootstrap.apply_pages",
+    skip(root, cwd, runner, state),
+    fields(
+        wiki_root = %root.display(),
+        page_count = state.plan.len(),
+        provider = %cost_provider.label(),
+        max_cost_usd = max_cost.unwrap_or(0.0),
+    ),
+)]
 fn apply_pages(
     root: &Path,
     cwd: &Path,
@@ -242,6 +252,10 @@ fn apply_pages(
     mut state: BootstrapState,
     max_cost: Option<f64>,
 ) -> Result<ExitCode> {
+    tracing::info!(
+        page_count = state.plan.len(),
+        "bootstrap.apply_pages: starting"
+    );
     let head = match gitdiff::head_sha(cwd) {
         Ok(sha) => sha,
         Err(e) => {
@@ -266,11 +280,27 @@ fn apply_pages(
     for i in 0..plan_len {
         // Skip pages already completed (resume).
         if matches!(state.pages[i].status, PageStatus::Completed) {
+            tracing::debug!(idx = i, slug = %state.pages[i].slug, "page: skip (already completed)");
             continue;
         }
         let entry = state.plan[i].clone();
 
+        // Per-page span — every event below is grouped under `page{slug=…}`
+        // so the dashboard can collapse one page's lifecycle into one row.
+        let _page_span = tracing::info_span!(
+            "page",
+            idx = i,
+            slug = %entry.slug,
+            page_type = ?entry.r#type,
+        )
+        .entered();
+
         if entry.action != Action::Create {
+            tracing::warn!(
+                slug = %entry.slug,
+                action = ?entry.action,
+                "page: unsupported action; marking Failed"
+            );
             skipped.push(format!(
                 "{} (action={:?} not supported in bootstrap)",
                 entry.slug, entry.action
@@ -286,6 +316,12 @@ fn apply_pages(
         let projected_page_cost = project_page_cost(&entry, cost_provider);
         if let Some(cap) = max_cost {
             if state.cost_spent_usd + projected_page_cost > cap {
+                tracing::warn!(
+                    cost_spent_usd = state.cost_spent_usd,
+                    cap_usd = cap,
+                    projected_page_cost,
+                    "page: --max-cost gate triggered; halting"
+                );
                 eprintln!(
                     "Stopped at ${:.2} (cap ${cap:.2}). Run `coral bootstrap --resume` to continue.",
                     state.cost_spent_usd
@@ -300,6 +336,7 @@ fn apply_pages(
         // ---- Mark InProgress + checkpoint --------------------------------
         state.pages[i].status = PageStatus::InProgress;
         state.save_atomic(root)?;
+        tracing::info!(slug = %entry.slug, "page: rendering");
 
         // ---- Generate body if absent -------------------------------------
         let mut entry_with_body = entry.clone();
@@ -310,10 +347,21 @@ fn apply_pages(
             // touching shared state.
             match render_page_body(runner, &entry, cwd) {
                 Ok((body, usage)) => {
+                    tracing::info!(
+                        slug = %entry.slug,
+                        body_bytes = body.len(),
+                        has_usage = usage.is_some(),
+                        "page: runner returned"
+                    );
                     entry_with_body.body = Some(body);
                     real_usage = usage;
                 }
                 Err(e) => {
+                    tracing::error!(
+                        slug = %entry.slug,
+                        error = %e,
+                        "page: runner failed"
+                    );
                     eprintln!("warn: per-page runner failed for `{}`: {e}", entry.slug);
                     state.pages[i].status = PageStatus::Failed;
                     state.pages[i].error = Some(format!("{e}"));
@@ -384,6 +432,14 @@ fn apply_pages(
         state.cost_spent_usd += cost_usd;
         state.save_atomic(root)?;
         created += 1;
+        tracing::info!(
+            slug = %entry.slug,
+            input_tokens = input,
+            output_tokens = output,
+            cost_usd,
+            cost_spent_usd_total = state.cost_spent_usd,
+            "page: completed"
+        );
     }
 
     // Lock-protected write — see ingest.rs for rationale.
