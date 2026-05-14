@@ -301,9 +301,21 @@ cargo install --locked --git https://github.com/agustincbajo/Coral coral-cli
 ```bash
 git clone https://github.com/agustincbajo/Coral
 cd Coral
+./scripts/dev-setup.sh           # one-time: cargo-sweep, sccache, cargo-nextest
 cargo build --release
 ./target/release/coral --version
 ```
+
+Disk hygiene: `cargo build`/`cargo test` cycles inflate `target/`
+fast (typical sustained dev session: ~5–8 GiB; a 7-release sprint
+that forgets maintenance: ~45 GiB). One-liner umbrella:
+
+```bash
+./scripts/dev-cleanup.sh --auto       # Linux / macOS
+.\scripts\dev-cleanup.ps1 -Mode auto  # Windows
+```
+
+Full strategy + thresholds in [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md).
 
 #### Windows — extra prereqs before `cargo build`
 

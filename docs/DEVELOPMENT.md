@@ -16,12 +16,19 @@ range.
 cargo build --release
 cargo test --workspace
 
-# Weekly (cron-friendly):
-cargo sweep --time 7
+# Periodically (or via a pre-push hook — see "Pre-push hook" below):
+./scripts/dev-cleanup.sh --auto  # Linux/macOS — picks soft/medium/hard by size
+.\scripts\dev-cleanup.ps1 -Mode auto   # Windows
 ```
 
 Setup is idempotent. Re-run anytime — costs ~5s when everything is
 already in place.
+
+`dev-cleanup` is the umbrella for the four maintenance commands in
+the "Maintenance commands" table below. `--auto` picks the right
+aggressiveness based on current `target/` size; no thresholds to
+memorize. `--budget N` exits non-zero if `target/` exceeds N GiB
+after the run, making it pre-push-hook friendly.
 
 ---
 
@@ -84,6 +91,83 @@ Cache size cap for `sccache`:
 ```bash
 export SCCACHE_CACHE_SIZE=5G   # default 10 GB; set in shell rc
 ```
+
+### One-liner umbrella: `scripts/dev-cleanup.{sh,ps1}`
+
+If you'd rather not memorize four tools and three thresholds, the
+umbrella wraps them with auto-mode:
+
+```bash
+# Linux / macOS
+./scripts/dev-cleanup.sh --check    # report size + top sub-dirs, no mutations
+./scripts/dev-cleanup.sh --soft     # cargo sweep --time 7
+./scripts/dev-cleanup.sh --medium   # cargo sweep --installed
+./scripts/dev-cleanup.sh --hard     # cargo clean
+./scripts/dev-cleanup.sh --auto     # pick mode by current target/ size
+./scripts/dev-cleanup.sh --budget 15  # exit 1 if target/ > 15 GiB after run
+
+# Windows
+.\scripts\dev-cleanup.ps1 -Mode check
+.\scripts\dev-cleanup.ps1 -Mode auto
+.\scripts\dev-cleanup.ps1 -Budget 15
+```
+
+Auto-mode thresholds (ratchet-locked to the table above):
+
+| `target/` size | Auto picks | Underlying tool |
+|---|---|---|
+| < 5 GiB | `check` | (no action) |
+| 5–15 GiB | `soft` | `cargo sweep --time 7` |
+| 15–30 GiB | `medium` | `cargo sweep --installed` |
+| > 30 GiB | `hard` | `cargo clean` |
+
+Mutation modes also run `cargo cache --autoclean` for registry
+pruning (skip with `--no-registry` / `-NoRegistry`). The `--check`
+mode skips the registry du entirely because the registry scan is
+slow on Windows (tens of thousands of small files) and the registry
+is `cargo-cache`'s job anyway, not `cargo-sweep`'s.
+
+**Empirical anchor:** a 2026-05-13 autonomous-development session ran
+7 release sprints + 4 dev/validator pairs without invoking any of
+the maintenance commands; `target/` inflated to 45.3 GiB before the
+umbrella existed. With `--auto`, equivalent growth would have
+triggered `--hard` well before that.
+
+### Pre-push hook (opt-in)
+
+To enforce a budget before every push, drop this in `.git/hooks/
+pre-push` (chmod +x on Unix):
+
+```bash
+#!/usr/bin/env bash
+# Exit non-zero if target/ exceeds 15 GiB. The hook runs locally,
+# never commits anything, and prints the dev-cleanup recommendation
+# when it triggers.
+exec ./scripts/dev-cleanup.sh --check --budget 15 >/dev/null 2>&1 || {
+  ./scripts/dev-cleanup.sh --check
+  echo
+  echo "target/ over budget — run: ./scripts/dev-cleanup.sh --auto"
+  exit 1
+}
+```
+
+Windows PowerShell equivalent (`.git/hooks/pre-push`, no extension,
+Git Bash invokes it):
+
+```bash
+#!/usr/bin/env bash
+powershell -ExecutionPolicy Bypass -File ./scripts/dev-cleanup.ps1 \
+  -Mode check -Budget 15 >/dev/null 2>&1 || {
+  powershell -ExecutionPolicy Bypass -File ./scripts/dev-cleanup.ps1 -Mode check
+  echo
+  echo "target/ over budget - run: .\scripts\dev-cleanup.ps1 -Mode auto"
+  exit 1
+}
+```
+
+Hooks aren't checked into Git (by design — they're executable code
+that shouldn't auto-install). Copy-paste once per checkout when
+setting up a new dev machine.
 
 Check `sccache` is pulling weight:
 
