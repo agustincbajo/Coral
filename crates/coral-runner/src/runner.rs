@@ -524,10 +524,13 @@ impl Runner for ClaudeRunner {
     fn run(&self, prompt: &Prompt) -> RunnerResult<RunOutput> {
         self.host_managed_mode_check()?;
         // v0.41 P2: verbose dump of the prompt being sent.
-        if std::env::var("CORAL_VERBOSE").as_deref() == Ok("1") {
+        // Gate: CORAL_VERBOSE=1 AND progress_enabled() (respects CORAL_QUIET).
+        if std::env::var("CORAL_VERBOSE").as_deref() == Ok("1")
+            && coral_core::observability::progress_enabled()
+        {
             let truncated = coral_core::observability::truncate_for_display(&prompt.user, 2000);
             coral_core::progress!(step, "Prompt (user)"; chars = prompt.user.len());
-            eprintln!("{truncated}");
+            eprintln!("  {truncated}");
         }
         // v0.41 P1: emit progress before spawn so the user sees activity.
         coral_core::progress!(step, "Calling claude CLI..."; model = prompt.model.as_deref().unwrap_or("default"));
@@ -624,10 +627,13 @@ impl Runner for ClaudeRunner {
         let (usage, inner) = parse_usage_from_stdout(&raw_stdout);
         let stdout = inner.unwrap_or(raw_stdout);
         // v0.41 P2: verbose dump of the response received.
-        if std::env::var("CORAL_VERBOSE").as_deref() == Ok("1") {
+        // Gate: CORAL_VERBOSE=1 AND progress_enabled() (respects CORAL_QUIET).
+        if std::env::var("CORAL_VERBOSE").as_deref() == Ok("1")
+            && coral_core::observability::progress_enabled()
+        {
             let truncated = coral_core::observability::truncate_for_display(&stdout, 2000);
             coral_core::progress!(step, "Response"; chars = stdout.len());
-            eprintln!("{truncated}");
+            eprintln!("  {truncated}");
         }
         // v0.41 P1: emit progress after response is received.
         let total_tokens = usage.map(|u| u.input_tokens + u.output_tokens).unwrap_or(0);

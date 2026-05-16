@@ -62,6 +62,10 @@ pub fn progress_enabled() -> bool {
 
 /// Truncate `s` to at most `max_chars` characters, appending `…` when
 /// truncated. Used by the verbose prompt/response dump path.
+///
+/// Special case: `max_chars == 0` means "no limit" — returns the full
+/// string unchanged. This matches the `--verbose=full` semantics where
+/// 0 disables truncation.
 pub fn truncate_for_display(s: &str, max_chars: usize) -> String {
     if max_chars == 0 || s.chars().count() <= max_chars {
         return s.to_owned();
@@ -110,9 +114,9 @@ pub fn emit_progress(prefix: &str, message: &str, kvs: &[(&str, &dyn std::fmt::D
 /// progress!(fail, "bootstrap", "Runner returned non-zero exit"; code = 1);
 /// ```
 ///
-/// All forms respect [`progress_enabled`] — when suppressed, this is
-/// a zero-cost no-op (the condition is checked inside [`emit_progress`]
-/// which all forms delegate to).
+/// All forms respect [`progress_enabled`] — when suppressed, the only
+/// cost is two `env::var` lookups per call (low overhead, not zero-cost).
+/// The per-call check ensures env vars set after startup are picked up.
 #[macro_export]
 macro_rules! progress {
     // step — no key=value pairs
@@ -198,7 +202,7 @@ mod tests {
 
     #[test]
     fn progress_disabled_when_coral_quiet_1() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let _quiet = EnvGuard::set("CORAL_QUIET", "1");
         let _verbose = EnvGuard::unset("CORAL_VERBOSE");
         // Regardless of TTY state, CORAL_QUIET=1 wins.
@@ -207,7 +211,7 @@ mod tests {
 
     #[test]
     fn progress_enabled_when_coral_verbose_1_and_quiet_unset() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let _quiet = EnvGuard::unset("CORAL_QUIET");
         let _verbose = EnvGuard::set("CORAL_VERBOSE", "1");
         assert!(progress_enabled(), "CORAL_VERBOSE=1 must enable output");
@@ -215,7 +219,7 @@ mod tests {
 
     #[test]
     fn progress_quiet_overrides_verbose() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let _quiet = EnvGuard::set("CORAL_QUIET", "1");
         let _verbose = EnvGuard::set("CORAL_VERBOSE", "1");
         assert!(
@@ -270,7 +274,7 @@ mod tests {
 
     #[test]
     fn emit_progress_no_kvs_no_panic() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         // Force quiet so tests don't spray to stderr in CI.
         let _quiet = EnvGuard::set("CORAL_QUIET", "1");
         emit_progress("▶", "test message", &[]);
@@ -278,7 +282,7 @@ mod tests {
 
     #[test]
     fn emit_progress_with_kvs_no_panic() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let _quiet = EnvGuard::set("CORAL_QUIET", "1");
         let tokens: u64 = 42;
         emit_progress("✓", "done", &[("tokens", &tokens)]);
@@ -290,7 +294,7 @@ mod tests {
 
     #[test]
     fn macro_step_form_no_panic() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let _quiet = EnvGuard::set("CORAL_QUIET", "1");
         progress!(step, "Starting step");
         progress!(step, "Starting step"; model = "sonnet");
@@ -298,7 +302,7 @@ mod tests {
 
     #[test]
     fn macro_done_form_no_panic() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let _quiet = EnvGuard::set("CORAL_QUIET", "1");
         progress!(done, "run", "Finished");
         let tok: u64 = 100;
@@ -307,7 +311,7 @@ mod tests {
 
     #[test]
     fn macro_fail_form_no_panic() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let _quiet = EnvGuard::set("CORAL_QUIET", "1");
         progress!(fail, "run", "Something broke");
         let code: i32 = 1;
