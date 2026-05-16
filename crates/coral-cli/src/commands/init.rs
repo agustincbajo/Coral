@@ -36,12 +36,20 @@ pub fn run(args: InitArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
         .unwrap_or_else(|| PathBuf::from(".wiki"));
     let cwd = std::env::current_dir().context("getting cwd")?;
 
-    if root.exists() && !args.force {
-        let schema = root.join("SCHEMA.md");
-        if schema.exists() {
-            tracing::info!("`.wiki/` already exists; pass --force to re-create. Skipping.");
-            return Ok(ExitCode::SUCCESS);
-        }
+    // BACKLOG #12 L1 (v0.40.1): re-runs over an existing `.wiki/` used
+    // to early-return here, which silently skipped FR-ONB-34 gitignore
+    // hardening and FR-ONB-25 CLAUDE.md scaffolding. Those steps are
+    // independent of wiki-content state and idempotent (per-file
+    // existence checks + `apply_claude_md` decision tree), so we
+    // remember the state and let the function continue. The per-file
+    // guards below (`if !path.exists() || args.force`) keep the wiki
+    // content untouched on re-runs without `--force`.
+    let wiki_already_initialized = root.exists() && !args.force && root.join("SCHEMA.md").exists();
+    if wiki_already_initialized {
+        tracing::info!(
+            "`.wiki/` already initialized; ensuring gitignore + CLAUDE.md \
+             scaffolds (idempotent). Pass --force to also re-create wiki content."
+        );
     }
 
     std::fs::create_dir_all(&root).with_context(|| format!("creating {}", root.display()))?;
@@ -223,7 +231,14 @@ pub fn run(args: InitArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
         }
     }
 
-    println!("✔ `.wiki/` initialized at {}", root.display());
+    if wiki_already_initialized {
+        println!(
+            "✔ `.wiki/` at {} (verified; gitignore + CLAUDE.md scaffolds idempotent)",
+            root.display()
+        );
+    } else {
+        println!("✔ `.wiki/` initialized at {}", root.display());
+    }
     Ok(ExitCode::SUCCESS)
 }
 
