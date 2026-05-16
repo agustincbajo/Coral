@@ -79,6 +79,51 @@ done
 uname_s=$(uname -s)
 uname_m=$(uname -m)
 
+# ----- BACKLOG #12 L4 (v0.40.1): refuse install from inside Claude Code -----
+#
+# macOS Sequoia stamps every file Claude Code subprocesses write with
+# `com.apple.provenance`. The same xattr blocks read access from non-
+# tracked processes (a regular Terminal) with EPERM, and the gate
+# refuses xattr removal by the tracked app itself (anti-laundering) —
+# even `sudo`/authtrampoline fails for paths inside `~/Documents/`.
+# Net effect: installing from a Claude Code shell leaves the binary
+# and `.coral/config.toml` accessible only to Claude Code, with no
+# in-place repair short of a fresh checkout.
+#
+# Detection: `CLAUDECODE=1` is exported by Claude Code into every
+# subprocess (terminal-in-editor, MCP host, hook spawn, etc.). On
+# Linux there is no provenance xattr, so the gate doesn't bite —
+# only block on Darwin. The escape hatch
+# `CORAL_INSTALL_ALLOW_TRACKED_PROCESS=1` proceeds anyway for the
+# rare CI scenario where the install artifact is consumed only by
+# the same tracked process.
+if [ "${uname_s}" = "Darwin" ] \
+   && [ "${CLAUDECODE:-}" = "1" ] \
+   && [ "${CORAL_INSTALL_ALLOW_TRACKED_PROCESS:-}" != "1" ]; then
+  cat >&2 <<'CLAUDECODE_BLOCK'
+error: refusing to install from a Claude Code shell on macOS.
+
+  Why: macOS Sequoia stamps every file Claude Code subprocesses write
+  with `com.apple.provenance`. That xattr then blocks your regular
+  Terminal from reading those files (EPERM on open/stat), and the
+  same anti-laundering gate prevents the tracked process from
+  stripping the xattr — even `sudo`/authtrampoline fails for paths
+  inside `~/Documents/`. The install would end up usable only from
+  inside Claude Code, breaking `coral` invocations from your regular
+  shell and any tooling outside Claude Code's process tree.
+
+  Fix: re-run this installer from a regular Terminal (Terminal.app,
+  iTerm2, kitty — anything NOT spawned by Claude Code). Once the
+  binary is on PATH, you can use `coral` from anywhere, including
+  inside Claude Code.
+
+  Override (advanced — accepts EPERM in your regular shell):
+    CORAL_INSTALL_ALLOW_TRACKED_PROCESS=1 bash install.sh ...
+
+CLAUDECODE_BLOCK
+  exit 1
+fi
+
 case "${uname_s}" in
   Linux)
     case "${uname_m}" in
