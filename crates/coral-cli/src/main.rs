@@ -288,6 +288,19 @@ enum SkillCmd {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    // v0.41 P1/P2: propagate --quiet / --verbose into env vars so the
+    // `progress!` macro in coral-core::observability can gate output
+    // without needing the CLI args threaded through every call-site.
+    // We set them before `setup_tracing` so the gate reads the right
+    // values even inside the tracing init path.
+    if cli.quiet {
+        // SAFETY: single-threaded at startup; no other threads exist yet.
+        unsafe { std::env::set_var("CORAL_QUIET", "1") };
+    }
+    if cli.verbose {
+        // SAFETY: same as above.
+        unsafe { std::env::set_var("CORAL_VERBOSE", "1") };
+    }
     setup_tracing(cli.quiet, cli.verbose);
 
     let result: Result<ExitCode> = match cli.command {

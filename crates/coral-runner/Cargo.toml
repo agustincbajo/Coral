@@ -9,6 +9,8 @@ repository.workspace = true
 description = "Coral runner: Claude CLI wrapper + mock for tests."
 
 [dependencies]
+# v0.41 P1: observability module (progress! macro) lives in coral-core.
+coral-core = { path = "../coral-core" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 # v0.21.4: `multi_step.rs` parses the planner tier's YAML plan output.

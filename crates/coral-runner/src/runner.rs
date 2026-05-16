@@ -523,6 +523,14 @@ impl ClaudeRunner {
 impl Runner for ClaudeRunner {
     fn run(&self, prompt: &Prompt) -> RunnerResult<RunOutput> {
         self.host_managed_mode_check()?;
+        // v0.41 P2: verbose dump of the prompt being sent.
+        if std::env::var("CORAL_VERBOSE").as_deref() == Ok("1") {
+            let truncated = coral_core::observability::truncate_for_display(&prompt.user, 2000);
+            coral_core::progress!(step, "Prompt (user)"; chars = prompt.user.len());
+            eprintln!("{truncated}");
+        }
+        // v0.41 P1: emit progress before spawn so the user sees activity.
+        coral_core::progress!(step, "Calling claude CLI..."; model = prompt.model.as_deref().unwrap_or("default"));
         let start = Instant::now();
         let mut cmd = Command::new(&self.binary);
         self.apply_env_overrides(&mut cmd);
@@ -615,6 +623,17 @@ impl Runner for ClaudeRunner {
         let raw_stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let (usage, inner) = parse_usage_from_stdout(&raw_stdout);
         let stdout = inner.unwrap_or(raw_stdout);
+        // v0.41 P2: verbose dump of the response received.
+        if std::env::var("CORAL_VERBOSE").as_deref() == Ok("1") {
+            let truncated = coral_core::observability::truncate_for_display(&stdout, 2000);
+            coral_core::progress!(step, "Response"; chars = stdout.len());
+            eprintln!("{truncated}");
+        }
+        // v0.41 P1: emit progress after response is received.
+        let total_tokens = usage
+            .map(|u| u.input_tokens + u.output_tokens)
+            .unwrap_or(0);
+        coral_core::progress!(done, "run", "Got response"; tokens = total_tokens, elapsed_ms = duration.as_millis());
         Ok(RunOutput {
             stdout,
             stderr: String::from_utf8_lossy(&output.stderr).to_string(),
@@ -634,6 +653,8 @@ impl Runner for ClaudeRunner {
         on_chunk: &mut dyn FnMut(&str),
     ) -> RunnerResult<RunOutput> {
         self.host_managed_mode_check()?;
+        // v0.41 P1: emit progress before streaming spawn.
+        coral_core::progress!(step, "Calling claude CLI (streaming)..."; model = prompt.model.as_deref().unwrap_or("default"));
         let mut cmd = Command::new(&self.binary);
         self.apply_env_overrides(&mut cmd);
         cmd.arg("--print");
@@ -653,7 +674,12 @@ impl Runner for ClaudeRunner {
         cmd.arg("--");
         cmd.arg(&prompt.user);
         tracing::debug!(binary = %self.binary.display(), model = ?prompt.model, "spawning claude (streaming)");
-        run_streaming_command(cmd, prompt.timeout, on_chunk)
+        let result = run_streaming_command(cmd, prompt.timeout, on_chunk);
+        // v0.41 P1: emit progress after streaming completes.
+        if result.is_ok() {
+            coral_core::progress!(done, "run_streaming", "Got streaming response");
+        }
+        result
     }
 }
 
