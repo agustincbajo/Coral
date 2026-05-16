@@ -67,15 +67,21 @@ curl -fsSL https://raw.githubusercontent.com/agustincbajo/Coral/main/scripts/ins
 
 ### Don't have Claude Code yet?
 
-You can drive the same onboarding from your shell:
+You can drive the same onboarding from your shell — **fully autonomous, no wizard required** (v0.40.2+):
 
 ```bash
-coral doctor --wizard      # 4-path provider mini-wizard
-                           # (Anthropic API key / Gemini / Ollama / install claude CLI)
-coral init                 # scaffolds .wiki/ + writes CLAUDE.md routing + updates .gitignore
+coral init                 # scaffolds .wiki/ + CLAUDE.md + .gitignore
+                           # auto-detects `claude` on PATH → configures [provider.claude_cli]
 coral bootstrap --estimate # see the upper-bound cost first
 coral bootstrap --apply --max-cost=5.00
 coral query "how does authentication work?"
+```
+
+If `claude` isn't on your PATH, or you want a different provider:
+
+```bash
+coral init --provider claude_cli   # explicit provider (no auto-detect needed)
+coral doctor --wizard              # interactive 4-path wizard (Anthropic API / Gemini / Ollama / claude CLI)
 ```
 
 For the full install reference (flags, troubleshooting, uninstall, upgrade) see [`docs/INSTALL.md`](docs/INSTALL.md).
@@ -280,15 +286,17 @@ curl -fsSL https://raw.githubusercontent.com/agustincbajo/Coral/main/scripts/ins
 iwr -useb https://raw.githubusercontent.com/agustincbajo/Coral/main/scripts/install.ps1 | iex
 ```
 
-Pin a version with `bash -s -- --version v0.39.0` (Linux/macOS) or `... | iex; & coral --version` (Windows, after install). For a manual download with full control, see [Pre-built binaries](#pre-built-binaries) below.
+Pin a version with `bash -s -- --version v0.40.2` (Linux/macOS) or `... | iex; & coral --version` (Windows, after install). For a manual download with full control, see [Pre-built binaries](#pre-built-binaries) below.
+
+> **macOS + Claude Code:** The installer detects when it's running inside a Claude Code shell (`CLAUDECODE=1`) on macOS Sequoia and **refuses** with an actionable message. Reason: macOS stamps every file a tracked process writes with `com.apple.provenance`, making the binary EPERM-inaccessible from a regular Terminal — and the provenance **cannot be stripped**, even via `sudo`. Run the installer from a plain Terminal instead. Override: `CORAL_INSTALL_ALLOW_TRACKED_PROCESS=1`.
 
 ### From a tagged release (recommended)
 
 ```bash
-cargo install --locked --git https://github.com/agustincbajo/Coral --tag v0.39.0 coral-cli
+cargo install --locked --git https://github.com/agustincbajo/Coral --tag v0.40.2 coral-cli
 ```
 
-(Replace `v0.39.0` with the latest tag from the [Releases page](https://github.com/agustincbajo/Coral/releases).)
+(Replace `v0.40.2` with the latest tag from the [Releases page](https://github.com/agustincbajo/Coral/releases).)
 
 ### From `main` (latest)
 
@@ -332,9 +340,9 @@ Each tagged release ships pre-built binaries for x86_64 Linux, x86_64 macOS, aar
 
 ```bash
 # Replace VERSION and TARGET with the values for the release you want; e.g.
-#   VERSION=v0.39.0
+#   VERSION=v0.40.2
 #   TARGET=aarch64-apple-darwin   # x86_64-apple-darwin, x86_64-unknown-linux-gnu, or x86_64-pc-windows-msvc
-VERSION=v0.39.0
+VERSION=v0.40.2
 TARGET=aarch64-apple-darwin
 curl -L -o coral.tar.gz "https://github.com/agustincbajo/Coral/releases/download/${VERSION}/coral-${VERSION}-${TARGET}.tar.gz"
 shasum -a 256 -c coral.tar.gz.sha256  # if you also downloaded the .sha256 sidecar
@@ -391,7 +399,7 @@ The v0.15 workflow still works exactly as before — no `coral.toml` needed.
 
 ```bash
 cd /path/to/your/repo
-coral init                              # scaffold .wiki/
+coral init                              # scaffold .wiki/ + auto-configure provider
 coral bootstrap --apply                 # first-time wiki compilation (LLM)
 coral ingest --apply                    # incremental updates on subsequent pushes
 coral query "how does authentication work?"
@@ -2021,6 +2029,15 @@ Nightly (`.github/workflows/nightly.yml`) runs the `--ignored` smoke tests again
 
 ## Troubleshooting
 
+### `coral query` / `coral bootstrap` fails with "cannot authenticate from inside a Claude Code shell"
+
+This is the **L3 pre-flight check** (v0.40.1+). On macOS, the `claude` CLI detects its parent process via Endpoint Security responsibility tracking and switches to "host-managed mode" — refusing to authenticate regardless of environment variables. This cannot be bypassed from a subshell.
+
+**Fixes:**
+- Run `coral` from a plain Terminal (not from inside a Claude Code session).
+- Use a different runner: `--provider gemini`, `--provider http` (OpenAI-compatible endpoint), or `--provider local` (llama.cpp) — these bypass the `claude` binary entirely.
+- v0.41 will introduce a native `HostSamplingRunner` that uses MCP `sampling/createMessage` to leverage the Claude Code session directly without spawning the CLI.
+
 ### CI is showing "recent account payments have failed"
 
 This is a **GitHub Actions billing issue**, not a Coral bug. Update your billing settings or spending limit at github.com/settings/billing/payment_information. The CI workflow itself is correct — re-running after billing is resolved should work without code changes.
@@ -2251,7 +2268,28 @@ Full per-release detail in [CHANGELOG](CHANGELOG.md).
 
 - 11 confirmed findings, all resolved on the audit branch. Highlights: MCP `WikiState` dirty-flag now actually wired through `resources/read` (was dead code per a deferred design note); `coral session distill` patch validator closed against multi-file path-traversal via `git apply --unsafe-paths` (`--unsafe-paths` dropped); `coral guarantee` no longer returns Green on an unreadable wiki (CI deploy-gate bug); `coral project lock` serializes load-mutate-save under flock (lost-update fix vs `project sync`); BM25 index moved to `atomic_write_bytes` + `with_exclusive_lock`; `compute_content_hash` switched to real SHA-256 with length-prefix framing; HTTP/SSE transport now actually broadcasts notifications (NotificationHub with bounded 128-entry replay ring and `Last-Event-ID` resume); JSON-RPC error codes use proper `-32602`/`-32002`/`-32001` ranges instead of collapsing to method-not-found; `coral stats --format json` is byte-deterministic. See [`audit/SUMMARY.md`](audit/SUMMARY.md) for the full catalog with counter-validation status.
 
-🔮 **v0.31+ feature roadmap:**
+✅ **Shipped (v0.31 → v0.39 — WebUI + dev-experience sprint):**
+
+- **`coral ui serve` (v0.32.0):** React SPA embedded in the binary — Pages, Graph (Sigma.js + bi-temporal slider), Query (SSE-streamed), Manifest views. Zero Node deps for end-users.
+- **Disk-hygiene tooling (v0.38+):** `scripts/dev-cleanup.sh --auto` umbrella, `scripts/dev-cleanup.ps1` for Windows, pre-push hook strategy.
+- **CI coverage floor**: incremental bumps tracking test count growth (60% → 65% at v0.40.0).
+
+✅ **Shipped (v0.40.0 → v0.40.2 — install autonomy + dogfooding):**
+
+Dogfooding Coral on its own repo (macOS Sequoia + Claude Code) surfaced a 4-layer autonomy gap. All four layers are now closed:
+
+- **L1 — `coral init` idempotent re-runs (v0.40.1).** Previous versions short-circuited when `.wiki/` existed, skipping gitignore hardening and CLAUDE.md scaffolding on upgrades. Fixed: the early return is gone; per-file existence checks make every step idempotent.
+- **L2 — `coral init --provider <kind>` + auto-detect (v0.40.2).** Non-interactive provider scaffold: `coral init` auto-detects `claude` on PATH and writes `[provider.claude_cli]` when no config exists. Explicit `--provider claude_cli` for scripted setups. Reduces onboarding from "install → init → wizard → bootstrap" to "install → init → bootstrap".
+- **L3 — `ClaudeRunner` pre-flight check (v0.40.1).** Refuses to spawn `claude` from inside a Claude Code shell with a specific `AuthFailed` error (instead of an opaque 401). The `claude` CLI's host-managed-mode detection uses macOS Endpoint Security, not env vars, and cannot be bypassed from a subprocess.
+- **L4 — `scripts/install.sh` Claude Code guard (v0.40.1).** Detects `CLAUDECODE=1` + Darwin and refuses before downloading — files written by a tracked process inherit `com.apple.provenance` (making them EPERM-inaccessible from a regular Terminal), and the provenance **cannot be stripped** even via `sudo`. Escape hatch: `CORAL_INSTALL_ALLOW_TRACKED_PROCESS=1`.
+
+🔮 **v0.41 — Claude Code native runner + verbose observability (in development):**
+
+- **`HostSamplingRunner`:** Uses MCP `sampling/createMessage` to leverage the active Claude Code session for LLM inference — no API key, no subprocess, no auth issues. Coral runs *inside* the session it queries through.
+- **`progress!` macro:** Structured verbose logging for every Coral operation so Claude Code (and users) always see what Coral is doing and what it received.
+- See [`docs/PRD-v0.41-claude-code-native.md`](docs/PRD-v0.41-claude-code-native.md) for the full specification.
+
+🔮 **v0.42+ feature roadmap:**
 
 - `coral session capture --from cursor` and `--from chatgpt` (the v0.20 flags currently emit a clear "not yet implemented" error pointing at #16).
 - `KindBackend`, `TiltBackend`, `K3dBackend` (k8s local, behind feature flags).
