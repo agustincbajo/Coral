@@ -1,0 +1,4 @@
+.coral-cache.json
+.coral-embeddings.json
+*.lock
+*.lock.lock
