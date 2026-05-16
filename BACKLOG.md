@@ -471,7 +471,7 @@ PRD §1 mention.
 
 Cost: ~$10-25/yr registrar + ~1 hour Cloudflare setup. No code work.
 
-### 12. Install autonomy: end-to-end install → first-estimate without manual fixes (L1+L3+L4 ✅ CLOSED v0.40.1; L2 open)
+### 12. Install autonomy: end-to-end install → first-estimate without manual fixes (L1+L3+L4 ✅ CLOSED v0.40.1; L2 ✅ CLOSED in Unreleased)
 
 The v0.40.0 install flow is autonomous up through "binary on PATH +
 plugin registered", but the path from there to a successful
@@ -491,15 +491,19 @@ guard; the per-file `if !exists` checks make every downstream step
 idempotent. The Coral repo itself was bitten before the fix —
 patched manually in `176c626` (gitignore + CLAUDE.md scaffolds).
 
-**L2 — Provider config requires a TTY.**
+**L2 — Provider config requires a TTY. ✅ CLOSED in Unreleased
+(post-v0.40.1).**
 `coral doctor --wizard` refuses non-interactive runs because the
-password prompt cannot consume stdin safely. There is no
-non-interactive equivalent. A fully unattended install — CI,
-dotfiles bootstrap, Claude Code sub-shell, MCP-spawned harness —
-cannot land a working `.coral/config.toml`. Fix: add `coral
-provider set <id> [--api-key STDIN]` (or expose the wizard's path
-as `coral doctor --provider claude_cli --non-interactive`) that
-writes the section without prompting.
+password prompt cannot consume stdin safely. Closed by adding
+`coral init --provider <kind>` for the credentialless `claude_cli`
+path AND auto-detect logic: when `coral init` runs and no
+`.coral/config.toml` exists yet, it scaffolds
+`[provider.claude_cli]` automatically if `claude` is on PATH. Net
+effect: fresh-repo onboarding collapses from "install → init →
+wizard → bootstrap" to "install → init → bootstrap". Providers
+that need credentials (anthropic / gemini / ollama) still go
+through `coral doctor --wizard` interactively — separate scope,
+not blocking the install autonomy story.
 
 **L3 — `claude` CLI auth fails from any Claude-Code subshell. ✅ CLOSED v0.40.1 (workaround).**
 When `claude` is spawned with PPID inside Claude Code's process
@@ -558,12 +562,11 @@ complete `scripts/install.sh && cd <repo> && coral bootstrap
 or hitting any EPERM / 401 surface that's not a real auth/network
 failure.
 
-**v0.40.1 ships L1 + L3 + L4.** L2 (non-interactive provider
-config) remains the only open piece — adds either `coral init
---provider <kind>` or `coral provider set <kind>` (no TTY required)
-so unattended installs can land a working `.coral/config.toml`
-without going through `coral doctor --wizard`. Sized as a small
-follow-up; would unblock CI installs and dotfiles-driven setup.
+**v0.40.1 shipped L1 + L3 + L4; Unreleased follow-up closes L2.**
+All four layers documented in this item are now resolved.
+End-to-end onboarding from a fresh repo is one command:
+`coral init`. Item retained for historical context — design
+discussion is the value, not an open task.
 
 ---
 

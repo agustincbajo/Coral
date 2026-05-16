@@ -7,7 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_No unreleased changes — see v0.40.1 below._
+### Added
+
+- **L2 (BACKLOG #12) — `coral init --provider <kind>` non-interactive
+  provider scaffold.** Bypasses the TTY-required
+  `coral doctor --wizard` for the `claude_cli` provider (no credentials
+  needed; just the `claude` binary on PATH). Writes an empty
+  `[provider.claude_cli]` section to `.coral/config.toml` via the
+  same atomic + chmod-600 path the wizard uses.
+- **`coral init` auto-detects `claude` on PATH and scaffolds
+  `[provider.claude_cli]`** when no `.coral/config.toml` exists yet.
+  Idempotent: never overwrites an existing config. Reduces the
+  fresh-repo onboarding from "install → init → wizard → bootstrap"
+  to "install → init → bootstrap". Override with
+  `coral doctor --wizard` when a different provider is wanted.
+
+### Internal
+
+- Added `claude_on_path()` helper to `init.rs` + 2 unit tests
+  (PATH-mocked hermetic detection, with and without binary).
+- e2e tests in `crates/coral-cli/tests/` updated to populate the
+  new `InitArgs::provider` field (defaults to `None`, no behavior
+  change for existing call sites).
 
 ## [0.40.1] - 2026-05-16
 
