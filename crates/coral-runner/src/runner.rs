@@ -504,12 +504,15 @@ impl ClaudeRunner {
             return Err(RunnerError::AuthFailed(
                 "claude CLI cannot authenticate from inside a Claude Code shell — \
                  it detects the parent process via macOS Endpoint Security and switches to \
-                 host-managed mode, ignoring its keychain credential. Fix: \
-                 (a) run `coral` from a plain Terminal (Terminal.app, iTerm2, kitty, \
-                 etc. — anything not spawned by Claude Code), OR \
-                 (b) configure a direct provider in `.coral/config.toml` with \
-                 `[provider.anthropic]` + `api_key = \"sk-ant-api03-...\"` which \
-                 bypasses the `claude` CLI entirely."
+                 host-managed mode, ignoring its keychain credential. \
+                 Fix: run `coral` from a plain Terminal (Terminal.app, iTerm2, kitty, \
+                 etc. — anything not spawned by Claude Code). \
+                 NOTE: `[provider.anthropic]` does NOT bypass this — coral still invokes \
+                 the `claude` binary and just overrides `ANTHROPIC_API_KEY` for the \
+                 subprocess. The other runners (`--provider gemini` / `--provider http` \
+                 against an OpenAI-compatible endpoint like Ollama or vLLM / `--provider \
+                 local`) DO bypass the gate but require that other provider stack to \
+                 already be set up independently."
                     .to_string(),
             ));
         }
@@ -1064,8 +1067,12 @@ mod tests {
                     "error must hint at plain Terminal fix: {msg}"
                 );
                 assert!(
-                    msg.contains("api_key") || msg.contains("provider.anthropic"),
-                    "error must hint at direct provider fix: {msg}"
+                    msg.contains("--provider gemini") || msg.contains("--provider http"),
+                    "error must hint at the real bypasses (gemini/http runner): {msg}"
+                );
+                assert!(
+                    msg.contains("does NOT bypass") || msg.contains("not bypass"),
+                    "error must correct the common misconception that [provider.anthropic] bypasses: {msg}"
                 );
             }
             other => panic!("expected AuthFailed, got: {other:?}"),

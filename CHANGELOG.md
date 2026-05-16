@@ -67,13 +67,15 @@ runner pre-flight check.
   `401 Invalid authentication credentials`. The CLI's
   host-managed-mode detection (driven by macOS Endpoint Security
   responsibility tracking, not just env vars) cannot be bypassed
-  from a subshell, so we surface the failure upfront and point
-  users at the two real fixes: run from a plain Terminal, or
-  configure `[provider.anthropic]` with a direct `sk-ant-api03-...`
-  key in `.coral/config.toml`. Gate is skipped when the runner
-  points at a non-`claude` binary so the existing `runner.rs` unit
-  tests stay green under `cargo test` invoked from a Claude Code
-  shell.
+  from a subshell, so we surface the failure upfront. The realistic
+  fix is to run `coral` from a plain Terminal. (`[provider.anthropic]`
+  does NOT bypass — coral still invokes the `claude` binary, just
+  with `ANTHROPIC_API_KEY` overridden. The other runners —
+  `--provider gemini` / `--provider http` against an OpenAI-compatible
+  endpoint / `--provider local` — DO bypass but require independent
+  provider setup.) Gate is skipped when the runner points at a
+  non-`claude` binary so the existing `runner.rs` unit tests stay
+  green under `cargo test` invoked from a Claude Code shell.
 
 ### Documented
 
