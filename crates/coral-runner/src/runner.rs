@@ -470,10 +470,56 @@ impl ClaudeRunner {
             cmd.env(k, v);
         }
     }
+
+    /// True when `self.binary` resolves to the real `claude` CLI (by
+    /// filename `claude` or `claude.exe`). Used by the
+    /// [`host_managed_mode_check`] pre-flight to skip the gate when
+    /// tests inject a mock binary via [`Self::with_binary`].
+    fn is_real_claude_binary(&self) -> bool {
+        self.binary
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| n == "claude" || n == "claude.exe")
+            .unwrap_or(false)
+    }
+
+    /// BACKLOG #12 L3 (v0.40.1): pre-flight refusal when `claude` would
+    /// run inside a Claude Code shell.
+    ///
+    /// The `claude` CLI detects its parent process via macOS Endpoint
+    /// Security responsibility tracking (not just env vars) and
+    /// switches to "host-managed" mode: it ignores its own keychain
+    /// credential and expects the host to provide an
+    /// `ANTHROPIC_API_KEY`. Inside Claude Code that env is empty, so
+    /// every call returns 401 regardless of what we inject via
+    /// [`Self::with_env_var`]. The opaque 401 confuses users — surface
+    /// a specific, actionable error instead.
+    ///
+    /// Detection: `CLAUDECODE=1` exported by Claude Code. Skipped when
+    /// the runner points at a mock binary (test path) so the
+    /// `runner.rs` unit tests stay green even when `cargo test` runs
+    /// from a Claude Code shell.
+    fn host_managed_mode_check(&self) -> RunnerResult<()> {
+        if self.is_real_claude_binary() && std::env::var("CLAUDECODE").as_deref() == Ok("1") {
+            return Err(RunnerError::AuthFailed(
+                "claude CLI cannot authenticate from inside a Claude Code shell — \
+                 it detects the parent process via macOS Endpoint Security and switches to \
+                 host-managed mode, ignoring its keychain credential. Fix: \
+                 (a) run `coral` from a plain Terminal (Terminal.app, iTerm2, kitty, \
+                 etc. — anything not spawned by Claude Code), OR \
+                 (b) configure a direct provider in `.coral/config.toml` with \
+                 `[provider.anthropic]` + `api_key = \"sk-ant-api03-...\"` which \
+                 bypasses the `claude` CLI entirely."
+                    .to_string(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl Runner for ClaudeRunner {
     fn run(&self, prompt: &Prompt) -> RunnerResult<RunOutput> {
+        self.host_managed_mode_check()?;
         let start = Instant::now();
         let mut cmd = Command::new(&self.binary);
         self.apply_env_overrides(&mut cmd);
@@ -584,6 +630,7 @@ impl Runner for ClaudeRunner {
         prompt: &Prompt,
         on_chunk: &mut dyn FnMut(&str),
     ) -> RunnerResult<RunOutput> {
+        self.host_managed_mode_check()?;
         let mut cmd = Command::new(&self.binary);
         self.apply_env_overrides(&mut cmd);
         cmd.arg("--print");
@@ -928,6 +975,122 @@ mod tests {
             })
             .unwrap_err();
         assert!(matches!(err, RunnerError::NonZeroExit { .. }));
+    }
+
+    // ------------------------------------------------------------------
+    // BACKLOG #12 L3 (v0.40.1): host-managed-mode pre-flight check
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn claude_runner_is_real_claude_binary_default() {
+        let r = ClaudeRunner::default();
+        assert!(
+            r.is_real_claude_binary(),
+            "default ClaudeRunner points at `claude` and must be detected as real"
+        );
+    }
+
+    #[test]
+    fn claude_runner_is_real_claude_binary_windows_exe() {
+        // Use a Unix-style parent so `Path::file_name()` resolves the
+        // last component identically on both Unix and Windows test
+        // hosts. The filename is the only thing we check.
+        let r = ClaudeRunner::with_binary("/opt/claude/claude.exe");
+        assert!(
+            r.is_real_claude_binary(),
+            "Windows `claude.exe` must also be detected as real"
+        );
+    }
+
+    #[test]
+    fn claude_runner_is_real_claude_binary_false_for_mock() {
+        let r = ClaudeRunner::with_binary("/tmp/mock-test-script.sh");
+        assert!(
+            !r.is_real_claude_binary(),
+            "mock test binary must NOT be flagged as real `claude`"
+        );
+    }
+
+    /// Mock binary path: `host_managed_mode_check` is a no-op even with
+    /// `CLAUDECODE=1`. Keeps the runner unit tests green under
+    /// `cargo test` runs from inside Claude Code shells.
+    #[test]
+    fn host_managed_mode_check_skips_mock_binaries() {
+        let _lock = crate::test_script_lock();
+        let prior = std::env::var("CLAUDECODE").ok();
+        // Safety: tests in this file serialize via test_script_lock;
+        // restored in the cleanup below.
+        unsafe {
+            std::env::set_var("CLAUDECODE", "1");
+        }
+        let r = ClaudeRunner::with_binary("/tmp/whatever-mock.sh");
+        let result = r.host_managed_mode_check();
+        // Restore env before assertion so a panic doesn't leak state.
+        unsafe {
+            match prior {
+                Some(v) => std::env::set_var("CLAUDECODE", v),
+                None => std::env::remove_var("CLAUDECODE"),
+            }
+        }
+        assert!(result.is_ok(), "mock binary must skip the gate");
+    }
+
+    /// Real `claude` binary + `CLAUDECODE=1` → AuthFailed with a
+    /// pointer to the two fixes (plain Terminal or direct provider).
+    #[test]
+    fn host_managed_mode_check_refuses_under_claude_code() {
+        let _lock = crate::test_script_lock();
+        let prior = std::env::var("CLAUDECODE").ok();
+        unsafe {
+            std::env::set_var("CLAUDECODE", "1");
+        }
+        let r = ClaudeRunner::default();
+        let result = r.host_managed_mode_check();
+        unsafe {
+            match prior {
+                Some(v) => std::env::set_var("CLAUDECODE", v),
+                None => std::env::remove_var("CLAUDECODE"),
+            }
+        }
+        let err = result.expect_err("must refuse when CLAUDECODE=1 and real claude binary");
+        match err {
+            RunnerError::AuthFailed(msg) => {
+                assert!(
+                    msg.contains("Claude Code"),
+                    "error must mention Claude Code: {msg}"
+                );
+                assert!(
+                    msg.contains("plain Terminal") || msg.contains("Terminal.app"),
+                    "error must hint at plain Terminal fix: {msg}"
+                );
+                assert!(
+                    msg.contains("api_key") || msg.contains("provider.anthropic"),
+                    "error must hint at direct provider fix: {msg}"
+                );
+            }
+            other => panic!("expected AuthFailed, got: {other:?}"),
+        }
+    }
+
+    /// Real `claude` binary + no `CLAUDECODE` → pre-flight passes.
+    #[test]
+    fn host_managed_mode_check_passes_outside_claude_code() {
+        let _lock = crate::test_script_lock();
+        let prior = std::env::var("CLAUDECODE").ok();
+        unsafe {
+            std::env::remove_var("CLAUDECODE");
+        }
+        let r = ClaudeRunner::default();
+        let result = r.host_managed_mode_check();
+        unsafe {
+            if let Some(v) = prior {
+                std::env::set_var("CLAUDECODE", v);
+            }
+        }
+        assert!(
+            result.is_ok(),
+            "pre-flight must pass when CLAUDECODE is unset"
+        );
     }
 
     /// Non-streaming `run` honors `prompt.timeout` and returns
