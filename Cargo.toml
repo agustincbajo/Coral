@@ -3,7 +3,7 @@ members = ["crates/*"]
 resolver = "2"
 
 [workspace.package]
-version = "0.40.1"
+version = "0.40.2"
 edition = "2024"
 rust-version = "1.89"
 license = "MIT"
@@ -172,15 +172,15 @@ rand = "0.9"
 # panic backtraces. Tiny dep (~50 KB), pure-Rust, single transitive
 # (`lock_api`) already pulled in by other deps.
 parking_lot = "0.12"
-coral-core = { path = "crates/coral-core", version = "0.40.1" }
-coral-env = { path = "crates/coral-env", version = "0.40.1" }
-coral-lint = { path = "crates/coral-lint", version = "0.40.1" }
-coral-runner = { path = "crates/coral-runner", version = "0.40.1" }
-coral-session = { path = "crates/coral-session", version = "0.40.1" }
-coral-stats = { path = "crates/coral-stats", version = "0.40.1" }
-coral-test = { path = "crates/coral-test", version = "0.40.1" }
-coral-mcp = { path = "crates/coral-mcp", version = "0.40.1" }
-coral-ui = { path = "crates/coral-ui", version = "0.40.1" }
+coral-core = { path = "crates/coral-core", version = "0.40.2" }
+coral-env = { path = "crates/coral-env", version = "0.40.2" }
+coral-lint = { path = "crates/coral-lint", version = "0.40.2" }
+coral-runner = { path = "crates/coral-runner", version = "0.40.2" }
+coral-session = { path = "crates/coral-session", version = "0.40.2" }
+coral-stats = { path = "crates/coral-stats", version = "0.40.2" }
+coral-test = { path = "crates/coral-test", version = "0.40.2" }
+coral-mcp = { path = "crates/coral-mcp", version = "0.40.2" }
+coral-ui = { path = "crates/coral-ui", version = "0.40.2" }
 
 # v0.35 Phase C — workspace-wide clippy lints. Surfaces the ~70 unwrap /
 # 51 expect call sites the Q audit flagged as latent panic risk, without

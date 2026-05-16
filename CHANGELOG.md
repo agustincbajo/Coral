@@ -7,12 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+_No unreleased changes — see v0.40.2 below._
+
+## [0.40.2] - 2026-05-16
+
+**BACKLOG #12 L2 closure + L3 hint correction.** Completes the
+"end-to-end onboarding in one command" goal. Onboarding from a
+fresh repo is now: `bash install.sh` (once globally) then
+`coral init` (per repo). No wizard. No manual `.coral/config.toml`.
+
 ### Added
 
-- **L2 (BACKLOG #12) — `coral init --provider <kind>` non-interactive
-  provider scaffold.** Bypasses the TTY-required
-  `coral doctor --wizard` for the `claude_cli` provider (no credentials
-  needed; just the `claude` binary on PATH). Writes an empty
+- **L2 — `coral init --provider <kind>` non-interactive provider
+  scaffold.** Bypasses the TTY-required `coral doctor --wizard` for
+  the `claude_cli` provider (no credentials needed; just the
+  `claude` binary on PATH). Writes an empty
   `[provider.claude_cli]` section to `.coral/config.toml` via the
   same atomic + chmod-600 path the wizard uses.
 - **`coral init` auto-detects `claude` on PATH and scaffolds
@@ -22,6 +31,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to "install → init → bootstrap". Override with
   `coral doctor --wizard` when a different provider is wanted.
 
+### Fixed
+
+- **L3 hint corrected** — the v0.40.1 host-managed-mode error
+  message claimed `[provider.anthropic]` with an sk-ant-api03 key
+  bypassed claude_cli. That's wrong: coral's `make_runner` for
+  `ProviderName::Claude` always constructs `ClaudeRunner` (which
+  spawns the `claude` binary); `[provider.anthropic].api_key` just
+  overrides `ANTHROPIC_API_KEY` on the subprocess. Updated runtime
+  message + v0.40.1 CHANGELOG entry to reflect that the only
+  realistic fix is a plain Terminal. The other runners
+  (`--provider gemini` / `--provider http` against an OpenAI-
+  compatible endpoint / `--provider local`) DO bypass but require
+  independent provider setup.
+
 ### Internal
 
 - Added `claude_on_path()` helper to `init.rs` + 2 unit tests
@@ -29,6 +52,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - e2e tests in `crates/coral-cli/tests/` updated to populate the
   new `InitArgs::provider` field (defaults to `None`, no behavior
   change for existing call sites).
+- Wiki-level `.wiki/.gitignore` finally committed to this repo —
+  the v0.40.1 L1 fix produced it on re-run, validating L1 end-to-end.
 
 ## [0.40.1] - 2026-05-16
 
@@ -2809,7 +2834,8 @@ Test count: 385 (v0.8.0) → 427 (+42).
 - 5 ADRs: Rust CLI architecture, Claude CLI vs API, template via include_dir, multi-agent flow, versioning + sync.
 - Self-hosted `.wiki/` with 14 seed pages (cli/core/lint/runner/stats modules + concepts + entities + flow + decisions + synthesis + operations + sources).
 
-[Unreleased]: https://github.com/agustincbajo/Coral/compare/v0.40.1...HEAD
+[Unreleased]: https://github.com/agustincbajo/Coral/compare/v0.40.2...HEAD
+[0.40.2]: https://github.com/agustincbajo/Coral/releases/tag/v0.40.2
 [0.40.1]: https://github.com/agustincbajo/Coral/releases/tag/v0.40.1
 [0.31.1]: https://github.com/agustincbajo/Coral/releases/tag/v0.31.1
 [0.31.0]: https://github.com/agustincbajo/Coral/releases/tag/v0.31.0
