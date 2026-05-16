@@ -24,6 +24,13 @@ Cargo.lock.bak
 .coral/sessions/*.lock
 .coral/sessions/index.json
 !.coral/sessions/distilled/
+# FR-ONB-34 (security-critical): catch-all so an accidental
+# `.coral/config.toml` with an Anthropic API key never gets staged.
+# Comes AFTER the per-pattern allowlist so `!.coral/sessions/distilled/`
+# still wins. Bootstrap checkpoint may include LLM-token usage metadata.
+.coral/
+.wiki/.bootstrap-state.json
+.wiki/.bootstrap.lock
 # v0.35 Phase C (P-H1): coral-ui/build.rs pre-compresses the SPA
 # bundle into .gz / .br siblings on every cargo build. These are
 # pure build artifacts — committing them would churn on every UI
