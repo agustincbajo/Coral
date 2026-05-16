@@ -36,12 +36,19 @@ pub fn run(args: InitArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
         .unwrap_or_else(|| PathBuf::from(".wiki"));
     let cwd = std::env::current_dir().context("getting cwd")?;
 
-    if root.exists() && !args.force {
-        let schema = root.join("SCHEMA.md");
-        if schema.exists() {
-            tracing::info!("`.wiki/` already exists; pass --force to re-create. Skipping.");
-            return Ok(ExitCode::SUCCESS);
-        }
+    // v0.40.x fix: previously this early-returned when `.wiki/SCHEMA.md`
+    // existed without `--force`, which also skipped the post-wiki
+    // gitignore patches (FR-ONB-34) and the `CLAUDE.md` scaffold
+    // (FR-ONB-25). Repos that ran `coral init` on a pre-v0.34 binary
+    // never got those security-critical entries applied on a re-run
+    // with a newer binary. We now let the post-wiki blocks execute
+    // every time — they are all idempotent (per-file existence checks
+    // for SCHEMA/index/log, `append_gitignore_patterns` skips lines
+    // already present, `apply_claude_md` has the size guard and
+    // Created/Appended/Skipped decision tree).
+    let wiki_already_exists = root.exists() && root.join("SCHEMA.md").exists() && !args.force;
+    if wiki_already_exists {
+        tracing::info!("`.wiki/` already exists; pass --force to re-create. Re-applying gitignore + CLAUDE.md scaffolding (idempotent).");
     }
 
     std::fs::create_dir_all(&root).with_context(|| format!("creating {}", root.display()))?;
@@ -223,7 +230,14 @@ pub fn run(args: InitArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
         }
     }
 
-    println!("✔ `.wiki/` initialized at {}", root.display());
+    if wiki_already_exists {
+        println!(
+            "✔ `.wiki/` already present at {} — re-applied gitignore + CLAUDE.md (idempotent)",
+            root.display()
+        );
+    } else {
+        println!("✔ `.wiki/` initialized at {}", root.display());
+    }
     Ok(ExitCode::SUCCESS)
 }
 

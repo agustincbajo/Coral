@@ -7,8 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_No unreleased changes yet — v0.40.0 was just cut. Add new entries
-under this header as they land on `main`._
+### Fixed
+
+- **`coral init` re-run now re-applies FR-ONB-34 `.gitignore` patches
+  and the FR-ONB-25 `CLAUDE.md` scaffold** even when `.wiki/SCHEMA.md`
+  already exists ([crates/coral-cli/src/commands/init.rs](crates/coral-cli/src/commands/init.rs)).
+  Previously, the function early-returned at the wiki-exists check
+  and skipped every post-wiki step. Repos initialised by a pre-v0.34
+  binary that upgraded to a newer binary therefore never received the
+  security-critical entries (`.coral/`, `.wiki/.bootstrap-state.json`,
+  `.wiki/.bootstrap.lock`) — meaning a subsequent `git add .` could
+  commit the Anthropic API key stored in `.coral/config.toml`. The
+  Coral repo itself was bitten by this and patched manually in
+  commit 176c626; this fix prevents the same gap for every other
+  consumer. All post-wiki blocks are idempotent (per-file existence
+  checks, line-exact gitignore append, `CLAUDE.md` size guard).
 
 ## [0.40.0] - 2026-05-13
 

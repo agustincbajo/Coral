@@ -279,6 +279,74 @@ fn lifecycle_init_idempotent_does_not_clobber_seeded_pages() {
     std::env::set_current_dir(&cur).unwrap();
 }
 
+/// Regression: `coral init` on a repo that already has `.wiki/SCHEMA.md`
+/// must STILL apply the FR-ONB-34 security-critical `.gitignore`
+/// entries and the FR-ONB-25 `CLAUDE.md` scaffold. Pre-fix, the
+/// function short-circuited at the wiki-exists check and skipped every
+/// post-wiki step, leaving repos that upgraded from a pre-v0.34 binary
+/// without `.coral/` in their root `.gitignore` (which contains the
+/// Anthropic API key in `.coral/config.toml`).
+#[test]
+fn init_rerun_applies_security_gitignore_when_wiki_already_exists() {
+    let _guard = CWD_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let tmp = TempDir::new().unwrap();
+    let cwd = tmp.path().to_path_buf();
+    let wiki = cwd.join(".wiki");
+    let cur = std::env::current_dir().unwrap();
+    std::env::set_current_dir(&cwd).unwrap();
+    git_init_with_commit(&cwd);
+
+    // Simulate a repo initialised by a pre-v0.34 binary: `.wiki/SCHEMA.md`
+    // is present, but the root `.gitignore` does NOT have the
+    // FR-ONB-34 security entries, and `CLAUDE.md` does not yet exist.
+    std::fs::create_dir_all(&wiki).unwrap();
+    std::fs::write(wiki.join("SCHEMA.md"), "# stale schema").unwrap();
+    let gitignore = cwd.join(".gitignore");
+    std::fs::write(&gitignore, "target/\nnode_modules/\n").unwrap();
+    assert!(!cwd.join("CLAUDE.md").exists());
+
+    init::run(
+        InitArgs {
+            force: false,
+            yes: false,
+        },
+        Some(&wiki),
+    )
+    .unwrap();
+
+    // FR-ONB-34: security-critical entries are now present.
+    let gi = std::fs::read_to_string(&gitignore).unwrap();
+    assert!(gi.contains(".coral/"), "missing `.coral/` entry: {gi}");
+    assert!(
+        gi.contains(".wiki/.bootstrap-state.json"),
+        "missing bootstrap-state entry: {gi}"
+    );
+    assert!(
+        gi.contains(".wiki/.bootstrap.lock"),
+        "missing bootstrap.lock entry: {gi}"
+    );
+    // User's existing lines survive.
+    assert!(gi.contains("target/"));
+    assert!(gi.contains("node_modules/"));
+
+    // FR-ONB-25: CLAUDE.md was scaffolded.
+    let claude_md = std::fs::read_to_string(cwd.join("CLAUDE.md")).unwrap();
+    assert!(
+        claude_md.contains("## Coral routing"),
+        "CLAUDE.md must contain the routing section: {claude_md}"
+    );
+
+    // Pre-existing wiki content was NOT clobbered (SCHEMA.md still
+    // reads the stale fixture, not the embedded template).
+    let schema_after = std::fs::read_to_string(wiki.join("SCHEMA.md")).unwrap();
+    assert_eq!(
+        schema_after, "# stale schema",
+        "wiki re-run must not overwrite SCHEMA.md without --force"
+    );
+
+    std::env::set_current_dir(&cur).unwrap();
+}
+
 #[test]
 fn lifecycle_lint_json_format_emits_valid_json() {
     let _guard = CWD_LOCK.lock().unwrap_or_else(|p| p.into_inner());
