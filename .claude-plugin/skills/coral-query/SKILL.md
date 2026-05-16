@@ -8,6 +8,12 @@ allowed-tools: Bash(coral:*), Bash(ls:*), Bash(test:*)
 
 The user asked a conceptual question about their codebase. There is likely a Coral wiki in this repo that already has a curated answer. Use it before falling back to grep.
 
+## Step 0 — Claude Code session check (v0.41)
+
+Run `echo $CLAUDECODE`. If it outputs `1`, the `coral query` CLI command may fail if the configured runner is `claude_cli` (the default). In that case:
+- If the MCP server is available (this plugin registered it), prefer the MCP `query` tool — it reads the wiki locally without needing LLM inference for simple lookups.
+- For questions that require LLM synthesis: warn the user that `coral query` will fail from inside Claude Code unless an alternate provider is configured (`--provider gemini` or `--provider http`). Suggest running from a plain Terminal for full LLM-backed answers, or offer to answer from the raw wiki pages via the MCP resources (no LLM, just direct page reads).
+
 ## Step 1 — check whether a wiki exists
 
 Run `test -d .wiki && coral status` (or just `coral status`). One of three outcomes:

@@ -18,7 +18,6 @@ pub(crate) mod cache;
 // v0.41 P1: lightweight progress! macro for human-readable runner feedback.
 // `pub` so coral-runner, coral-cli, and coral-mcp can all import the macro
 // and the `progress_enabled` / `emit_progress` helpers.
-pub mod observability;
 pub mod config;
 pub mod cost;
 pub(crate) mod embeddings;
@@ -34,6 +33,7 @@ pub(crate) mod index;
 pub(crate) mod llms_txt;
 pub mod log;
 pub(crate) mod narrative;
+pub mod observability;
 pub mod page;
 pub mod path;
 pub mod project;

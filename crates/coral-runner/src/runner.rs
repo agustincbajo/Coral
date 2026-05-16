@@ -630,9 +630,7 @@ impl Runner for ClaudeRunner {
             eprintln!("{truncated}");
         }
         // v0.41 P1: emit progress after response is received.
-        let total_tokens = usage
-            .map(|u| u.input_tokens + u.output_tokens)
-            .unwrap_or(0);
+        let total_tokens = usage.map(|u| u.input_tokens + u.output_tokens).unwrap_or(0);
         coral_core::progress!(done, "run", "Got response"; tokens = total_tokens, elapsed_ms = duration.as_millis());
         Ok(RunOutput {
             stdout,

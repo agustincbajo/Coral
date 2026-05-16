@@ -349,3 +349,27 @@ shape de request/response cuando se haga la spike de Q1.)
 
 **Fin del PRD v1.0 draft.** Discusión esperada sobre Q1-Q4 antes de
 empezar P1.
+
+---
+
+## Anexo C: Q1 Spike Result (2026-05-16)
+
+**Answer: NO — Claude Code does NOT support `sampling/createMessage`.**
+
+Evidence (4 independent sources):
+1. **GitHub issue anthropics/claude-code#1785** — open feature request
+   "Support for MCP Sampling to leverage Claude Max subscriptions and
+   reduce API costs". Labeled `area:mcp`, assigned, no timeline.
+2. **apify/mcp-client-capabilities index** — 42 MCP clients tracked.
+   Claude Code row: Resources ✅ Prompts ✅ Tools ✅ Roots ✅ —
+   Sampling ❌ Discovery ❌ Tasks ❌ Elicitation ❌. Only 4 clients
+   support sampling (AmpCode, Glama, JetBrains AI, Mistral Le Chat).
+3. **Claude Code CLI** — no `--mcp-capabilities` flag, no sampling
+   mention in help output.
+4. **2026 release scan** — versions through v2.1.92 (April 2026) add
+   MCP 500K result persistence, cost breakdown, plugin executables —
+   no sampling support shipped.
+
+**Impact:** P3+P4+P5 de-scoped from v0.41. v0.41 ships P1+P2 (verbose
+observability) + P6 (skills hardening). HostSamplingRunner held for
+v0.42+ pending Anthropic shipping sampling support in Claude Code.

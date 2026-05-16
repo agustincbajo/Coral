@@ -11,6 +11,14 @@ Run a cost-confirmed wiki bootstrap for the current repo.
 
 ## Steps
 
+0. **Claude Code session check (v0.41).** Run `echo $CLAUDECODE`. If it outputs `1`:
+   - The `claude` CLI cannot authenticate from inside Claude Code (macOS Endpoint Security blocks it).
+   - Check `coral self-check --format=json --quick` for `runner_selected`.
+   - If the configured provider is `claude_cli` (or unset, which defaults to claude_cli):
+     - Tell the user: *"Coral's LLM commands (bootstrap, query) need a runner that works inside Claude Code. The default `claude_cli` runner cannot authenticate from here. Options: (1) run `coral bootstrap` from a plain Terminal, (2) configure an alternate provider: `coral doctor --wizard` and choose Gemini or an OpenAI-compatible endpoint, (3) wait for v0.42 which will add native Claude Code session support (sampling/createMessage)."*
+     - Do NOT proceed with bootstrap — it will fail with a 401.
+   - If the provider is `gemini`, `http`, or `local`, proceed normally (those runners bypass the claude CLI).
+
 1. Run `coral self-check --format=json --quick`. Parse the JSON.
 2. If `wiki_present == true`, ask user: *"Wiki already exists. Re-bootstrap? (y/n)"*. If `n`, exit.
 3. If `providers_configured == []`, hand off to the `coral-doctor` skill (it has the provider mini-wizard). Do NOT continue here — `coral-doctor` will route back to this skill once a provider is configured.

@@ -7,7 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_No unreleased changes — see v0.40.2 below._
+**v0.41 — Verbose observability (P1+P2) + skills hardening (P6).**
+
+Scope note: the original PRD included `HostSamplingRunner` (MCP
+`sampling/createMessage`) but empirical validation confirmed Claude Code
+does NOT support sampling (GitHub issue anthropics/claude-code#1785,
+mcp-client-capabilities index: Sampling ❌). P3-P5 de-scoped to a
+future version pending Anthropic shipping this capability.
+
+### Added
+
+- **`progress!` macro** (`coral-core::observability`) — three-form
+  macro (`step`/`done`/`fail`) emitting human-readable progress to
+  stderr: `▶ message  (key: val)` / `✓ ...` / `✗ ...`. Gated by
+  `CORAL_QUIET=1` (suppress) and `CORAL_VERBOSE=1` (force); defaults
+  to TTY detection on stderr.
+- **`--verbose` global flag** (+ `CORAL_VERBOSE=1` env var) — when
+  active, dumps the prompt being sent and response received (truncated
+  to 2000 chars; `--verbose=full` for unlimited). Plumbed through
+  `ClaudeRunner::run()` and `run_streaming()`.
+- **Runner progress instrumentation** — `ClaudeRunner` now emits
+  progress before spawning the `claude` binary and after receiving
+  the response, including token counts and elapsed time.
+- **Skills CLAUDECODE detection (P6)** — `coral-bootstrap` and
+  `coral-query` skills now check `$CLAUDECODE` at step 0 and warn
+  the user that `claude_cli` runner cannot authenticate from inside
+  Claude Code, with actionable alternatives.
+
+### Internal
+
+- `coral-runner` now depends on `coral-core` (for `progress!` macro).
+- 13 new unit tests for the observability module (serialized via
+  `Mutex` to avoid env-var race conditions in parallel test runs).
 
 ## [0.40.2] - 2026-05-16
 
