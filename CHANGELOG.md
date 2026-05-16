@@ -7,8 +7,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_No unreleased changes yet — v0.40.0 was just cut. Add new entries
-under this header as they land on `main`._
+_No unreleased changes — see v0.40.1 below._
+
+## [0.40.1] - 2026-05-16
+
+**Install autonomy patch.** Closes three of the four BACKLOG #12
+layers surfaced by dogfooding v0.40.0 against this repo on macOS
+Sequoia under Claude Code. No public API changes; one new
+user-visible error path (the install-refuse gate) and one
+runner pre-flight check.
+
+### Fixed
+
+- **L1 — `coral init` re-runs now apply gitignore + CLAUDE.md
+  scaffolds even when `.wiki/` already exists.** The early-return
+  at `crates/coral-cli/src/commands/init.rs:39-44` short-circuited
+  before the FR-ONB-34 `.gitignore` hardening and FR-ONB-25
+  CLAUDE.md template steps, leaving any repo that ran `coral init`
+  on a pre-v0.34 binary without the security-critical entries on
+  upgrade. The early return is gone; the per-file existence checks
+  downstream already make every step idempotent.
+
+### Added
+
+- **L4 — `scripts/install.sh` refuses to run from a Claude Code
+  shell on macOS.** Detects `CLAUDECODE=1` + Darwin host and exits
+  early with an actionable message before any download. Without
+  this, every file the installer writes (the `coral` binary itself,
+  `.coral/config.toml`, the optional CLAUDE.md scaffold) would
+  inherit `com.apple.provenance` and become EPERM-inaccessible from
+  the user's regular Terminal — and the tracked process cannot
+  strip its own provenance, even via `sudo`/authtrampoline, for
+  paths inside `~/Documents/`. Escape hatch:
+  `CORAL_INSTALL_ALLOW_TRACKED_PROCESS=1`.
+- **L3 — `coral-runner::ClaudeRunner` pre-flight check** that
+  refuses to spawn `claude` from inside a Claude Code shell with a
+  specific, actionable `AuthFailed` instead of the opaque
+  `401 Invalid authentication credentials`. The CLI's
+  host-managed-mode detection (driven by macOS Endpoint Security
+  responsibility tracking, not just env vars) cannot be bypassed
+  from a subshell, so we surface the failure upfront and point
+  users at the two real fixes: run from a plain Terminal, or
+  configure `[provider.anthropic]` with a direct `sk-ant-api03-...`
+  key in `.coral/config.toml`. Gate is skipped when the runner
+  points at a non-`claude` binary so the existing `runner.rs` unit
+  tests stay green under `cargo test` invoked from a Claude Code
+  shell.
+
+### Documented
+
+- **BACKLOG #12** captures all four layers (L1 closed v0.40.1, L4
+  closed v0.40.1, L3 closed v0.40.1; L2 non-interactive provider
+  config remains open).
 
 ## [0.40.0] - 2026-05-13
 

@@ -471,7 +471,7 @@ PRD §1 mention.
 
 Cost: ~$10-25/yr registrar + ~1 hour Cloudflare setup. No code work.
 
-### 12. Install autonomy: end-to-end install → first-estimate without manual fixes
+### 12. Install autonomy: end-to-end install → first-estimate without manual fixes (L1+L3+L4 ✅ CLOSED v0.40.1; L2 open)
 
 The v0.40.0 install flow is autonomous up through "binary on PATH +
 plugin registered", but the path from there to a successful
@@ -481,17 +481,15 @@ environment, since the plugin's whole reason to exist is to be
 invoked from Claude Code. Four layers broke in dogfooding session
 2026-05-16; each is independently fixable.
 
-**L1 — `coral init` short-circuits on existing `.wiki/`.**
-`crates/coral-cli/src/commands/init.rs:39-44` returns
-`Ok(ExitCode::SUCCESS)` as soon as `.wiki/SCHEMA.md` exists, before
+**L1 — `coral init` short-circuits on existing `.wiki/`. ✅ CLOSED v0.40.1.**
+`crates/coral-cli/src/commands/init.rs:39-44` used to return
+`Ok(ExitCode::SUCCESS)` as soon as `.wiki/SCHEMA.md` existed, before
 the post-wiki blocks that apply FR-ONB-34 `.gitignore` hardening
-(`init.rs:184-196`) and FR-ONB-25 `CLAUDE.md` scaffold. Any repo
-that ran `coral init` on a pre-v0.34 binary never gets the
-security-critical gitignore entries on re-run with v0.34+. The Coral
-repo itself was bitten — fixed manually in `176c626`. Fix: lift the
-gitignore + CLAUDE.md blocks out of the early-return guard; the
-per-file `if !exists` checks already make them idempotent. (1-LOC,
-ships in v0.40.1.) Tracked as a spawned task.
+(`init.rs:184-196`) and FR-ONB-25 `CLAUDE.md` scaffold. Fixed in
+v0.40.1 by lifting the gitignore + CLAUDE.md blocks out of the
+guard; the per-file `if !exists` checks make every downstream step
+idempotent. The Coral repo itself was bitten before the fix —
+patched manually in `176c626` (gitignore + CLAUDE.md scaffolds).
 
 **L2 — Provider config requires a TTY.**
 `coral doctor --wizard` refuses non-interactive runs because the
@@ -503,22 +501,20 @@ provider set <id> [--api-key STDIN]` (or expose the wizard's path
 as `coral doctor --provider claude_cli --non-interactive`) that
 writes the section without prompting.
 
-**L3 — `claude` CLI auth fails from any Claude-Code subshell.**
+**L3 — `claude` CLI auth fails from any Claude-Code subshell. ✅ CLOSED v0.40.1 (workaround).**
 When `claude` is spawned with PPID inside Claude Code's process
 tree, it detects "host-managed" mode and ignores the keychain
 credential, returning `401 Invalid authentication credentials`
 even when env vars are stripped and `__CFBundleIdentifier` is
 unset. The detection runs through macOS Endpoint Security
-responsibility chain, not just env. Coral's `claude_cli` runner
-inherits the failure 1:1. The most common dev environment for the
-plugin's target audience (Claude Code on macOS) is therefore the
-one environment where the path-of-least-resistance auth doesn't
-work. Fix candidates: (a) detect Claude Code parent in coral and
-surface a specific error ("you're inside Claude Code; run `coral
-bootstrap` from a plain Terminal, or set
-`[provider.anthropic].api_key`"); (b) lobby `claude` CLI to allow
-keychain fallback when no explicit `ANTHROPIC_API_KEY` is
-host-provided.
+responsibility chain, not just env — coral can't bypass it. v0.40.1
+ships a pre-flight check in `ClaudeRunner::host_managed_mode_check`
+that detects `CLAUDECODE=1` and refuses upfront with an actionable
+`AuthFailed` pointing at the two real fixes (plain Terminal, or
+`[provider.anthropic].api_key` in `.coral/config.toml`). Not a
+"true fix" of the underlying claude-cli behavior — that requires
+upstream — but turns the opaque 401 into a one-message
+diagnose-and-redirect for the user.
 
 **L4 — `com.apple.provenance` xattr propagates to every file Claude
 Code writes.**
@@ -541,18 +537,15 @@ Net consequence: a Coral install that runs ANY scaffolding step
 inside Claude Code (via `coral self register-marketplace
 --with-claude-config`, via the doctor wizard skill, via the
 SessionStart hook, etc.) leaves the user with files their normal
-shell cannot read. Bootstrap from a plain Terminal then fails on
-the config read. Fix candidates: (a) `install.sh` detects Claude
-Code parent (`$CLAUDECODE` / `$CLAUDE_CODE_ENTRYPOINT` / parent
-`__CFBundleIdentifier == com.anthropic.claudefordesktop`) and
-refuses to run with a clear "please run from a plain Terminal —
-installing under Claude Code will tag files with
-`com.apple.provenance` and break access from your shell" message;
-(b) document the limitation prominently in `INSTALL.md` macOS
-section; (c) ship `coral self repair-provenance` that drives an
-authtrampoline GUI prompt — though empirically this fails for
-Documents-folder paths even as root, so (a) is the only fully
-reliable option.
+shell cannot read. **✅ CLOSED v0.40.1** by option (a): `install.sh`
+now detects `CLAUDECODE=1` on Darwin and refuses to run with a
+clear actionable message pointing the user to a plain Terminal.
+Escape hatch via `CORAL_INSTALL_ALLOW_TRACKED_PROCESS=1` for the
+rare CI scenario where the artifact stays inside the same tracked
+process. Option (c) (`coral self repair-provenance`) confirmed
+empirically as not viable — Sequoia's anti-laundering refuses xattr
+removal even via `security_authtrampoline` for `~/Documents/`
+paths.
 
 **Acceptance:** a user on a fresh macOS Sequoia machine can
 complete `scripts/install.sh && cd <repo> && coral bootstrap
@@ -565,12 +558,12 @@ complete `scripts/install.sh && cd <repo> && coral bootstrap
 or hitting any EPERM / 401 surface that's not a real auth/network
 failure.
 
-Sized as v0.41 or v0.42 sprint. Sub-items can land independently
-(L1 is a 1-LOC fix; L2 ships behind a non-interactive flag; L3 is
-a hint, not a behavior change; L4 is the biggest design
-conversation and likely the highest-leverage to address — every
-other Coral user dogfooding from Claude Code on macOS hits the
-same wall).
+**v0.40.1 ships L1 + L3 + L4.** L2 (non-interactive provider
+config) remains the only open piece — adds either `coral init
+--provider <kind>` or `coral provider set <kind>` (no TTY required)
+so unattended installs can land a working `.coral/config.toml`
+without going through `coral doctor --wizard`. Sized as a small
+follow-up; would unblock CI installs and dotfiles-driven setup.
 
 ---
 
