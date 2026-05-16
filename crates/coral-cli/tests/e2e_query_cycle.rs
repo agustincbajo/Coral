@@ -49,6 +49,7 @@ fn query_cycle_with_mock_runner() {
         InitArgs {
             force: false,
             yes: false,
+            provider: None,
         },
         Some(&wiki),
     )
@@ -120,6 +121,7 @@ fn query_propagates_runner_error() {
         InitArgs {
             force: false,
             yes: false,
+            provider: None,
         },
         Some(&wiki),
     )

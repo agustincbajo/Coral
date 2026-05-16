@@ -19,6 +19,17 @@ pub struct InitArgs {
     /// See FR-ONB-25 + R12 in PRD v1.4.
     #[arg(long)]
     pub yes: bool,
+    /// BACKLOG #12 L2 (v0.40.2): non-interactive provider scaffold.
+    /// Currently supports `claude_cli` — writes `[provider.claude_cli]`
+    /// to `.coral/config.toml`, bypassing the TTY-required
+    /// `coral doctor --wizard`. For providers that need credentials
+    /// (anthropic / gemini / ollama), use the wizard interactively.
+    ///
+    /// When unset, `coral init` auto-detects `claude` on PATH and
+    /// scaffolds `[provider.claude_cli]` ONLY if no `.coral/config.toml`
+    /// exists yet. Existing configs are never modified.
+    #[arg(long, value_name = "KIND")]
+    pub provider: Option<String>,
 }
 
 const SCHEMA_BASE: &str = include_str!("../../../../template/schema/SCHEMA.base.md");
@@ -239,7 +250,67 @@ pub fn run(args: InitArgs, wiki_root: Option<&Path>) -> Result<ExitCode> {
     } else {
         println!("✔ `.wiki/` initialized at {}", root.display());
     }
+
+    // BACKLOG #12 L2 (v0.40.2): non-interactive provider scaffold.
+    // Three branches:
+    //   1. `--provider <kind>` set → validate + write that section.
+    //   2. Unset + no existing `.coral/config.toml` + `claude` on PATH
+    //      → auto-write `[provider.claude_cli]` so the post-init bootstrap
+    //      flow works out of the box.
+    //   3. Otherwise → no-op (user can run `coral doctor --wizard` or
+    //      hand-edit `.coral/config.toml`).
+    let coral_config_path = coral_core::config::config_path(&cwd);
+    let config_exists = coral_config_path.exists();
+    match args.provider.as_deref() {
+        Some("claude_cli") => {
+            coral_core::config::upsert_provider_section(&cwd, "provider.claude_cli", "")
+                .context("writing [provider.claude_cli] to .coral/config.toml")?;
+            tracing::info!(path = %coral_config_path.display(), "wrote [provider.claude_cli]");
+            println!("✔ Provider claude_cli configured in .coral/config.toml");
+        }
+        Some(other) => {
+            anyhow::bail!(
+                "unsupported --provider value `{other}`. Currently supported: \
+                 claude_cli. For anthropic/gemini/ollama (which need credentials), \
+                 run `coral doctor --wizard` interactively."
+            );
+        }
+        None => {
+            if !config_exists && claude_on_path() {
+                coral_core::config::upsert_provider_section(&cwd, "provider.claude_cli", "")
+                    .context("auto-writing [provider.claude_cli] to .coral/config.toml")?;
+                tracing::info!(
+                    path = %coral_config_path.display(),
+                    "auto-detected `claude` on PATH; wrote [provider.claude_cli]"
+                );
+                println!(
+                    "✔ Auto-detected `claude` CLI on PATH; configured [provider.claude_cli].\n  \
+                     Override with `coral doctor --wizard` to use a different provider."
+                );
+            }
+        }
+    }
+
     Ok(ExitCode::SUCCESS)
+}
+
+/// True when `claude` (or `claude.exe` on Windows) is present in
+/// `$PATH`. Pure: only reads env + filesystem metadata.
+///
+/// Used by `init::run` to opportunistically scaffold
+/// `[provider.claude_cli]` when no config exists. Intentionally NOT
+/// going through `coral self-check` here — that adds heavier
+/// dependencies and runs a `--version` probe; presence is enough for
+/// init's purpose.
+fn claude_on_path() -> bool {
+    let exe = if cfg!(windows) {
+        "claude.exe"
+    } else {
+        "claude"
+    };
+    std::env::var_os("PATH")
+        .map(|paths| std::env::split_paths(&paths).any(|p| p.join(exe).is_file()))
+        .unwrap_or(false)
 }
 
 /// Idempotent append of `.gitignore` patterns. If the file doesn't
@@ -602,6 +673,67 @@ mod tests {
     // Week 3 validator B2: non-git directory must fail loudly, not
     // fall back to a zero SHA.
     // ------------------------------------------------------------------
+
+    // ------------------------------------------------------------------
+    // BACKLOG #12 L2 (v0.40.2): claude-on-PATH detection helper
+    // ------------------------------------------------------------------
+
+    /// `claude_on_path()` returns true when a file named `claude` (or
+    /// `claude.exe` on Windows) is found in any `$PATH` entry. We mock
+    /// PATH to a tempdir holding a fake binary so the assertion is
+    /// hermetic.
+    #[test]
+    fn claude_on_path_detects_binary() {
+        let _lock = coral_runner::test_script_lock();
+        let prior_path = std::env::var_os("PATH");
+        let dir = TempDir::new().unwrap();
+        let exe_name = if cfg!(windows) {
+            "claude.exe"
+        } else {
+            "claude"
+        };
+        let fake = dir.path().join(exe_name);
+        std::fs::write(&fake, b"#!/bin/sh\necho mock\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut p = std::fs::metadata(&fake).unwrap().permissions();
+            p.set_mode(0o755);
+            std::fs::set_permissions(&fake, p).unwrap();
+        }
+        unsafe {
+            std::env::set_var("PATH", dir.path());
+        }
+        let detected = claude_on_path();
+        // Restore env BEFORE the assertion so a panic doesn't leak state.
+        unsafe {
+            match prior_path {
+                Some(v) => std::env::set_var("PATH", v),
+                None => std::env::remove_var("PATH"),
+            }
+        }
+        assert!(detected, "fake `claude` in PATH must be detected");
+    }
+
+    /// Negative case: empty PATH → no detection.
+    #[test]
+    fn claude_on_path_returns_false_when_absent() {
+        let _lock = coral_runner::test_script_lock();
+        let prior_path = std::env::var_os("PATH");
+        let dir = TempDir::new().unwrap();
+        // Tempdir is empty — no `claude` binary in it.
+        unsafe {
+            std::env::set_var("PATH", dir.path());
+        }
+        let detected = claude_on_path();
+        unsafe {
+            match prior_path {
+                Some(v) => std::env::set_var("PATH", v),
+                None => std::env::remove_var("PATH"),
+            }
+        }
+        assert!(!detected, "empty PATH must report no claude");
+    }
 
     /// `coral init` outside a git repo returns an actionable error
     /// rather than silently materialising an index with `last_commit =
